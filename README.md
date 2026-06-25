@@ -55,6 +55,7 @@
 |---|---|
 | [docs/demo_shearing_ripping.html](docs/demo_shearing_ripping.html) | **3D 互動**:拖曳旋轉 + 滑桿改變瓣膜對折角度,看 shearing/ripping 時「外表面法線」如何翻轉、Indicator 如何切換。直接用瀏覽器開即可(需連網載入 three.js)。 |
 | [docs/demo_decoupling_tear.html](docs/demo_decoupling_tear.html) | **解耦互動**:用滑鼠當器械拉瓣膜,同時看 **Layer A mass-spring 變形**(藍色節點/彈簧)與 **Layer B descriptive 撕裂**(黃線)各自運作;切換 shearing/ripping 觀察撕痕跟隨 vs 跑向周邊(runs downhill)。純 canvas,**離線可用**。 |
+| [docs/demo_remesh_attached.html](docs/demo_remesh_attached.html) | **Attached 旗標 + Delaunay 重網格**:按住前進撕痕,看灰點(Attached=TRUE 凍結)被掃過 → 變藍(FALSE=瓣膜,加入 mass-spring),撕裂邊三角形即時 **flip / split / collapse**,並顯示計數。對應 `docs/07`。純 canvas,**離線可用**。 |
 
 > 重點觀念:**ripping = 瓣膜沒翻面(法線與晶體面法線同向);shearing = 瓣膜對折翻面(法線反向)**。
 > 「法線朝不朝向晶體」會隨你釘在內/外表面而顛倒,所以真正穩健的判準是「瓣膜法線 vs 旁邊還黏著囊膜法線:同向=ripping,反向=shearing」。見 [`docs/06_ccc_tearing.md`](docs/06_ccc_tearing.md)。

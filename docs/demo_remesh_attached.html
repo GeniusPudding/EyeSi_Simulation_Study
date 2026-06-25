@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CCC 自由撕囊：自由撕痕 + Attached 整片 + PBD + Delaunay remesh</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0c111c;color:#e6e9ef;
+    font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;user-select:none}
+  #c{display:block;cursor:crosshair}
+  #panel{position:absolute;top:12px;left:12px;width:352px;background:rgba(18,24,38,.94);
+    border:1px solid #2a3550;border-radius:10px;padding:13px 15px;font-size:13px;line-height:1.5}
+  #panel h1{font-size:14.5px;margin:0 0 6px}
+  .hint{background:#1c2740;border:1px solid #34507a;border-radius:7px;padding:8px 10px;margin:8px 0}
+  .hint b{color:#ffd479}
+  .row{display:flex;gap:8px;margin:9px 0}
+  button{flex:1;padding:8px;border:0;border-radius:7px;cursor:pointer;font-weight:600;color:#fff;font-size:13px}
+  .bRst{background:#39456b}
+  .ind{font-size:14px;font-weight:800;text-align:center;padding:7px;border-radius:8px;margin:6px 0}
+  .legend span{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:6px;vertical-align:middle}
+  .muted{color:#9aa6c0;font-size:12px}
+  .cnt{font-family:monospace;font-size:12.5px;margin-top:6px;line-height:1.7}.cnt b{color:#ffd479}
+  label.ck{display:block;margin-top:6px;font-size:12px;color:#c4ccdd}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="panel">
+  <h1>自由撕囊：自由撕痕 + 整片掀起</h1>
+  <div class="hint"><b>按住左鍵,把鑷子往任意方向拉</b> → 撕痕<b>自由前進(你畫什麼形狀都行)</b>;撕痕<b>圍出的內側整片脫離</b>。繞一圈後<b>往中心拉</b> → 整片沿鉸鏈掀起/折疊。放開=暫停。<br><b>雙擊任一處</b> = 換地方開始新撕痕(保留舊瓣膜)。</div>
+  <div class="ind" id="ind">手法:—</div>
+  <div class="row"><button class="bRst" onclick="reset()">↺ 重置</button></div>
+  <label class="ck"><input type="checkbox" id="vec" checked> 顯示向量</label>
+  <div class="legend" style="margin-top:8px">
+    <div><b>Layer A</b> <span style="background:#56627a"></span>Attached(凍結) <span style="background:#6fd3ff"></span>整片瓣膜(PBD)</div>
+    <div><b>Layer B</b> <span style="background:#2ecc71"></span>你拉 <span style="background:#ff6b6b"></span>drift <span style="background:#88aaff"></span>撕痕前進</div>
+    <div><b>remesh</b> <span style="background:#ff6b6b"></span>撕縫 <span style="background:#ffd479"></span>flip <span style="background:#7CFC00"></span>split <span style="background:#ff9f43"></span>collapse</div>
+  </div>
+  <div class="cnt" id="cnt"></div>
+</div>
+
+<script>
+const cv=document.getElementById('c'), ctx=cv.getContext('2d');
+let W,H,CX,CY,Rdisk,Rguide,SP=26;
+let nodes,tris,tip,prevTip,curr,start,path,severed,mode;
+let gripping=false,mouse={x:0,y:0},lastMouse=null;
+let flips=0,splits=0,collapses=0,flash=[];
+const REF=46, DRIFT=0.22;
+
+function resize(){W=cv.width=innerWidth;H=cv.height=innerHeight;CX=W*0.57;CY=H*0.52;Rdisk=Math.min(W,H)*0.42;Rguide=Rdisk*0.6;}
+addEventListener('resize',resize);resize();
+
+const key=(a,b)=>a<b?a+'_'+b:b+'_'+a;
+const orient=(a,b,c)=>(nodes[b].x-nodes[a].x)*(nodes[c].y-nodes[a].y)-(nodes[b].y-nodes[a].y)*(nodes[c].x-nodes[a].x);
+function inCircle(a,b,c,d){const ax=nodes[a].x-nodes[d].x,ay=nodes[a].y-nodes[d].y,bx=nodes[b].x-nodes[d].x,by=nodes[b].y-nodes[d].y,cx=nodes[c].x-nodes[d].x,cy=nodes[c].y-nodes[d].y;
+  const ab=ax*by-bx*ay,bc=bx*cy-cx*by,ca=cx*ay-ax*cy,al=ax*ax+ay*ay,bl=bx*bx+by*by,cl=cx*cx+cy*cy;return al*bc+bl*ca+cl*ab;}
+const dist=(a,b)=>Math.hypot(nodes[a].x-nodes[b].x,nodes[a].y-nodes[b].y);
+const restLen=(a,b)=>Math.hypot(nodes[a].rx-nodes[b].rx,nodes[a].ry-nodes[b].ry);
+const det=n=>n.det, freed=n=>n.det&&!n.dead;
+const vlen=v=>Math.hypot(v.x,v.y),vnorm=v=>{const l=vlen(v)||1;return{x:v.x/l,y:v.y/l};};
+function segCross(p1,p2,q1,q2){const s=(a,b,c)=>(b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x);
+  const d1=s(q1,q2,p1),d2=s(q1,q2,p2),d3=s(p1,p2,q1),d4=s(p1,p2,q2);
+  return((d1>0&&d2<0)||(d1<0&&d2>0))&&((d3>0&&d4<0)||(d3<0&&d4>0));}
+function rotToward(c,d,maxA){let ang=Math.atan2(c.x*d.y-c.y*d.x,c.x*d.x+c.y*d.y);ang=Math.max(-maxA,Math.min(maxA,ang));
+  const co=Math.cos(ang),si=Math.sin(ang);return{x:c.x*co-c.y*si,y:c.x*si+c.y*co};}
+const signedAngle=(a,b)=>Math.atan2(a.x*b.y-a.y*b.x,a.x*b.x+a.y*b.y);
+const clampMag=(x,m)=>Math.max(-m,Math.min(m,x));
+function rotate(v,ang){const co=Math.cos(ang),si=Math.sin(ang);return{x:v.x*co-v.y*si,y:v.x*si+v.y*co};}
+function inPoly(px,py){let c=false;const P=[start,...path,tip];
+  for(let i=0,j=P.length-1;i<P.length;j=i++){const xi=P[i].x,yi=P[i].y,xj=P[j].x,yj=P[j].y;
+    if(((yi>py)!==(yj>py))&&(px<(xj-xi)*(py-yi)/((yj-yi)||1e-9)+xi))c=!c;}return c;}
+
+function reset(){
+  flips=splits=collapses=0;flash=[];gripping=false;severed=new Set();mode='—';
+  nodes=[];const map={};let j=0;
+  for(let y=CY-Rdisk;y<=CY+Rdisk;y+=SP,j++){let i=0;
+    for(let x=CX-Rdisk;x<=CX+Rdisk;x+=SP,i++){
+      if(Math.hypot(x-CX,y-CY)<=Rdisk){map[i+'_'+j]=nodes.length;
+        nodes.push({x,y,px:x,py:y,rx:x,ry:y,det:false,dead:false});}}}
+  tris=[];j=0;
+  for(let y=CY-Rdisk;y<=CY+Rdisk;y+=SP,j++){let i=0;
+    for(let x=CX-Rdisk;x<=CX+Rdisk;x+=SP,i++){
+      const a=map[i+'_'+j],b=map[(i+1)+'_'+j],c=map[i+'_'+(j+1)],d=map[(i+1)+'_'+(j+1)];
+      if(a!=null&&b!=null&&d!=null)tris.push([a,b,d]);if(a!=null&&d!=null&&c!=null)tris.push([a,d,c]);}}
+  tip={x:CX,y:CY-Rguide};prevTip={x:tip.x,y:tip.y};start={x:tip.x,y:tip.y};
+  curr={x:1,y:0};path=[{x:start.x,y:start.y}];
+  mouse={x:tip.x+40,y:tip.y};
+}
+
+function edgeSevered(a,b){return severed.has(key(a,b));}
+function triActive(t){if(!t)return false;for(const k of t)if(nodes[k].dead)return false;
+  return !(edgeSevered(t[0],t[1])||edgeSevered(t[1],t[2])||edgeSevered(t[2],t[0]));}
+function third(t,a,b){for(const k of t)if(k!==a&&k!==b)return k;return -1;}
+function buildEdges(){const em=new Map();
+  for(let ti=0;ti<tris.length;ti++){if(!triActive(tris[ti]))continue;const t=tris[ti];
+    for(const[u,vv]of[[t[0],t[1]],[t[1],t[2]],[t[2],t[0]]]){const k=key(u,vv);
+      let e=em.get(k);if(!e){e={a:Math.min(u,vv),b:Math.max(u,vv),t:[]};em.set(k,e);}e.t.push(ti);}}return em;}
+function flipPass(em){const touched=new Set();
+  for(const e of em.values()){if(e.t.length!==2)continue;const[t1,t2]=e.t;if(touched.has(t1)||touched.has(t2))continue;
+    const a=e.a,b=e.b,c=third(tris[t1],a,b),d=third(tris[t2],a,b);if(c<0||d<0)continue;
+    if(edgeSevered(a,c)||edgeSevered(c,b)||edgeSevered(b,d)||edgeSevered(d,a))continue;
+    const oc=orient(a,b,c),od=orient(a,b,d);if(oc===0||od===0)continue;if((oc>0)===(od>0))continue;
+    let inc=inCircle(a,b,c,d);if(oc<0)inc=-inc;
+    if(inc>1e-6){tris[t1]=[a,c,d];tris[t2]=[b,c,d];touched.add(t1);touched.add(t2);flash.push({a:c,b:d,col:'#ffd479',life:14});flips++;}}}
+function splitPass(em){if(nodes.length>2400)return;let done=0;for(const e of em.values()){if(done>=1)break;const a=e.a,b=e.b;if(restLen(a,b)<1)continue;
+  if(dist(a,b)>2.1*restLen(a,b)){const m=nodes.length;const mx=(nodes[a].x+nodes[b].x)/2,my=(nodes[a].y+nodes[b].y)/2;
+    nodes.push({x:mx,y:my,px:mx,py:my,rx:(nodes[a].rx+nodes[b].rx)/2,ry:(nodes[a].ry+nodes[b].ry)/2,det:det(nodes[a])&&det(nodes[b]),dead:false});
+    for(const ti of e.t.slice()){const t=tris[ti];if(!t)continue;const x=third(t,a,b);if(x<0)continue;tris[ti]=[a,m,x];tris.push([m,b,x]);}
+    flash.push({a,b:m,col:'#7CFC00',life:16});splits++;done++;}}}
+function collapsePass(em){let done=0;for(const e of em.values()){if(done>=1)break;if(e.t.length!==2)continue;const a=e.a,b=e.b;
+  if(!freed(nodes[a])||!freed(nodes[b]))continue;if(restLen(a,b)<1)continue;
+  if(dist(a,b)<0.35*restLen(a,b)){nodes[b].dead=true;
+    for(let ti=0;ti<tris.length;ti++){const t=tris[ti];if(!t)continue;if(t.includes(b)){const nt=t.map(k=>k===b?a:k);
+      if(nt[0]===nt[1]||nt[1]===nt[2]||nt[2]===nt[0])tris[ti]=null;else tris[ti]=nt;}}
+    flash.push({a,b,col:'#ff9f43',life:16});collapses++;done++;}}}
+
+function physics(){
+  if(gripping){
+    const pull={x:mouse.x-tip.x,y:mouse.y-tip.y};const tension=vlen(pull)/REF;
+    if(tension>1.0){
+      // Layer B:自由撕痕(你拉 + drift),沿用 decoupling
+      // ── Layer B（Weber 2006 §3.1 角度規則）──
+      const PullDir=vnorm(pull),DriftDir=vnorm({x:tip.x-CX,y:tip.y-CY});
+      const thP=signedAngle(curr,PullDir);   // 你拉 與 裂痕方向 的夾角
+      const thD=signedAngle(curr,DriftDir);   // drift（往周邊）
+      // 判定：拉的方向 ⊥ 裂痕 → ripping；拉的方向 ∥ 裂痕 → shearing
+      mode = Math.abs(thP)>0.9 ? 'ripping' : 'shearing';
+      let driftA,pullA;
+      if(mode==='shearing'){ driftA=0.012*Math.sign(thD); pullA=clampMag(thP,0.06); }   // 裂痕「跟著」你拉
+      else { driftA=0.05*Math.sign(thD); pullA=clampMag(0.15*thP,0.10); }                // 只取夾角一小部分 → 裂痕保持~垂直於拉、漸漸展開
+      curr=rotate(curr, driftA+pullA);
+      const step=Math.min((tension-1)*4,3.5);
+      let nx=tip.x+curr.x*step,ny=tip.y+curr.y*step;
+      if(Math.hypot(nx-CX,ny-CY)<Rdisk-2){prevTip={x:tip.x,y:tip.y};tip={x:nx,y:ny};}
+      if(Math.hypot(tip.x-path[path.length-1].x,tip.y-path[path.length-1].y)>7)path.push({x:tip.x,y:tip.y});
+      // 沿撕痕切斷
+      const em0=buildEdges();
+      for(const e of em0.values()){if(segCross(prevTip,tip,nodes[e.a],nodes[e.b]))severed.add(key(e.a,e.b));}
+      // 撕痕圍出的內側 → 整片脫離(point-in-polygon)
+      for(const n of nodes){if(!n.det&&!n.dead&&inPoly(n.x,n.y)){n.det=true;n.px=n.x;n.py=n.y;}}
+    }
+  }
+  // Layer A:PBD（速度 Verlet + 整片往鑷子折皺）→ 能把整片拉起；雙擊可換位撕第二條
+  const em=buildEdges();
+  for(const n of nodes){if(n.dead||!freed(n))continue;const vx=(n.x-n.px)*0.9,vy=(n.y-n.py)*0.9;n.px=n.x;n.py=n.y;n.x+=vx;n.y+=vy;}
+  // 論文:整片瓣膜被鑷子「folded and crumpled」往鑷子折皺(輕)
+  if(gripping)for(const n of nodes){if(!freed(n))continue;n.x+=(mouse.x-n.x)*0.028;n.y+=(mouse.y-n.y)*0.028;}
+  let gi=-1,gd=1e9;
+  if(gripping)for(let i=0;i<nodes.length;i++){if(!freed(nodes[i]))continue;const d=Math.hypot(nodes[i].x-mouse.x,nodes[i].y-mouse.y);if(d<gd){gd=d;gi=i;}}
+  for(let it=0;it<5;it++){
+    if(gi>=0){nodes[gi].x=mouse.x;nodes[gi].y=mouse.y;}
+    for(const e of em.values()){const a=e.a,b=e.b;const fa=freed(nodes[a])&&a!==gi,fb=freed(nodes[b])&&b!==gi;
+      if(!fa&&!fb)continue;
+      let dx=nodes[b].x-nodes[a].x,dy=nodes[b].y-nodes[a].y;const d=Math.hypot(dx,dy)||1;const diff=(d-restLen(a,b))/d;
+      const cx=dx*diff,cy=dy*diff;
+      if(fa&&fb){nodes[a].x+=cx*0.5;nodes[a].y+=cy*0.5;nodes[b].x-=cx*0.5;nodes[b].y-=cy*0.5;}
+      else if(fa){nodes[a].x+=cx;nodes[a].y+=cy;}else{nodes[b].x-=cx;nodes[b].y-=cy;}}
+  }
+  if(gi>=0){nodes[gi].x=mouse.x;nodes[gi].y=mouse.y;}
+  for(const n of nodes){if(freed(n)&&(!isFinite(n.x)||!isFinite(n.y))){n.x=n.rx;n.y=n.ry;n.px=n.x;n.py=n.y;}}  // NaN 防護(保留,避免極端爆開)
+  flipPass(em);const em2=buildEdges();splitPass(em2);collapsePass(em2);
+  for(const f of flash)f.life--;flash=flash.filter(f=>f.life>0);
+}
+
+function arrow(o,d,L,col,txt){const e={x:o.x+d.x*L,y:o.y+d.y*L};
+  ctx.strokeStyle=col;ctx.fillStyle=col;ctx.lineWidth=2.5;ctx.beginPath();ctx.moveTo(o.x,o.y);ctx.lineTo(e.x,e.y);ctx.stroke();
+  const a=Math.atan2(d.y,d.x);ctx.beginPath();ctx.moveTo(e.x,e.y);ctx.lineTo(e.x-9*Math.cos(a-0.4),e.y-9*Math.sin(a-0.4));ctx.lineTo(e.x-9*Math.cos(a+0.4),e.y-9*Math.sin(a+0.4));ctx.closePath();ctx.fill();
+  ctx.font='11px sans-serif';ctx.fillText(txt,e.x+5,e.y-3);}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  ctx.strokeStyle='#243049';ctx.lineWidth=2;ctx.beginPath();ctx.arc(CX,CY,Rdisk,0,7);ctx.stroke();
+  ctx.fillStyle='#7f8aa3';ctx.font='12px sans-serif';ctx.fillText('囊膜(整片大網)',CX-40,CY-Rdisk-8);
+  ctx.setLineDash([5,5]);ctx.strokeStyle='rgba(136,147,168,.35)';ctx.lineWidth=1;ctx.beginPath();ctx.arc(CX,CY,Rguide,0,7);ctx.stroke();ctx.setLineDash([]);
+  ctx.fillStyle='#5b6478';ctx.beginPath();ctx.arc(CX,CY,3,0,7);ctx.fill();
+  ctx.fillStyle='rgba(111,211,255,.14)';
+  for(let ti=0;ti<tris.length;ti++){const t=tris[ti];if(!triActive(t))continue;
+    if(freed(nodes[t[0]])&&freed(nodes[t[1]])&&freed(nodes[t[2]])){ctx.beginPath();ctx.moveTo(nodes[t[0]].x,nodes[t[0]].y);ctx.lineTo(nodes[t[1]].x,nodes[t[1]].y);ctx.lineTo(nodes[t[2]].x,nodes[t[2]].y);ctx.closePath();ctx.fill();}}
+  for(let ti=0;ti<tris.length;ti++){const t=tris[ti];if(!triActive(t))continue;
+    const fr=freed(nodes[t[0]])||freed(nodes[t[1]])||freed(nodes[t[2]]);
+    ctx.strokeStyle=fr?'rgba(111,211,255,.6)':'rgba(86,98,122,.4)';ctx.lineWidth=fr?1.3:1;
+    ctx.beginPath();ctx.moveTo(nodes[t[0]].x,nodes[t[0]].y);ctx.lineTo(nodes[t[1]].x,nodes[t[1]].y);ctx.lineTo(nodes[t[2]].x,nodes[t[2]].y);ctx.closePath();ctx.stroke();}
+  for(const f of flash){if(nodes[f.a].dead||nodes[f.b].dead)continue;ctx.strokeStyle=f.col;ctx.lineWidth=3;ctx.globalAlpha=f.life/16;
+    ctx.beginPath();ctx.moveTo(nodes[f.a].x,nodes[f.a].y);ctx.lineTo(nodes[f.b].x,nodes[f.b].y);ctx.stroke();ctx.globalAlpha=1;}
+  // 你撕的路徑(乾淨一條紅線)
+  if(path.length>1){ctx.strokeStyle='#ff6b6b';ctx.lineWidth=2.5;ctx.beginPath();for(let i=0;i<path.length;i++){const p=path[i];i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y);}ctx.lineTo(tip.x,tip.y);ctx.stroke();}
+  for(const n of nodes){if(n.dead)continue;ctx.fillStyle=freed(n)?'#6fd3ff':'#56627a';ctx.beginPath();ctx.arc(n.x,n.y,freed(n)?2.5:1.8,0,7);ctx.fill();}
+  ctx.strokeStyle='rgba(255,255,255,.4)';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(tip.x,tip.y);ctx.lineTo(mouse.x,mouse.y);ctx.stroke();
+  ctx.strokeStyle=gripping?'#2ecc71':'#fff';ctx.lineWidth=2.5;ctx.beginPath();ctx.arc(mouse.x,mouse.y,9,0,7);ctx.stroke();
+  ctx.fillStyle=gripping?'#2ecc71':'#fff';ctx.fillText('鑷子',mouse.x+13,mouse.y-7);
+  if(document.getElementById('vec').checked){
+    arrow(tip,vnorm({x:mouse.x-tip.x,y:mouse.y-tip.y}),38,'#2ecc71','你拉');
+    arrow(tip,vnorm({x:tip.x-CX,y:tip.y-CY}),38,'#ff6b6b','drift');
+    arrow(tip,curr,48,'#88aaff','撕痕前進');}
+  ctx.fillStyle='#ffd479';ctx.beginPath();ctx.arc(tip.x,tip.y,5,0,7);ctx.fill();ctx.fillText('撕痕尖端',tip.x+8,tip.y+16);
+}
+
+function loop(){
+  physics();draw();
+  const el=document.getElementById('ind');
+  if(mode==='ripping'){el.textContent='RIPPING(垂直拉→裂痕垂直展開)';el.style.background='#1f9d57';}
+  else if(mode==='shearing'){el.textContent='SHEARING(順著裂痕拉→裂痕跟隨)';el.style.background='#d9822b';}
+  else{el.textContent='手法:—(開始拉就判定)';el.style.background='#39456b';}
+  let att=0,free=0;for(const n of nodes){if(n.dead)continue;freed(n)?free++:att++;}
+  document.getElementById('cnt').innerHTML=
+    `Attached <b>${att}</b>　整片瓣膜 <b>${free}</b>　切斷邊 <b>${severed.size}</b><br>flip <b>${flips}</b>　split <b>${splits}</b>　collapse <b>${collapses}</b>`;
+  requestAnimationFrame(loop);
+}
+cv.addEventListener('mousemove',e=>{mouse={x:e.clientX,y:e.clientY};});
+cv.addEventListener('mousedown',e=>{if(e.button===0){gripping=true;mouse={x:e.clientX,y:e.clientY};lastMouse={x:mouse.x,y:mouse.y};prevTip={x:tip.x,y:tip.y};}});
+// 雙擊 = 換地方開始新撕痕(保留已撕開的舊瓣膜)
+cv.addEventListener('dblclick',e=>{tip={x:e.clientX,y:e.clientY};start={x:tip.x,y:tip.y};prevTip={x:tip.x,y:tip.y};lastMouse={x:tip.x,y:tip.y};path=[{x:tip.x,y:tip.y}];curr={x:1,y:0};});
+addEventListener('mouseup',()=>{gripping=false;lastMouse=null;});
+cv.addEventListener('mouseleave',()=>{gripping=false;});
+reset();loop();
+</script>
+</body>
+</html>
