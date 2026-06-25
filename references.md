@@ -22,6 +22,12 @@
 - **Karim, S. M. R.; Ong, C. T.; Sleep, T. J.** (2010). *A Novel Capsulorhexis Technique Using Shearing Forces with Cystotome.* J Vis Exp (39):e1962.
 - **McCannel, C. A.; Reed, D. C.; Goldman, D. R.** (2013). *Ophthalmic Surgery Simulator Training Improves Resident Performance of Capsulorhexis in the Operating Room.* Ophthalmology 120(12):2456–2461. → 模擬訓練降錯誤撕囊率 68%。
 
+## 後續發展(2006 之後;見 docs/09)
+- **Müller, M.; Heidelberger, B.; Hennix, M.; Ratcliff, J.** (2007). *Position Based Dynamics.* J. Visual Communication and Image Representation 18(2):109–118. → PBD,mass-spring 的即時穩定後繼(位置基,≈ ECM 位移驅動)。
+- **Belytschko, T.; Black, T.** (1999). *Elastic crack growth in finite elements with minimal remeshing.* Int. J. Numer. Methods Eng. 45(5). / **Moës, N.; Dolbow, J.; Belytschko, T.** (1999). *A finite element method for crack growth without remeshing.* → XFEM,裂縫穿元素免重網格。
+- **Marchal, M. et al.** (2009). *A fiber-based fracture model for simulating soft tissue tearing.* INRIA. → 纖維基斷裂模型。
+- **(FEM 撕囊力學)** (2021). *A study for lens capsule tearing during capsulotomy by finite element simulation.* Comput. Methods Programs Biomed. → 四層 3D 晶體 FE 模型 + 內聚介面律,豬眼力感測驗證;離線、非即時。
+
 ## 其他 EyeSi 系列(本筆記範圍外)
 - **Jakubik, O.** (2009). *Simulation der Phakoemulsifikation im Augenoperationssimulator Eyesi.* PhD thesis, Mannheim. → phaco 機器物理。
 - **Köpfle, A.** (2012). *Ein modulares optisches Trackingsystem für medizintechnische Anwendungen (MOSCOT).* PhD thesis, Mannheim. → 光學追蹤。

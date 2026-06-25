@@ -69,18 +69,33 @@ def advance_tear(tear_end, direction, step, mesh, mass_spring_nodes):
         node.fixed = False                          # 解放進 mass-spring(= Attached False)
 
 
-# === 整個 CCC 模擬器每一幀(docs/08 §1 兩層整合)===
+# === 整個 CCC 模擬器每一幀(docs/06 §0b 兩層整合 + 應力觸發)===
 def frame(instrument_tip, lens, mesh, ms_nodes, ms_springs, dt, params):
-    # --- Layer B:撕裂傳播(描述式)---
-    tear_end = mesh.tear_end
-    direction = next_tear_direction(tear_end, instrument_tip, lens, params)
-    advance_tear(tear_end, direction, params.STEP, mesh, ms_nodes)
-
-    # --- Layer A:囊膜變形(mass-spring,只跑 fixed==False 的節點)---
-    import_from = "see pseudocode/mass_spring.py :: simulate_step"
+    # --- Layer A:囊膜變形(mass-spring,只跑 fixed==False 的膜瓣節點)---
+    # 同時得到膜瓣應力。對應 docs/02 :: simulate_step
     simulate_step(ms_nodes, ms_springs, dt)         # 飄動的膜瓣
+    stress = membrane_stress(ms_nodes, ms_springs)  # 膜瓣被拉多緊
+
+    # --- 應力觸發 + Layer B:撕裂(描述式)---
+    # 應力決定「何時撕」(物理),Indicator 決定「往哪撕」(可控)。docs/06 §0
+    if stress >= params.TEAR_STRESS_THRESHOLD:      # 醫生拉夠緊才撕
+        tear_end = mesh.tear_end
+        direction = next_tear_direction(tear_end, instrument_tip, lens, params)
+        advance_tear(tear_end, direction, params.STEP, mesh, ms_nodes)
+    # else: 撕痕不動,膜瓣只被拉變形(回到下一幀)
 
     # --- 繪圖(立體 + 陰影,深度線索)---
     render(mesh, stereo=True, shadow=True)
+
+
+def membrane_stress(ms_nodes, ms_springs):
+    """膜瓣應力的簡單度量:用最大彈簧拉伸量近似(對應 docs/06 應力觸發)。"""
+    max_stretch = 0.0
+    for s in ms_springs:
+        if s.i.fixed and s.j.fixed:
+            continue
+        L = length(sub(s.j.pos, s.i.pos))
+        max_stretch = max(max_stretch, L - s.rest_length)
+    return max_stretch
 
 # 備註:本演算法為「單一預先初始化的撕痕」;多重撕痕 + 黏彈性流體為 Weber 2006 的後續工作。

@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>解耦 Demo — mass-spring 變形 × descriptive 撕裂</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0c111c;color:#e6e9ef;
+    font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif}
+  #c{display:block;cursor:crosshair}
+  #panel{position:absolute;top:12px;left:12px;width:340px;background:rgba(18,24,38,.93);
+    border:1px solid #2a3550;border-radius:10px;padding:13px 15px;font-size:13px;line-height:1.5}
+  #panel h1{font-size:15px;margin:0 0 6px}
+  .row{display:flex;gap:8px;margin:9px 0}
+  button{flex:1;padding:8px;border:0;border-radius:7px;cursor:pointer;font-weight:600;color:#fff;font-size:13px}
+  .bShr{background:#d9822b}.bRip{background:#1f9d57}.bRst{background:#39456b}
+  .on{outline:3px solid #ffd479}
+  .ind{font-size:16px;font-weight:800;text-align:center;padding:7px;border-radius:8px;margin:6px 0}
+  .legend span{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:6px;vertical-align:middle}
+  .muted{color:#9aa6c0;font-size:12px}
+  .warn{color:#ff6b6b;font-weight:700}
+  label.ck{display:block;margin-top:8px;font-size:12px;color:#c4ccdd}
+  b.A{color:#6fd3ff}b.B{color:#ffd479}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="panel">
+  <h1>解耦 Demo:變形 × 撕裂</h1>
+  <div class="muted">撕痕<b>自動沿圓前進</b>。紅色 drift 一直把半徑往外推;
+    <b>把器械(滑鼠)往中心拉</b>去對抗它,維持在虛線目標圓上。</div>
+
+  <div class="ind" id="ind">手法:RIPPING</div>
+  <div class="row">
+    <button class="bRip on" id="btnRip" onclick="setMode('ripping')">Ripping(撕)</button>
+    <button class="bShr" id="btnShr" onclick="setMode('shearing')">Shearing(剪)</button>
+  </div>
+  <div class="row"><button class="bRst" onclick="reset()">↺ 重置撕痕</button></div>
+  <label class="ck"><input type="checkbox" id="vec" checked> 顯示向量</label>
+
+  <div style="margin-top:10px" class="legend">
+    <div><span style="background:#6fd3ff"></span><b class="A">Layer A</b> mass-spring 瓣膜(節點+彈簧,連續變形)</div>
+    <div><span style="background:#ffd479"></span><b class="B">Layer B</b> descriptive 撕痕(規則,沿圓前進)</div>
+    <div><span style="background:#2ecc71"></span>PullDir 你拉的方向 &nbsp; <span style="background:#ff6b6b"></span>DriftDir 漂移(往周邊)</div>
+    <div><span style="background:#88aaff"></span>CurrDir 撕痕切線 &nbsp; <span style="background:#888"></span>目標圓 / 周邊</div>
+  </div>
+  <div class="muted" id="status" style="margin-top:9px"></div>
+</div>
+
+<script>
+const cv=document.getElementById('c'), ctx=cv.getContext('2d');
+let W,H,C,Rtarget=130,Rperiph=250;
+let mode='ripping';
+let theta, radius, tear, drift=false;
+let flap; const GX=3,GY=4,SP=24;
+let mouse={x:0,y:0}, haveMouse=false;
+
+function resize(){W=cv.width=innerWidth;H=cv.height=innerHeight;C={x:W*0.55,y:H*0.55};}
+addEventListener('resize',resize); resize();
+
+const v=(x,y)=>({x,y});
+const sub=(a,b)=>v(a.x-b.x,a.y-b.y), add=(a,b)=>v(a.x+b.x,a.y+b.y), mul=(a,s)=>v(a.x*s,a.y*s);
+const len=a=>Math.hypot(a.x,a.y), dot=(a,b)=>a.x*b.x+a.y*b.y;
+const norm=a=>{const l=len(a)||1;return v(a.x/l,a.y/l);};
+const perp=a=>v(-a.y,a.x);
+
+function tipPos(){return v(C.x+radius*Math.cos(theta), C.y+radius*Math.sin(theta));}
+
+function reset(){
+  theta=-Math.PI/2; radius=Rtarget; drift=false;
+  tear=[tipPos()];
+  buildFlap();
+  if(!haveMouse){const t=tipPos(); mouse=add(t, mul(norm(sub(C,t)),(GY-1)*SP));}
+}
+
+function buildFlap(){
+  const tip=tipPos(), out=norm(sub(C,tip)), pp=perp(out);
+  flap=[];
+  for(let j=0;j<GY;j++)for(let i=0;i<GX;i++){
+    const p=add(add(tip,mul(pp,(i-1)*SP)),mul(out,j*SP));
+    flap.push({x:p.x,y:p.y,vx:0,vy:0,i,j,pin:(j===0),drive:(j===GY-1&&i===1)});
+  }
+  flap.springs=[]; const idx=(i,j)=>j*GX+i;
+  for(let j=0;j<GY;j++)for(let i=0;i<GX;i++){
+    if(i<GX-1)addSpring(idx(i,j),idx(i+1,j));
+    if(j<GY-1)addSpring(idx(i,j),idx(i,j+1));
+    if(i<GX-1&&j<GY-1){addSpring(idx(i,j),idx(i+1,j+1));addSpring(idx(i+1,j),idx(i,j+1));}
+  }
+}
+function addSpring(a,b){const dx=flap[a].x-flap[b].x,dy=flap[a].y-flap[b].y;flap.springs.push({a,b,rest:Math.hypot(dx,dy)});}
+
+function stepFlap(){
+  const tip=tipPos(), radial=v(Math.cos(theta),Math.sin(theta)), pp=perp(radial);
+  for(let i=0;i<GX;i++){const n=flap[i];const p=add(tip,mul(pp,(i-1)*SP));n.x=p.x;n.y=p.y;n.vx=n.vy=0;}
+  for(const n of flap){if(n.drive){n.x=mouse.x;n.y=mouse.y;n.vx=n.vy=0;}}
+  const k=0.20,damp=0.80,sub=4;
+  for(let s=0;s<sub;s++){
+    for(const sp of flap.springs){const A=flap[sp.a],B=flap[sp.b];
+      let dx=B.x-A.x,dy=B.y-A.y;const d=Math.hypot(dx,dy)||1;const f=k*(d-sp.rest)/d;
+      if(!A.pin&&!A.drive){A.vx+=f*dx;A.vy+=f*dy;}
+      if(!B.pin&&!B.drive){B.vx-=f*dx;B.vy-=f*dy;}}
+    for(const n of flap){if(n.pin||n.drive)continue;n.vx*=damp;n.vy*=damp;n.x+=n.vx;n.y+=n.vy;}
+  }
+}
+
+function stepTear(){
+  const tip=tipPos();
+  const radial=v(Math.cos(theta),Math.sin(theta));   // 往外(周邊)
+  const pull=sub(mouse,tip);
+  const tension=len(pull)/((GY-1)*SP);
+  const pulling=tension>1.03;
+  const inward=Math.max(0, -dot(norm(pull),radial));  // 往中心拉的成分 [0..1]
+
+  theta += 0.012;                                     // 撕痕沿圓自動前進
+  radius += 0.16;                                     // DriftDir:每幀往外漂(懸韌帶張力)
+  const corr = (mode==='ripping') ? 0.75 : 0.22;      // ripping 對抗強、shearing 弱
+  if(pulling) radius -= inward*corr;
+  radius = Math.max(50, Math.min(radius, Rperiph));
+  drift = radius > Rtarget*1.25;
+
+  tear.push(tipPos());
+  if(tear.length>6000) tear.shift();
+  return {tension,pulling,inward};
+}
+
+function arrow(o,d,L,col,txt){
+  const e=add(o,mul(d,L));
+  ctx.strokeStyle=col;ctx.fillStyle=col;ctx.lineWidth=2.5;
+  ctx.beginPath();ctx.moveTo(o.x,o.y);ctx.lineTo(e.x,e.y);ctx.stroke();
+  const a=Math.atan2(d.y,d.x);
+  ctx.beginPath();ctx.moveTo(e.x,e.y);
+  ctx.lineTo(e.x-9*Math.cos(a-0.4),e.y-9*Math.sin(a-0.4));
+  ctx.lineTo(e.x-9*Math.cos(a+0.4),e.y-9*Math.sin(a+0.4));ctx.closePath();ctx.fill();
+  ctx.font='11px sans-serif';ctx.fillText(txt,e.x+5,e.y-3);
+}
+
+function draw(t){
+  ctx.clearRect(0,0,W,H);
+  const tip=tipPos();
+  // 周邊圓
+  ctx.strokeStyle='#243049';ctx.lineWidth=2;ctx.beginPath();ctx.arc(C.x,C.y,Rperiph,0,7);ctx.stroke();
+  ctx.fillStyle='#7f8aa3';ctx.font='12px sans-serif';ctx.fillText('晶體周邊(drift 終點)',C.x+Rperiph*0.5,C.y-Rperiph*0.8);
+  // 中心
+  ctx.fillStyle='#5b6478';ctx.beginPath();ctx.arc(C.x,C.y,4,0,7);ctx.fill();
+  ctx.fillText('中心',C.x+8,C.y-6);
+  // 目標圓
+  ctx.setLineDash([6,6]);ctx.strokeStyle='#8893a8';ctx.lineWidth=1.5;
+  ctx.beginPath();ctx.arc(C.x,C.y,Rtarget,0,7);ctx.stroke();ctx.setLineDash([]);
+  // Layer B 撕痕
+  ctx.strokeStyle=drift?'#ff6b6b':'#ffd479';ctx.lineWidth=3.5;ctx.beginPath();
+  for(let i=0;i<tear.length;i++){const p=tear[i];i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y);}
+  ctx.stroke();
+  // Layer A mass-spring
+  ctx.strokeStyle='rgba(111,211,255,.55)';ctx.lineWidth=1.5;
+  for(const sp of flap.springs){const A=flap[sp.a],B=flap[sp.b];ctx.beginPath();ctx.moveTo(A.x,A.y);ctx.lineTo(B.x,B.y);ctx.stroke();}
+  for(const n of flap){ctx.fillStyle=n.drive?'#fff':(n.pin?'#3aa0d0':'#6fd3ff');ctx.beginPath();ctx.arc(n.x,n.y,n.drive?6:3.5,0,7);ctx.fill();}
+  // 器械
+  ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.beginPath();ctx.arc(mouse.x,mouse.y,9,0,7);ctx.stroke();
+  ctx.fillStyle='#fff';ctx.fillText('器械',mouse.x+12,mouse.y-8);
+  // 向量
+  if(document.getElementById('vec').checked){
+    arrow(tip,perp(v(Math.cos(theta),Math.sin(theta))),48,'#88aaff','CurrDir');
+    arrow(tip,norm(sub(mouse,tip)),48,'#2ecc71','PullDir');
+    arrow(tip,v(Math.cos(theta),Math.sin(theta)),48,'#ff6b6b','DriftDir');
+  }
+  ctx.fillStyle='#ffd479';ctx.beginPath();ctx.arc(tip.x,tip.y,5,0,7);ctx.fill();
+}
+
+function setMode(m){
+  mode=m;
+  const el=document.getElementById('ind');
+  el.textContent='手法:'+m.toUpperCase();
+  el.style.background=m==='ripping'?'#1f9d57':'#d9822b';
+  document.getElementById('btnRip').classList.toggle('on',m==='ripping');
+  document.getElementById('btnShr').classList.toggle('on',m==='shearing');
+}
+cv.addEventListener('mousemove',e=>{mouse={x:e.clientX,y:e.clientY};haveMouse=true;});
+
+function loop(){
+  stepFlap();
+  const r=stepTear();
+  draw();
+  const dr=(radius-Rtarget);
+  document.getElementById('status').innerHTML=
+    `撕痕半徑 ${radius.toFixed(0)}px(目標 ${Rtarget})・偏差 ${dr>0?'+':''}${dr.toFixed(0)}px`+
+    `<br>器械往中心拉的程度:${(r.inward*100).toFixed(0)}%・對抗強度:${mode==='ripping'?'強':'弱'}`+
+    (drift?'<br><span class="warn">⚠ 撕痕跑向周邊(runs downhill)— shearing 救不回來!</span>':'');
+  requestAnimationFrame(loop);
+}
+setMode('ripping'); reset(); loop();
+</script>
+</body>
+</html>

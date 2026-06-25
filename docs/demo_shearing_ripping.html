@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shearing vs Ripping — 瓣膜翻面與法線 3D Demo</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;background:#0f1420;color:#e6e9ef}
+  #app{position:fixed;inset:0}
+  #panel{position:absolute;top:12px;left:12px;width:330px;background:rgba(20,26,40,.92);
+         border:1px solid #2a3550;border-radius:10px;padding:14px 16px;font-size:13px;line-height:1.55;backdrop-filter:blur(4px)}
+  #panel h1{font-size:15px;margin:0 0 8px}
+  .row{display:flex;gap:8px;margin:10px 0}
+  button{flex:1;padding:8px;border:0;border-radius:7px;cursor:pointer;font-size:13px;font-weight:600;color:#fff}
+  .bRip{background:#1f9d57}.bShr{background:#d9822b}
+  input[type=range]{width:100%}
+  .ind{font-size:18px;font-weight:800;padding:8px 10px;border-radius:8px;text-align:center;margin-top:6px}
+  .legend span{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:6px;vertical-align:middle}
+  .muted{color:#9aa6c0;font-size:12px}
+  code{background:#222b42;padding:1px 5px;border-radius:4px}
+  #foldval{font-weight:700;color:#ffd479}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="panel">
+  <h1>Shearing vs Ripping — 瓣膜翻面與法線</h1>
+  <div class="muted">滑鼠拖曳可旋轉視角、滾輪縮放。拉下面的滑桿改變「對折角度」,看黃色法線翻轉。</div>
+
+  <div class="ind" id="indicator">—</div>
+
+  <div class="row">
+    <button class="bRip" onclick="setFold(45)">Ripping(掀起 45°)</button>
+    <button class="bShr" onclick="setFold(180)">Shearing(對折 180°)</button>
+  </div>
+  <div class="muted">對折角度 Fold = <span id="foldval">45</span>°(0=平貼晶體面,90=直立,180=完全對折)</div>
+  <input type="range" id="fold" min="0" max="180" value="45" step="1" oninput="setFold(this.value)">
+
+  <div style="margin-top:12px" class="legend">
+    <div><span style="background:#e74c3c"></span>內表面 inner(原本朝向晶體)</div>
+    <div><span style="background:#3498db"></span>外表面 outer(原本朝向角膜)</div>
+    <div><span style="background:#ffd479"></span>瓣膜法線(釘在<b>外表面</b>)</div>
+    <div><span style="background:#2ecc71"></span>晶體面外向法線(永遠朝外/朝上)</div>
+  </div>
+
+  <div class="muted" style="margin-top:10px" id="explain"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+const DEG = Math.PI/180;
+let scene, camera, renderer, controls;
+let group, flapArrow, foldDeg = 45;
+
+function makeLabel(text, color){
+  const c = document.createElement('canvas'); c.width=256; c.height=64;
+  const ctx = c.getContext('2d');
+  ctx.font = 'bold 34px "Microsoft JhengHei",sans-serif';
+  ctx.fillStyle = color; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(text, 128, 34);
+  const tex = new THREE.CanvasTexture(c);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({map:tex, transparent:true, depthTest:false}));
+  sp.scale.set(1.4,0.35,1);
+  return sp;
+}
+
+function init(){
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0f1420);
+
+  camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.1, 100);
+  camera.position.set(3.5, 3.2, 4.5);
+
+  renderer = new THREE.WebGLRenderer({antialias:true});
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.setPixelRatio(devicePixelRatio);
+  document.getElementById('app').appendChild(renderer.domElement);
+
+  controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.target.set(0, 0.4, 0);
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+  const dl = new THREE.DirectionalLight(0xffffff, 0.7); dl.position.set(4,8,5); scene.add(dl);
+
+  // ── 晶體面 (lens surface) + 還黏著的囊膜:水平灰面 ──
+  const lens = new THREE.Mesh(
+    new THREE.PlaneGeometry(5,5),
+    new THREE.MeshStandardMaterial({color:0x8a93a8, roughness:1, side:THREE.DoubleSide, transparent:true, opacity:0.85})
+  );
+  lens.rotation.x = -90*DEG; scene.add(lens);
+
+  // 晶體本體(下方圓頂,只是示意)
+  const dome = new THREE.Mesh(
+    new THREE.SphereGeometry(2.4, 40, 24, 0, Math.PI*2, Math.PI/2, Math.PI/2),
+    new THREE.MeshStandardMaterial({color:0x5b6478, roughness:1})
+  );
+  dome.position.y = -0.02; scene.add(dome);
+
+  // 晶體面外向法線(綠,永遠朝上=背離晶體)
+  scene.add(new THREE.ArrowHelper(new THREE.Vector3(0,1,0), new THREE.Vector3(1.7,0,0), 1.3, 0x2ecc71, 0.3, 0.18));
+  const gl = makeLabel('晶體面法線', '#2ecc71'); gl.position.set(1.7,1.5,0); scene.add(gl);
+  const ll = makeLabel('晶體面 lens surface', '#c4ccdd'); ll.position.set(-1.4,0.05,1.6); scene.add(ll);
+
+  // ── 瓣膜 flap:鉸鏈在原點,繞世界 X 軸旋轉 ──
+  group = new THREE.Group(); scene.add(group);
+
+  const geo = new THREE.PlaneGeometry(1.8, 2);   // 在 XY 平面,中心在原點
+  const outer = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({color:0x3498db, roughness:.8, side:THREE.FrontSide}));
+  outer.position.set(0,1,0.015);                 // 上移使下緣(鉸鏈)在 y=0;法線朝 +z(外表面)
+  const inner = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({color:0xe74c3c, roughness:.8, side:THREE.FrontSide}));
+  inner.position.set(0,1,-0.015); inner.rotation.y = Math.PI;   // 法線朝 -z(內表面)
+  group.add(outer); group.add(inner);
+
+  // 內 / 外表面標籤(跟著瓣膜轉)
+  const lo = makeLabel('外 outer', '#3498db'); lo.position.set(0,1,0.2); group.add(lo);
+  const li = makeLabel('內 inner', '#e74c3c'); li.position.set(0,1,-0.2); group.add(li);
+
+  // 瓣膜法線箭頭(黃,釘在外表面)
+  flapArrow = new THREE.ArrowHelper(new THREE.Vector3(0,1,0), new THREE.Vector3(0,0,0), 1.3, 0xffd479, 0.3, 0.18);
+  scene.add(flapArrow);
+
+  setFold(45);
+  addEventListener('resize', onResize);
+  animate();
+}
+
+function setFold(v){
+  foldDeg = +v;
+  document.getElementById('fold').value = foldDeg;
+  document.getElementById('foldval').textContent = foldDeg;
+
+  // group 繞 X 軸:rotation.x = (Fold - 90)°
+  group.rotation.x = (foldDeg - 90) * DEG;
+
+  // 外表面法線世界方向 = (0, cosF, sinF);瓣膜中心 = (0, sinF, -cosF)
+  const F = foldDeg * DEG;
+  const nrm = new THREE.Vector3(0, Math.cos(F), Math.sin(F)).normalize();
+  const ctr = new THREE.Vector3(0, Math.sin(F), -Math.cos(F));
+  flapArrow.position.copy(ctr);
+  flapArrow.setDirection(nrm);
+
+  // Indicator:法線 y 分量 = cosF。>0 朝外=Ripping;<0 朝晶體=Shearing
+  const ind = document.getElementById('indicator');
+  const exp = document.getElementById('explain');
+  if (foldDeg < 90){
+    ind.textContent = 'Indicator = RIPPING(撕)';
+    ind.style.background = '#1f9d57';
+    exp.innerHTML = '瓣膜<b>沒翻面</b>(自然方向)→ 內表面(紅)朝向晶體、外表面(藍)朝外 →'
+      + ' 黃色法線<b>朝外、和綠色晶體面法線同向</b>。<br>手感:撕痕大致跟著器械;要圓須往中心拉。';
+  } else if (foldDeg > 90){
+    ind.textContent = 'Indicator = SHEARING(剪)';
+    ind.style.background = '#d9822b';
+    exp.innerHTML = '瓣膜<b>對折翻面</b>→ 內表面(紅)翻到朝上、外表面(藍)朝下貼晶體 →'
+      + ' 黃色法線<b>翻成朝向晶體、和綠色法線反向</b>。<br>手感:只能小幅修正,撕痕跟著器械。';
+  } else {
+    ind.textContent = 'Indicator = 臨界(90°)';
+    ind.style.background = '#566';
+    exp.innerHTML = '法線水平 → 正好在 shearing / ripping 的分界。';
+  }
+}
+
+function onResize(){ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); }
+function animate(){ requestAnimationFrame(animate); controls.update(); renderer.render(scene,camera); }
+init();
+</script>
+</body>
+</html>
