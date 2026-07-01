@@ -40,6 +40,7 @@
 | [docs/11_freetear_remesh_impl.md](docs/11_freetear_remesh_impl.md) | **自由撕囊 demo 實作拆解**:每幀資料流 Layer B(你拉+drift→tip)→ 橋(Attached/切斷)→ Layer A(PBD+折皺)→ Delaunay remesh |
 | [docs/12_inria_fem_lineage.md](docs/12_inria_fem_lineage.md) | **INRIA FEM 路線**:Weber 2006 描述式 → GPU 即時 FEM + 纖維斷裂(Comas 08 → Allard 09 → Dequidt 13) |
 | [docs/13_modern_ai_ccc.md](docs/13_modern_ai_ccc.md) | **現代 AI 撕囊影片分析(2023–26)**:Cataract-LMM / Meta Surgery / meta-analysis + 資料集對照 + SurgeryOCR 三缺口 |
+| [docs/14_dequidt2013_vs_demo.md](docs/14_dequidt2013_vs_demo.md) | **Dequidt 2013 系統細節 + 本專案 demo 差距分析**:撕裂判定/纖維/FEM/3D/觸覺,及升級路徑 |
 | [references.md](references.md) | 對應論文清單 |
 
 ## 虛擬碼
