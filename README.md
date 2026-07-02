@@ -29,6 +29,7 @@
 |---|---|
 | [docs/overview.md](docs/overview.md) | EyeSi 論文系列脈絡、CCC 醫學背景、本筆記地圖 |
 | [docs/clarifications.md](docs/clarifications.md) | **釐清 FAQ**:element 定義、ECM 夾什麼、兩層解耦、應力觸發 |
+| [docs/weber2009_reading_guide.md](docs/weber2009_reading_guide.md) | **Weber 2009 博論逐章導讀**(中德對照 + 教學,隨進度累積;目前 §1 導論、§2 EYESi) |
 
 **`engines/` — 變形引擎基礎**
 | 文件 | 內容 |
@@ -45,6 +46,7 @@
 | [1_tearing_descriptive](docs/ccc_method/1_tearing_descriptive.md) | **Indicator 描述式撕裂**(shearing/ripping)= 2006 |
 | [2_topological_remesh](docs/ccc_method/2_topological_remesh.md) | **拓樸改變**:remeshing(collapse/split/Delaunay)、Attached 旗標 |
 | [3_weber2009_physical](docs/ccc_method/3_weber2009_physical.md) | **Weber 2009 物理版**(應力→位置/應變→方向)+ 逐圖走查 + 與 2006 差異 + 術語表 |
+| [4_inria_fiber_fracture](docs/ccc_method/4_inria_fiber_fracture.md) | **INRIA 纖維 FEM 撕囊**:為何 argmax c 準則是對的(三層邏輯)+ Allard/Comas/Dequidt 三篇實作分工 + SofaCUDA 實現流程 |
 
 **`implementation/` — 架構與 demo 實作**
 | 文件 | 內容 |
