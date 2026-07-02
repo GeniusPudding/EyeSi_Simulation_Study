@@ -43,6 +43,7 @@
 | [docs/14_dequidt2013_vs_demo.md](docs/14_dequidt2013_vs_demo.md) | **Dequidt 2013 系統細節 + 本專案 demo 差距分析**:撕裂判定/纖維/FEM/3D/觸覺,及升級路徑 |
 | [docs/15_weber2006_citation_map.md](docs/15_weber2006_citation_map.md) | **Weber 2006 引用關係圖 + 後續延伸**:焦點 Weber 2009 博論(描述式→物理式)、Peter 2024 ICRA(FEM+RL)、A–D 分類 |
 | [docs/16_inria_fem_realtime_digest.md](docs/16_inria_fem_realtime_digest.md) | **INRIA 脈絡 + 「FEM 為何能即時」精簡版**:KU=F、顯式vs隱式、TLED、co-rotational、matrix-free 撕裂、SofaCUDA、開源現況 |
+| [docs/17_weber2009_physical_method.md](docs/17_weber2009_physical_method.md) | **Weber 2009 物理版撕裂方法(中英夾雜精讀)**:斷裂準則(應力→位置/應變→方向/長度)、兩種拓樸法、撕囊模組、器械模型、與 2006 逐項差異、德英中術語表 |
 | [references.md](references.md) | 對應論文清單 |
 
 ## 虛擬碼
