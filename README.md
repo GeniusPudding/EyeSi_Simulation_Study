@@ -41,6 +41,8 @@
 | [docs/12_inria_fem_lineage.md](docs/12_inria_fem_lineage.md) | **INRIA FEM 路線**:Weber 2006 描述式 → GPU 即時 FEM + 纖維斷裂(Comas 08 → Allard 09 → Dequidt 13) |
 | [docs/13_modern_ai_ccc.md](docs/13_modern_ai_ccc.md) | **現代 AI 撕囊影片分析(2023–26)**:Cataract-LMM / Meta Surgery / meta-analysis + 資料集對照 + SurgeryOCR 三缺口 |
 | [docs/14_dequidt2013_vs_demo.md](docs/14_dequidt2013_vs_demo.md) | **Dequidt 2013 系統細節 + 本專案 demo 差距分析**:撕裂判定/纖維/FEM/3D/觸覺,及升級路徑 |
+| [docs/15_weber2006_citation_map.md](docs/15_weber2006_citation_map.md) | **Weber 2006 引用關係圖 + 後續延伸**:焦點 Weber 2009 博論(描述式→物理式)、Peter 2024 ICRA(FEM+RL)、A–D 分類 |
+| [docs/16_inria_fem_realtime_digest.md](docs/16_inria_fem_realtime_digest.md) | **INRIA 脈絡 + 「FEM 為何能即時」精簡版**:KU=F、顯式vs隱式、TLED、co-rotational、matrix-free 撕裂、SofaCUDA、開源現況 |
 | [references.md](references.md) | 對應論文清單 |
 
 ## 虛擬碼
