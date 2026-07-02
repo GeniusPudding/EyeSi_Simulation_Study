@@ -1,9 +1,9 @@
-# 11 — 自由撕囊 demo 的實作(Layer B → 橋 → Layer A → remesh)
+# 自由撕囊 demo 的實作(Layer B → 橋 → Layer A → remesh)
 
-對應檔案:[`demo_remesh_attached.html`](demo_remesh_attached.html)
+對應檔案:[`demo_remesh_attached.html`](../demo_remesh_attached.html)
 這份說明把該 demo 的每一幀流程拆開,逐段對到程式裡的變數/函式。它是把
-[`demo_decoupling_tear`](demo_decoupling_tear.html)(只有 Layer B 軌跡)接上**真網格 + Layer A + Attached + Delaunay 重網格**的完整版,忠於
-**Weber, Wagner & Männer 2006**(見 [`06`](06_ccc_tearing.md)、[`07`](07_topological_changes.md))。
+[`demo_decoupling_tear`](../demo_decoupling_tear.html)(只有 Layer B 軌跡)接上**真網格 + Layer A + Attached + Delaunay 重網格**的完整版,忠於
+**Weber, Wagner & Männer 2006**(見 [`06`](../ccc_method/1_tearing_descriptive.md)、[`07`](../ccc_method/2_topological_remesh.md))。
 
 ---
 
@@ -128,13 +128,13 @@ for (it = 0..4) {
 - **PBD = 用「直接搬位置」取代「施力」**:沒有彈力、沒有能量儲存 → 比純彈簧穩定。迭代次數 = 剛度(多=硬、少=軟,這裡用 5,偏軟好折皺)。
 - 安全網:NaN 防護 + 節點數上限,防極端情況炸到無限遠(平常無感)。
 
-> 為何只算脫離節點?因為**整片囊膜大多是 Attached(凍結、免費)**,只有撕到的那一小坨要算 → 即時的關鍵(撕到哪、算到哪)。見 [`07`](07_topological_changes.md)。
+> 為何只算脫離節點?因為**整片囊膜大多是 Attached(凍結、免費)**,只有撕到的那一小坨要算 → 即時的關鍵(撕到哪、算到哪)。見 [`07`](../ccc_method/2_topological_remesh.md)。
 
 ---
 
 ## 4. Delaunay 重網格:flip / split / collapse(維持品質)
 
-膜被拉變形、撕痕穿過時,三角形會變爛 → 每幀沿著變形處整理(論文 §3.2,Nienhuys 法,見 [`07`](07_topological_changes.md)):
+膜被拉變形、撕痕穿過時,三角形會變爛 → 每幀沿著變形處整理(論文 §3.2,Nienhuys 法,見 [`07`](../ccc_method/2_topological_remesh.md)):
 
 | 函式 | 動作 | 觸發條件 |
 |---|---|---|
@@ -173,4 +173,4 @@ Layer A(物理)  脫離節點 Verlet + 折皺 + PBD 約束       ← 只算一�
    +  Delaunay flip/split/collapse 維持網格
 ```
 - **解耦**讓即時(≥30Hz)與逼真兼得。
-- 對照:[`demo_decoupling_tear`](demo_decoupling_tear.html) 只有 Layer B;[`demo_shearing_ripping`](demo_shearing_ripping.html) 是 Fig 3 的側視 3D 折疊;本檔是 Fig 2 / §3.2 的俯視完整實作。
+- 對照:[`demo_decoupling_tear`](../demo_decoupling_tear.html) 只有 Layer B;[`demo_shearing_ripping`](../demo_shearing_ripping.html) 是 Fig 3 的側視 3D 折疊;本檔是 Fig 2 / §3.2 的俯視完整實作。

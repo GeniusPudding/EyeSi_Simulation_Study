@@ -1,4 +1,4 @@
-# 08 — 系統架構:兩層整合、Node+Connector、vrmDesign → SOFA
+# 系統架構:兩層整合、Node+Connector、vrmDesign → SOFA
 
 來源:Schill 2001 Ch5(vrmDesign);Weber 2006(兩層);現代對應 SOFA。
 

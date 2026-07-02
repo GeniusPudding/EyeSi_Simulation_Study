@@ -1,4 +1,4 @@
-# 03 — ChainMail / Enhanced ChainMail:數學 → 虛擬碼 → 真實度
+# ChainMail / Enhanced ChainMail:數學 → 虛擬碼 → 真實度
 
 來源:Schill 2001 Ch4(ChainMail by Gibson 1997;ECM 為 Schill 的貢獻)。
 **一句話**:不算力,用**幾何規則「夾位置」**——把鄰居夾回它和你的合法距離內,一個 pass 傳播完。

@@ -1,4 +1,4 @@
-# 00 — 總覽:EyeSi 論文系列脈絡與 CCC 背景
+# 總覽:EyeSi 論文系列脈絡與 CCC 背景
 
 ## EyeSi 是什麼
 
@@ -60,7 +60,7 @@ Schill 引擎 ──► Wagner 外殼 ──► Jakubik 白內障模組
 
 - **③ Weber, Wagner & Männer 2006 — Simulation of the CCC Procedure ⭐⭐ 主藍圖**
   撕囊最完整的演算法。關鍵設計=**解耦兩層**:囊膜變形(mass-spring,次要)⊥ 撕裂傳播(描述式,核心)。撕痕方向在**切平面**上由 CurrDir+PullDir+DriftDir 合成,**Indicator** 區分 shearing/ripping;拓樸用 **Delaunay remesh**(split/collapse/flip)+ **Attached 旗標**讓膜瓣長大。
-  → **你 CCC 實作的主要範本**(Mannheim 團隊,接上群組一血脈)。見 [`06_ccc_tearing.md`](06_ccc_tearing.md)。
+  → **你 CCC 實作的主要範本**(Mannheim 團隊,接上群組一血脈)。見 [`06_ccc_tearing.md`](ccc_method/1_tearing_descriptive.md)。
 
 - **④ Karim 2010 — Novel Capsulorhexis Technique Using Shearing Forces**
   臨床醫師在 EyeSi 模擬器 + 真人眼上示範截囊針剪切力撕囊技巧。
@@ -87,7 +87,7 @@ Webster 04 開山 ──► Webster 05 移到 EYESI ──► Weber 06 完整演
 - **難在哪**:水晶體赤道有**懸韌帶(zonular fibers)**持續張力,使撕痕**傾向往周邊跑(peripheral drift)**,
   而非跟著拉的方向。撕歪 → 延伸到後囊 → 玻璃體脫出 → 嚴重併發症。
 - 兩種控制手法(來自 Seibel《Phacodynamics》):**shearing(剪切)** 與 **ripping(撕扯)**。
-  見 [`06_ccc_tearing.md`](06_ccc_tearing.md)。
+  見 [`06_ccc_tearing.md`](ccc_method/1_tearing_descriptive.md)。
 
 ## 本筆記的兩條主線
 

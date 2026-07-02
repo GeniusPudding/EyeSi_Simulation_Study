@@ -1,6 +1,6 @@
-# 15 — Weber 2006 引用關係圖 + 後續延伸
+# Weber 2006 引用關係圖 + 後續延伸
 
-追蹤「**引用 Weber, Wagner & Männer (2006)** *Simulation of the Continuous Curvilinear Capsulorhexis Procedure*(見 [`06`](06_ccc_tearing.md))且**方法屬於相關延伸**」的論文。
+追蹤「**引用 Weber, Wagner & Männer (2006)** *Simulation of the Continuous Curvilinear Capsulorhexis Procedure*(見 [`06`](../ccc_method/1_tearing_descriptive.md))且**方法屬於相關延伸**」的論文。
 資料來源:OpenAlex(id `W1553707737`)+ Semantic Scholar 引用清單 + 網搜補齊(兩 API 對老 LNCS 章節都漏記,已交叉比對)。
 
 ---
@@ -22,11 +22,11 @@ Webster 2004/2005   CCC 模擬開山(mass-spring + 描述式,由 mesh 受力啟�
         │
         ├─ INRIA 物理路線         Allard/Marchal/Cotin 2009 纖維斷裂
         │                        → Dequidt/Courtecuisse/Comas 2013 SOFA-FEM 白內障訓練
-        │                        → (Le Gouis/Marchal 2017 FEM 撕裂 + haptic)          [docs/12]
+        │                        → (Le Gouis/Marchal 2017 FEM 撕裂 + haptic)          [literature/3_inria_fem_lineage]
         │
-        ├─ 離線 FEM 力學          2020 IOL 偏位 / 2021 裂縫豬眼驗證                      [docs/09]
+        ├─ 離線 FEM 力學          2020 IOL 偏位 / 2021 裂縫豬眼驗證                      [literature/1_lineage_map]
         │
-        └─ AI / 自主手術          Peter et al. 2024 ICRA:FEM 撕裂 + 強化學習           [docs/13]
+        └─ AI / 自主手術          Peter et al. 2024 ICRA:FEM 撕裂 + 強化學習           [literature/6_modern_ai_ccc]
 ```
 
 ---
@@ -71,10 +71,10 @@ Webster 2004/2005   CCC 模擬開山(mass-spring + 描述式,由 mesh 受力啟�
 ### A. 直接引用 + 方法延伸
 | 論文 | 關係 / 方法 |
 |---|---|
-| **Allard, Marchal, Cotin 2009** — Fiber-based Fracture Model for Simulating Soft Tissue Tearing [PDF](https://people.rennes.inria.fr/Maud.Marchal/Publications/AMC09.pdf) | 引 Weber 當描述式對照,提**物理式**纖維斷裂(INRIA)[docs/12] |
-| **Dequidt, Courtecuisse, Comas 2013** — Computer-based training system for cataract surgery | SOFA + GPU 即時 FEM 白內障訓練 [docs/12] |
+| **Allard, Marchal, Cotin 2009** — Fiber-based Fracture Model for Simulating Soft Tissue Tearing [PDF](https://people.rennes.inria.fr/Maud.Marchal/Publications/AMC09.pdf) | 引 Weber 當描述式對照,提**物理式**纖維斷裂(INRIA)[literature/3_inria_fem_lineage] |
+| **Dequidt, Courtecuisse, Comas 2013** — Computer-based training system for cataract surgery | SOFA + GPU 即時 FEM 白內障訓練 [literature/3_inria_fem_lineage] |
 | **Duriez 2013** — Real-time haptic simulation of medical procedures involving deformations…(habilitation) | SOFA 變形/切割/haptic 總整理,收錄撕囊 |
-| **Peter, Peikert, Haide, …, Mathis-Ullrich 2024** — Lens Capsule Tearing in Cataract Surgery using Reinforcement Learning,**ICRA 2024** pp.15501–15508 [IEEE](https://ieeexplore.ieee.org/document/10611714/) · [code](https://github.com/maystroh/RL_cataract) | ⭐ FEM 撕裂當環境 + **RL** 自主/輔助撕囊(KIT)[docs/13 橋] |
+| **Peter, Peikert, Haide, …, Mathis-Ullrich 2024** — Lens Capsule Tearing in Cataract Surgery using Reinforcement Learning,**ICRA 2024** pp.15501–15508 [IEEE](https://ieeexplore.ieee.org/document/10611714/) · [code](https://github.com/maystroh/RL_cataract) | ⭐ FEM 撕裂當環境 + **RL** 自主/輔助撕囊(KIT)[literature/6_modern_ai_ccc 橋] |
 
 ### B. 引用它的綜述(脈絡,非方法延伸)
 - Lam, Sundaraj, Sulaiman (2013) *A Systematic Review of Phacoemulsification Cataract Surgery in VR Simulators*
@@ -85,7 +85,7 @@ Webster 2004/2005   CCC 模擬開山(mass-spring + 描述式,由 mesh 受力啟�
 - **Le Gouis, Marchal, Arnaldi, Gouranton 2017** — *Haptic Rendering of FEM-based Tearing Simulation using Clusterized Collision Detection*,IEEE World Haptics [HAL](https://inria.hal.science/hal-01675134)(Allard/Marchal 纖維斷裂續作)
 
 ### D. 離線 FEM 晶體囊力學(相鄰分支)
-- *A study for lens capsule tearing during capsulotomy by FE simulation* (2021) [PubMed](https://pubmed.ncbi.nlm.nih.gov/33714899/) [docs/09]
+- *A study for lens capsule tearing during capsulotomy by FE simulation* (2021) [PubMed](https://pubmed.ncbi.nlm.nih.gov/33714899/) [literature/1_lineage_map]
 - *A numerical model of capsulorhexis to assess … IOL decentering and tilt* (2020) [ScienceDirect](https://www.sciencedirect.com/science/article/abs/pii/S1751616120307128)
 
 ---
@@ -93,4 +93,4 @@ Webster 2004/2005   CCC 模擬開山(mass-spring + 描述式,由 mesh 受力啟�
 ## 4. 對本 repo 的意義
 - 我們的 `demo_remesh_attached` = **Weber 2006 的「描述式」版本**(Layer B 描述式 + Delaunay + Attached)。
 - **Weber 2009 是它的直接物理式後繼**:方向改由「應變最小」物理計算,drift 降為 fallback。若要做「進階版 demo」,可把 Layer B 換成 2009 的**應變場方向**(需要從 mass-spring 算每個三角形的變形應變)。
-- 演進全景見 [`09`](09_lineage_map.md)、INRIA 物理路線 [`12`](12_inria_fem_lineage.md)、AI 路線 [`13`](13_modern_ai_ccc.md)。
+- 演進全景見 [`09`](1_lineage_map.md)、INRIA 物理路線 [`12`](3_inria_fem_lineage.md)、AI 路線 [`13`](6_modern_ai_ccc.md)。

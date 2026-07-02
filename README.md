@@ -12,38 +12,55 @@
 ## 核心結論先講(TL;DR)
 
 1. **即時手術模擬器必須走「描述式(descriptive)」方法**——純物理 FEM 太慢。
-   見 [`docs/01_modeling_framework.md`](docs/01_modeling_framework.md)。
+   見 [`docs/engines/1_framework.md`](docs/engines/1_framework.md)。
 2. **CCC 模擬的關鍵設計 = 把「撕裂傳播」和「囊膜變形」解耦成兩層**:
    - Layer A 囊膜變形 = **mass-spring**(或 ECM)
    - Layer B 撕裂傳播 = **Indicator 描述式演算法**(shearing/ripping)
-   見 [`docs/06_ccc_tearing.md`](docs/06_ccc_tearing.md)、[`docs/08_architecture.md`](docs/08_architecture.md)。
+   見 [`docs/ccc_method/1_tearing_descriptive.md`](docs/ccc_method/1_tearing_descriptive.md)、[`docs/implementation/1_architecture.md`](docs/implementation/1_architecture.md)。
 3. **三大引擎的取捨**:FEM(準·慢)→ mass-spring(中間)→ ECM(快·穩·可非均質)。
-   見 [`docs/05_comparison.md`](docs/05_comparison.md)。
+   見 [`docs/engines/5_comparison.md`](docs/engines/5_comparison.md)。
 
 ---
 
-## 目錄
+## 目錄(依主題分子目錄)
 
+**入口**
 | 文件 | 內容 |
 |---|---|
-| [docs/00_overview.md](docs/00_overview.md) | EyeSi 論文系列脈絡、CCC 醫學背景、本筆記地圖 |
-| [docs/01_modeling_framework.md](docs/01_modeling_framework.md) | 物理式 vs 描述式、建模金字塔、彈性理論(E、ν) |
-| [docs/02_mass_spring.md](docs/02_mass_spring.md) | **mass-spring**:數學 → 虛擬碼 → 真實度 |
-| [docs/03_chainmail_ecm.md](docs/03_chainmail_ecm.md) | **ChainMail / Enhanced ChainMail**:數學 → 虛擬碼 → 真實度 |
-| [docs/04_fem.md](docs/04_fem.md) | **FEM**:概念、KU=F、為何即時用不了 |
-| [docs/05_comparison.md](docs/05_comparison.md) | FEM / mass-spring / ECM **核心差異 + 真實度對照表** |
-| [docs/06_ccc_tearing.md](docs/06_ccc_tearing.md) | **CCC Indicator 撕裂演算法**(shearing/ripping) |
-| [docs/07_topological_changes.md](docs/07_topological_changes.md) | **拓樸改變**:remeshing(collapse/split/Delaunay)、Attached 旗標 |
-| [docs/08_architecture.md](docs/08_architecture.md) | 兩層架構、Node+Connector、vrmDesign → SOFA |
-| [docs/09_lineage_map.md](docs/09_lineage_map.md) | **文獻關係圖 + 方法演進表**(含 2006 後 PBD / XFEM / FEM 斷裂) |
-| [docs/10_clarifications.md](docs/10_clarifications.md) | **釐清 FAQ**:element 定義、ECM 夾什麼、兩層解耦、應力觸發 |
-| [docs/11_freetear_remesh_impl.md](docs/11_freetear_remesh_impl.md) | **自由撕囊 demo 實作拆解**:每幀資料流 Layer B(你拉+drift→tip)→ 橋(Attached/切斷)→ Layer A(PBD+折皺)→ Delaunay remesh |
-| [docs/12_inria_fem_lineage.md](docs/12_inria_fem_lineage.md) | **INRIA FEM 路線**:Weber 2006 描述式 → GPU 即時 FEM + 纖維斷裂(Comas 08 → Allard 09 → Dequidt 13) |
-| [docs/13_modern_ai_ccc.md](docs/13_modern_ai_ccc.md) | **現代 AI 撕囊影片分析(2023–26)**:Cataract-LMM / Meta Surgery / meta-analysis + 資料集對照 + SurgeryOCR 三缺口 |
-| [docs/14_dequidt2013_vs_demo.md](docs/14_dequidt2013_vs_demo.md) | **Dequidt 2013 系統細節 + 本專案 demo 差距分析**:撕裂判定/纖維/FEM/3D/觸覺,及升級路徑 |
-| [docs/15_weber2006_citation_map.md](docs/15_weber2006_citation_map.md) | **Weber 2006 引用關係圖 + 後續延伸**:焦點 Weber 2009 博論(描述式→物理式)、Peter 2024 ICRA(FEM+RL)、A–D 分類 |
-| [docs/16_inria_fem_realtime_digest.md](docs/16_inria_fem_realtime_digest.md) | **INRIA 脈絡 + 「FEM 為何能即時」精簡版**:KU=F、顯式vs隱式、TLED、co-rotational、matrix-free 撕裂、SofaCUDA、開源現況 |
-| [docs/17_weber2009_physical_method.md](docs/17_weber2009_physical_method.md) | **Weber 2009 物理版撕裂方法(中英夾雜精讀)**:斷裂準則(應力→位置/應變→方向/長度)、兩種拓樸法、撕囊模組、器械模型、與 2006 逐項差異、德英中術語表 |
+| [docs/overview.md](docs/overview.md) | EyeSi 論文系列脈絡、CCC 醫學背景、本筆記地圖 |
+| [docs/clarifications.md](docs/clarifications.md) | **釐清 FAQ**:element 定義、ECM 夾什麼、兩層解耦、應力觸發 |
+
+**`engines/` — 變形引擎基礎**
+| 文件 | 內容 |
+|---|---|
+| [1_framework](docs/engines/1_framework.md) | 物理式 vs 描述式、建模金字塔、彈性理論(E、ν) |
+| [2_mass_spring](docs/engines/2_mass_spring.md) | **mass-spring**:數學 → 虛擬碼 → 真實度 |
+| [3_chainmail_ecm](docs/engines/3_chainmail_ecm.md) | **ChainMail / Enhanced ChainMail** |
+| [4_fem](docs/engines/4_fem.md) | **FEM**:概念、KU=F、為何即時用不了 |
+| [5_comparison](docs/engines/5_comparison.md) | FEM / mass-spring / ECM **核心差異 + 真實度對照** |
+
+**`ccc_method/` — CCC 撕裂方法(核心)**
+| 文件 | 內容 |
+|---|---|
+| [1_tearing_descriptive](docs/ccc_method/1_tearing_descriptive.md) | **Indicator 描述式撕裂**(shearing/ripping)= 2006 |
+| [2_topological_remesh](docs/ccc_method/2_topological_remesh.md) | **拓樸改變**:remeshing(collapse/split/Delaunay)、Attached 旗標 |
+| [3_weber2009_physical](docs/ccc_method/3_weber2009_physical.md) | **Weber 2009 物理版**(應力→位置/應變→方向)+ 逐圖走查 + 與 2006 差異 + 術語表 |
+
+**`implementation/` — 架構與 demo 實作**
+| 文件 | 內容 |
+|---|---|
+| [1_architecture](docs/implementation/1_architecture.md) | 兩層架構、Node+Connector、vrmDesign → SOFA |
+| [2_freetear_demo](docs/implementation/2_freetear_demo.md) | **自由撕囊 demo 實作拆解**:Layer B →(Attached/切斷)→ Layer A → remesh |
+
+**`literature/` — 文獻演進、引用、後續發展**
+| 文件 | 內容 |
+|---|---|
+| [1_lineage_map](docs/literature/1_lineage_map.md) | **文獻關係圖 + 方法演進表**(含 PBD / XFEM / FEM 斷裂) |
+| [2_weber2006_citations](docs/literature/2_weber2006_citations.md) | **Weber 2006 引用地圖 + 後續延伸**(Weber 2009、Peter 2024…) |
+| [3_inria_fem_lineage](docs/literature/3_inria_fem_lineage.md) | **INRIA FEM 路線**(Comas 08 → Allard 09 → Dequidt 13) |
+| [4_inria_fem_realtime](docs/literature/4_inria_fem_realtime.md) | **「FEM 為何能即時」**:TLED / co-rotational / matrix-free / SofaCUDA |
+| [5_dequidt2013_vs_demo](docs/literature/5_dequidt2013_vs_demo.md) | Dequidt 2013 系統細節 + 本專案 demo 差距分析 |
+| [6_modern_ai_ccc](docs/literature/6_modern_ai_ccc.md) | **現代 AI 撕囊影片分析(2023–26)** |
 | [references.md](references.md) | 對應論文清單 |
 
 ## 虛擬碼
@@ -62,7 +79,7 @@
 |---|---|
 | [docs/demo_shearing_ripping.html](docs/demo_shearing_ripping.html) | **3D 互動**:拖曳旋轉 + 滑桿改變瓣膜對折角度,看 shearing/ripping 時「外表面法線」如何翻轉、Indicator 如何切換。直接用瀏覽器開即可(需連網載入 three.js)。 |
 | [docs/demo_decoupling_tear.html](docs/demo_decoupling_tear.html) | **解耦互動**:用滑鼠當器械拉瓣膜,同時看 **Layer A mass-spring 變形**(藍色節點/彈簧)與 **Layer B descriptive 撕裂**(黃線)各自運作;切換 shearing/ripping 觀察撕痕跟隨 vs 跑向周邊(runs downhill)。純 canvas,**離線可用**。 |
-| [docs/demo_remesh_attached.html](docs/demo_remesh_attached.html) | **自由撕囊完整實作**:按住自由拉撕痕(你拉+drift,shearing/ripping 自動判定)→ 撕痕圍出的內側整片 **Attached→FALSE 脫離** → **PBD 整片掀起/折皺** → 撕裂邊即時 **flip/split/collapse**;雙擊換位撕第二條。實作拆解見 [`docs/11`](docs/11_freetear_remesh_impl.md)。純 canvas,**離線可用**。 |
+| [docs/demo_remesh_attached.html](docs/demo_remesh_attached.html) | **自由撕囊完整實作**:按住自由拉撕痕(你拉+drift,shearing/ripping 自動判定)→ 撕痕圍出的內側整片 **Attached→FALSE 脫離** → **PBD 整片掀起/折皺** → 撕裂邊即時 **flip/split/collapse**;雙擊換位撕第二條。實作拆解見 [`implementation/2_freetear_demo`](docs/implementation/2_freetear_demo.md)。純 canvas,**離線可用**。 |
 
 > 重點觀念:**ripping = 瓣膜沒翻面(法線與晶體面法線同向);shearing = 瓣膜對折翻面(法線反向)**。
-> 「法線朝不朝向晶體」會隨你釘在內/外表面而顛倒,所以真正穩健的判準是「瓣膜法線 vs 旁邊還黏著囊膜法線:同向=ripping,反向=shearing」。見 [`docs/06_ccc_tearing.md`](docs/06_ccc_tearing.md)。
+> 「法線朝不朝向晶體」會隨你釘在內/外表面而顛倒,所以真正穩健的判準是「瓣膜法線 vs 旁邊還黏著囊膜法線:同向=ripping,反向=shearing」。見 [`docs/ccc_method/1_tearing_descriptive.md`](docs/ccc_method/1_tearing_descriptive.md)。

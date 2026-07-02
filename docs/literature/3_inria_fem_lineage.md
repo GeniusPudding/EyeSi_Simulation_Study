@@ -1,4 +1,4 @@
-# 11 — INRIA FEM 路線:從 Weber 2006 描述式 → GPU 即時 FEM 撕裂
+# INRIA FEM 路線:從 Weber 2006 描述式 → GPU 即時 FEM 撕裂
 
 2006 之後 CCC 撕裂演算法的主要進展,來自 **INRIA(Alcove / Shacra 組:Cotin, Duriez, Allard, Courtecuisse, Comas…)**。
 他們把白內障手術模擬**從 mass-spring + 描述式,換成「GPU 即時非線性 FEM + 纖維各向異性斷裂」**,並全部建在開源框架 **SOFA** 上。
@@ -39,7 +39,7 @@ SOFA 框架本身:733 (2007 SOFA 開源框架)、734 (2012 SOFA 多模型框架)
 - **問題**:即時組織模擬需要 FEM,但 FEM 慢(要解全域大矩陣)。
 - **方法**:用 Taylor 的 **TLED(Total Lagrangian Explicit Dynamics)**——顯式、節點間無相依 → 天生適合 GPU 平行;再加入 **黏-超彈性(visco-hyperelastic)** 行為。
 - **結果**:GPU 比 CPU **快 1–2 個數量級**,**數萬四面體即時**。
-- **意義**:直接突破「FEM 即時用不了」(見 [`04_fem.md`](04_fem.md))——用 GPU 顯式公式繞過全域矩陣瓶頸。這是 INRIA 敢用 FEM 做撕囊的底氣。
+- **意義**:直接突破「FEM 即時用不了」(見 [`04_fem.md`](../engines/4_fem.md))——用 GPU 顯式公式繞過全域矩陣瓶頸。這是 INRIA 敢用 FEM 做撕囊的底氣。
 
 ### Allard, Marchal & Cotin 2009 — Fiber-based Fracture Model(撕裂核心)
 - **問題**:Weber 用 mass-spring + 特殊彈簧結構(放射/同心)假裝囊膜各向異性;撕囊 remesh 時維持該結構很麻煩。
@@ -47,6 +47,15 @@ SOFA 框架本身:733 (2007 SOFA 開源框架)、734 (2012 SOFA 多模型框架)
   撕裂準則用**沿纖維/橫向兩個應力閾值**,任意方向依夾角內插;撕裂方向 = 讓準則最大者,並用 θ_P 限制與上一步方向的夾角(避免回折)。
 - **退化性質**:設等向(σ̄_F = σ̄_T)→ 退化成經典「最大主應力準則」。是老方法的一般化。
 - **即時化**:鄰域加權平均應力 + 不做 substepping(直接選準則最大方向)。1500 三角形即時。
+
+**斷裂準則數學(式 2–6 精簡)**:每三角形有纖維方向 f、兩個強度門檻 σ̄_F(沿纖維)/σ̄_T(橫向)。
+- 式2 何時撕:`σ_F > σ̄_F 或 σ_T > σ̄_T`。
+- 式5 任意方向 u 的應力 = 應力張量投影到 u(Mohr 轉換):`σ_u = cos²θ·σx + sin²θ·σy + 2sinθcosθ·τxy`。
+- 式6 任意方向 u 的門檻 = 依「u 與 f 夾角」在 σ̄_F、σ̄_T 間內插(u∥f→σ̄_F,u⊥f→σ̄_T;α 控尖銳度)。
+- 式4 準則:`c = (σ_{d⊥}/σ̄_{d⊥}) × H((d·p) − cos θ_P)`,`>1` 就撕。
+  - `σ_{d⊥}` = 垂直於撕痕方向 d 的張應力(把裂縫撐開的那個);÷ 該方向強度 → 比值>1 = 應力超過強度。
+  - `H(...)` 階躍:只允許與上一步方向 p 夾角 ≤ θ_P 的候選(**防回折**)。
+- 撕裂方向 = `argmax_d c`(受 θ_P 約束下,最超過強度的方向)。GPU 引擎原理見 [`4_inria_fem_realtime.md`](4_inria_fem_realtime.md)。
 
 ### Dequidt / Courtecuisse 2013 — Computer-Based Training System(集大成)⭐
 作者:Courtecuisse, Allard, Kerfriden, Bordas, Cotin, Duriez。完整白內障三步驟即時訓練系統。
@@ -76,7 +85,7 @@ SOFA 框架本身:733 (2007 SOFA 開源框架)、734 (2012 SOFA 多模型框架)
 > 加上 Comas 2008 的 **GPU TLED** 讓 FEM 即時,整條路線在「物理真實 + 即時 + 開源可用」三點上同時超越 Weber。
 
 ## 對 CCC 實作的建議
-- **理解原理** → Weber 2006(描述式,最好懂,見 [`06_ccc_tearing.md`](06_ccc_tearing.md))。
+- **理解原理** → Weber 2006(描述式,最好懂,見 [`06_ccc_tearing.md`](../ccc_method/1_tearing_descriptive.md))。
 - **實際實作** → **INRIA 路線**:SOFA + Allard 2009 纖維斷裂 + Comas 2008 GPU FEM;**Dequidt 2013 = 現成完整參考架構**。
 - 兩線互補:Weber 教「撕囊邏輯」,INRIA 給「能跑的現代實作」。
 

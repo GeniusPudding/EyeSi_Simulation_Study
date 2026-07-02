@@ -1,4 +1,4 @@
-# 06 — CCC Indicator 撕裂演算法(shearing / ripping)
+# CCC Indicator 撕裂演算法(shearing / ripping)
 
 來源:**Weber, Wagner & Männer 2006**, "Simulation of the Continuous Curvilinear Capsulorhexis Procedure"
 (整個 CCC 群組裡實作最完整的一篇)。

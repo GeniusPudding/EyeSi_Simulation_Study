@@ -1,4 +1,4 @@
-# 05 — FEM / Mass-Spring / ECM:核心差異 + 真實度對照
+# FEM / Mass-Spring / ECM:核心差異 + 真實度對照
 
 ## 核心差異總表
 

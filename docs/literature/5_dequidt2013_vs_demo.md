@@ -1,7 +1,7 @@
-# 14 — Dequidt 2013 完整系統細節 + 本專案 demo 差距分析
+# Dequidt 2013 完整系統細節 + 本專案 demo 差距分析
 
 Dequidt/Courtecuisse 2013《Computer-Based Training System for Cataract Surgery》是 INRIA 路線的**集大成**
-(見 [`12_inria_fem_lineage.md`](12_inria_fem_lineage.md))。本篇拆解其技術細節,並對照本 repo 的互動 demo,
+(見 [`12_inria_fem_lineage.md`](3_inria_fem_lineage.md))。本篇拆解其技術細節,並對照本 repo 的互動 demo,
 評估「教學級 Weber 路線 demo」離「SOTA 即時模擬器」還差多遠。
 
 ---
@@ -90,4 +90,4 @@ Dequidt/Courtecuisse 2013《Computer-Based Training System for Cataract Surgery�
 
 ## 來源
 - Courtecuisse, Allard, Kerfriden, Bordas, Cotin, Duriez 2013, *Computer-based training system for cataract surgery*(HAL hal-00855821,本機 papers/Dequidt_2013_INRIA_CataractTrainingSystem.pdf)。
-- 相關:Comas 2008(GPU FEM)、Allard 2009(纖維斷裂)、Comas 2010(Shell/IOL)—見 [`12_inria_fem_lineage.md`](12_inria_fem_lineage.md)。
+- 相關:Comas 2008(GPU FEM)、Allard 2009(纖維斷裂)、Comas 2010(Shell/IOL)—見 [`12_inria_fem_lineage.md`](3_inria_fem_lineage.md)。

@@ -1,4 +1,4 @@
-# 09 — 文獻關係圖 + 方法演進表
+# 文獻關係圖 + 方法演進表
 
 把整個 repo 的論文串成一條故事線:**醫學術式 → 變形引擎 → CCC 撕裂建模 → 臨床驗證**,
 以及 2006(Weber)之後的後續發展(PBD / XFEM / FEM 斷裂)。
@@ -76,4 +76,4 @@
 > 之後即時端長出 **PBD**、裂縫端長出 **XFEM**、離線端長出 **FEM 斷裂力學**。
 > 本 repo 聚焦 2001–2006 的可即時實作藍圖(docs 01–08),本頁提供其上下游全景。
 
-→ 相關:[`00_overview.md`](00_overview.md)(脈絡)、[`05_comparison.md`](05_comparison.md)(引擎對照)、[`06_ccc_tearing.md`](06_ccc_tearing.md)(撕裂)、[`07_topological_changes.md`](07_topological_changes.md)(remeshing)
+→ 相關:[`00_overview.md`](../overview.md)(脈絡)、[`05_comparison.md`](../engines/5_comparison.md)(引擎對照)、[`06_ccc_tearing.md`](../ccc_method/1_tearing_descriptive.md)(撕裂)、[`07_topological_changes.md`](../ccc_method/2_topological_remesh.md)(remeshing)

@@ -1,9 +1,9 @@
-# 17 — Weber 2009 物理版撕裂方法:技術精讀與 2006 差異
+# Weber 2009 物理版撕裂方法:技術精讀與 2006 差異
 
 > 來源:**Weber, K. (2009).** *Interaktive Echtzeitsimulation deformierbarer Oberflächen für Trainingssysteme in der Augenchirurgie*
 > (Interactive Real-time Simulation of Deformable Surfaces for Training Systems in Eye Surgery). PhD thesis, Univ. Mannheim.
 > 原文 **德文、161 頁、無英文版**(`papers/Weber_2009_PhD_DeformableSurfaces_EyeSurgery.pdf`)。本文為第 5、6、7.1 章的**中英夾雜精讀翻譯 + 技術解讀**。
-> 相關:[`06`](06_ccc_tearing.md)(2006 描述式)、[`11`](11_freetear_remesh_impl.md)(本 repo demo 實作)、[`15`](15_weber2006_citation_map.md)(引用地圖)。
+> 相關:[`06`](1_tearing_descriptive.md)(2006 描述式)、[`11`](../implementation/2_freetear_demo.md)(本 repo demo 實作)、[`15`](../literature/2_weber2006_citations.md)(引用地圖)。
 
 ---
 
@@ -83,6 +83,32 @@ $$\vec a := \vec a + tearLength\cdot\frac{\vec d-\vec a}{|\vec d-\vec a|}$$
 4. **Flippen(翻邊)**:用 **Delaunay 準則**翻邊以提升三角形品質(增大最小角)。⚠️ 但翻邊會**改變 mesh 內力分佈、且在 3D 曲面上會局部翻轉曲率**,所以**只對「當前 Rissregion 的邊」翻**,不大範圍翻。Fig 5.12 顯示:正是靠翻邊,Rissregion 才能「隨尖端在 mesh 中滑行」(前方納入新三角形、後方擠出舊三角形)。
 
 > §5.4.4 那個「新尖端 `~e` 要離對邊至少 ε」的規定,原因就在這:擋路的那條邊必須**先 flip 掉**,Rissregion 才能在尖端前方打開。
+
+#### 2.2.1 逐圖走查(Fig 5.9–5.12)
+
+**Fig 5.9 — Delaunay 翻邊判準(flip criterion)**
+把共享一條邊的兩三角形攤平到同一平面。**該邊「不滿足」Delaunay ⟺ 兩三角形的外接圓各自都把「全部四個頂點」包進去**。翻邊後,每個外接圓只含自身三個頂點 → 滿足;此操作**增大兩三角形的最小角**,產生 well-shaped 三角形。
+> 變形網格要先「攤平 (entfalten)」兩三角形再判,因為 Delaunay 是平面性質。
+
+**Fig 5.10 — 移動尖端 → 刪點 → 切邊(a→b→c→d)**
+- **(a) 出發**:Risskeim 與其 Rissregion(周圍三角形)。斷裂準則(§1.3)算出**深灰三角形**為 Rissdreieck,其中黑點為**新尖端位置**。
+- **(a→b) Bewegung(移動尖端)**:把 Risskeim 移到該黑點。注意:掛在 Risskeim 上的**兩個 Randknoten 共用同一 rest position `~r`**;移動會改變 Risskante `~a−~r` 的方向與長度。**方向被限制只能與 `~a−~r` 成銳角** → 強制「向前」,不會把裂縫邊縮回(尖端不綁器械,縮回不自然)。
+- **(b→c) Löschen(刪點)**:移動後尖端**很靠近** Rissregion 的另一節點;若距離 < 門檻,把該鄰點**移到尖端位置** → 深灰三角形退化成線段 → 連同鄰點一起移除,**不留洞**。
+- **(c→d) Teilung(切邊)**:尖端後方的 Risskante 變長;對「兩個共用 rest position 的 Randknoten 所夾」的三角形套 Delaunay(即使它們不共享實體邊,因為兩 Randknoten rest 位置相同)→ 違反 → **切分 Risskante、生兩個新三角形**。另加**長度門檻**:Risskante 超長就切,保證解析度不隨網格浮動。
+
+**Fig 5.11 — 3D 翻邊的副作用**
+在 3D 可變形曲面上翻一條邊會**局部翻轉曲率**,而且**一條(通常已變形的)彈簧消失、改對另兩個節點施力 → 擾動 mesh 內力分佈**。所以翻邊**要盡量少用**,只在必要處翻。
+
+**Fig 5.12 — Rissregion 靠翻邊「滑行」穿過網格(a→f)**(這是 progressive 的精髓)
+- **(a)** 尖端接近一條邊,但與鄰點距離**未**低於刪點門檻(呼應 §1.4:新尖端與 Rissdreieck 對邊至少留 ε)。
+- **(b)** 裂縫要繼續前進,**擋路的那條邊必須先 flip 掉** → Rissregion 在尖端**前方**打開。
+- **(c)** 尖端繼續前進;後方的三角形邊被拉長,尤其箭頭標的那條。
+- **(d)** 箭頭那條邊 flip → 含箭頭的三角形被**擠出 Rissregion 到後方** → Rissregion 由 7 個三角形降為 6。
+- **(e)** 接著 Risskante 不再滿足 Delaunay → **切分**。
+- **(f)** 再翻兩條邊 → Rissregion 收斂到 4 個三角形。
+- **結論**:**正是翻邊讓 Rissregion 能隨尖端「滑行」**——前方納入新三角形、後方擠出舊三角形。因此演算法**只對「當前 Rissregion 的邊」做 Delaunay 檢查/翻邊**(不大範圍翻,兼顧 Fig 5.11 的內力/曲率顧慮)。
+
+> 一句話串起來:**移動(向前銳角約束)→ 擋路邊 flip 讓前方開路 → 後方邊被拉長後 flip 擠出、Risskante 過長則 split → 太近的點 collapse**。四個操作協同,讓單一裂縫沿任意路徑平滑穿過三角網,且三角形數幾乎不膨脹。
 
 ### 2.3 裂縫生成/結束(§5.5.4)
 - **在邊界生成**:Randknoten 被選為 Rissknoten → 調整一條邊 → 沿該邊**完全切開、把 Rissknoten 與該邊加倍 (verdoppeln)**,在原內部節點處生出新 Risskeim。(Randknoten 須至少掛兩三角形。)
@@ -168,7 +194,7 @@ $$\vec a := \vec a + tearLength\cdot\frac{\vec d-\vec a}{|\vec d-\vec a|}$$
 ---
 
 ## 7. 對本 repo 的升級路徑
-- 現況:`demo_remesh_attached` = **2006 描述式**(見 [`11`](11_freetear_remesh_impl.md))。
+- 現況:`demo_remesh_attached` = **2006 描述式**(見 [`11`](../implementation/2_freetear_demo.md))。
 - 升級成 2009 物理版需改 **Layer B**:
   1. 每幀對脫離區的每個三角形算**應變**(現長/原長),尖端周圍取**應變最小**方向(§1.3);
   2. 節點應力 `s(k)`(§1.2)決定何處/是否延伸;長度 ∝ 應力(§1.4);
