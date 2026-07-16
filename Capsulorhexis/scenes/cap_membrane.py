@@ -110,6 +110,17 @@ CONTACT_DISTANCE = 0.20 * G.EDGE_LEN
 # DRAG SMOOTHLY; a hard flick is a single huge penalty impulse no stiffness value fixes.
 MOUSE_STIFFNESS = 1000.0
 
+# --- the safety net that actually stops "一瞬間出現超大三角形" -----------------
+# The mouse attach is a PENALTY spring: F = MOUSE_STIFFNESS * (how far you drag the cursor
+# past the grabbed point). Pull harder = drag further = the force grows with NO LIMIT, so
+# one node gets a huge impulse, flies in a single step, and you see a giant triangle. No
+# stiffness value fixes this (measured: it explodes at 400, 1000 and 2000 alike).
+# So we cap the SYMPTOM instead: no node may ever exceed MAX_SPEED. Normal dragging runs
+# at ~1-3 units/s, so this never touches ordinary use -- it only clips the runaway spike.
+# (The textbook fix is a constraint-based/Lagrangian attach, which needs
+# FreeMotionAnimationLoop + an LCP solver: a much bigger rework.)
+MAX_SPEED = 25.0         # units/s; 0 disables the clamp
+
 # --- AUTOMATIC plasticity: "拉完就不太彈回", no key press needed --------------
 # A purely elastic membrane snaps back to its rest shape the moment you let go. Real
 # tissue/gel does not. So the part that has ALREADY PEELED off the lens slowly adopts
@@ -173,6 +184,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper):
             self.frozen = False
             self.step = 0
             self.last_ks = None
+            self.clamped = 0
 
         def _freeze(self, why):
             self.mo.rest_position.value = self.mo.position.value
@@ -230,6 +242,23 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper):
                 self._report()
             elif k in ("P", "p"):      # print current values
                 self._report()
+
+        def onAnimateEndEvent(self, event):
+            # Velocity clamp: the last line of defence against a runaway node. Runs AFTER
+            # the step, so it clips the spike the solver just produced before it can turn
+            # into a giant triangle next step.
+            if MAX_SPEED <= 0.0:
+                return
+            v = self.mo.velocity.value
+            if len(v) == 0:
+                return
+            speed = np.linalg.norm(v, axis=1)
+            hot = speed > MAX_SPEED
+            if hot.any():
+                v2 = np.array(v, copy=True)
+                v2[hot] *= (MAX_SPEED / speed[hot])[:, None]
+                self.mo.velocity.value = v2
+                self.clamped += int(hot.sum())
 
         def onAnimateBeginEvent(self, event):
             t = self.fem.getContext().getTime()
