@@ -137,6 +137,7 @@ def _make_controller(mo, topo, springs, mass, bending, visual, n_real,
             self.edge_rest = None
             self.tri_arr = None
             self.rest_area = None
+            self._rest_r = None            # per-node REST planar radius (material, never moves)
             self.stopped = False
             self.last_check = -1e9
             self.last_pull_log = -1e9
@@ -200,12 +201,21 @@ def _make_controller(mo, topo, springs, mass, bending, visual, n_real,
                 self.visual.triangles.value = tris.tolist()
             self.springs.reinit(); self.mass.reinit()
             self.edges = None
+            self.adj = None                # topology changed -> adjacency is stale, rebuild
             return spare
 
-        def _annulus_cands(self, P, tip):
-            rc = np.hypot(P[:, 0], P[:, 1])
+        def _annulus_cands(self, tip):
+            # Use the REST planar radius (material coordinate), NOT the deformed position:
+            # under a pull the mesh moves and current r drifts out of [R_MIN,R_MAX], which
+            # made the crack falsely hit a 'boundary' and stop. Rest radius never moves.
+            if self.adj is None:
+                self._build_adj()
+            if self._rest_r is None:
+                R = np.array(self.mo.rest_position.value)
+                self._rest_r = np.hypot(R[:, 0], R[:, 1])
+            rr = self._rest_r
             return [v for v in self.adj.get(tip, ())
-                    if v not in self.crack and v < n_real and TEAR_R_MIN <= rc[v] <= TEAR_R_MAX]
+                    if v not in self.crack and v < n_real and TEAR_R_MIN <= rr[v] <= TEAR_R_MAX]
 
         def _pretear(self, n_steps):
             """Geometrically pre-open n_steps vertices circumferentially (the starting flap)."""
@@ -221,7 +231,7 @@ def _make_controller(mo, topo, springs, mass, bending, visual, n_real,
                 tang = np.array([-rad[1], rad[0], 0.0])
                 if np.dot(tang, P[tip] - P[prev]) < 0:
                     tang = -tang
-                cands = self._annulus_cands(P, tip)
+                cands = self._annulus_cands(tip)
                 if not cands:
                     break
 
@@ -256,7 +266,7 @@ def _make_controller(mo, topo, springs, mass, bending, visual, n_real,
             if wn < 1e-6:
                 return "no_pull"
             want = want / wn
-            cands = self._annulus_cands(P, tip)
+            cands = self._annulus_cands(tip)
             if not cands:
                 self.stopped = True
                 print(f"[Tear] t={t:.2f} reached a boundary; stopping")
