@@ -52,6 +52,10 @@ RIM_FRAC = 0.9
 PRE_TEAR_DEG = 60.0
 
 # --- click-driven tear -------------------------------------------------------
+DRAG_TRIGGER = 0.30        # if a node gets pulled this far from rest, tear toward it -> you can
+                           # DRAG to tear (works with SofaImGui's own mouse pull), not just click
+DIAG = True                # log, every ~0.4s, what YOUR real pull does to the mesh (velocity /
+                           # displacement / force / new mouse nodes / the divergence onset)
 ADVANCE_PER_CLICK = 10     # how many vertices one click tears further along the ring
 CLICK_PLANE_Z = 1.0        # (un-projection is only for a log check; the tear is robust)
 PEEL_LIFT = 0.0            # DISABLED: a kinematic peel (set position, node not fixed) fights
@@ -121,6 +125,9 @@ def _make_controller(mo, topo, springs, mass, visual, cam, n_real, seed_v, v_a, 
             self.peel = []                # (node, target_z) fresh lips being nudged up
             self.last_good = None
             self.lifting = False
+            self.prev_kids = None         # scene-graph children last step (detect mouse grab)
+            self.last_diag = -1e9
+            self.diverged = False
 
         # ---- proven topology helpers -------------------------------------
         def _build_adj(self):
@@ -338,6 +345,17 @@ def _make_controller(mo, topo, springs, mass, visual, cam, n_real, seed_v, v_a, 
                     P = np.array(self.mo.position.value); tip = self.crack[-1]
                     print(f"[Tear] +{n} verts -> tip@r{np.hypot(P[tip,0],P[tip,1]):.1f},"
                           f"{math.degrees(math.atan2(P[tip,1],P[tip,0])):.0f}deg  crack={len(self.pairs)}")
+            # DRAG-to-tear: if you are pulling a node (SofaImGui's own mouse) far enough, tear
+            # the tip toward it -- so a plain drag tears too, not only clicks.
+            elif not self.stopped:
+                P = np.array(self.mo.position.value)
+                R = np.array(self.mo.rest_position.value)
+                disp = np.linalg.norm(P[:n_real] - R[:n_real], axis=1)
+                j = int(np.argmax(disp))
+                if disp[j] > DRAG_TRIGGER:
+                    if self._advance_toward(float(P[j, 0]), float(P[j, 1])):
+                        print(f"[Tear] DRAG pull v{j} (disp={disp[j]:.1f}) -> tip advances, "
+                              f"crack={len(self.pairs)}")
 
         def onAnimateEndEvent(self, event):
             P = np.array(self.mo.position.value)
@@ -403,6 +421,37 @@ def _make_controller(mo, topo, springs, mass, visual, cam, n_real, seed_v, v_a, 
             Pn = np.array(self.mo.position.value)
             if np.isfinite(Pn).all():
                 self.last_good = Pn.tolist()
+
+            # ---- DIAGNOSTIC: what did your REAL pull do to the mesh this step? -----------
+            if DIAG:
+                t = self.mo.getContext().getTime()
+                Vel = np.array(self.mo.velocity.value)
+                sp = np.linalg.norm(Vel[:n_real], axis=1) if Vel.size else np.zeros(1)
+                R = np.array(self.mo.rest_position.value)
+                disp = np.linalg.norm(Pn[:n_real] - R[:n_real], axis=1) if np.isfinite(Pn).all() else np.array([float('inf')])
+                try:
+                    Fv = np.array(self.mo.force.value); fmag = np.linalg.norm(Fv[:n_real], axis=1)
+                except Exception:  # noqa: BLE001
+                    fmag = np.zeros(1)
+                mc = float(np.abs(Pn[:n_real]).max()) if np.isfinite(Pn).all() else float('inf')
+                # a mouse GRAB inserts a transient node into the scene graph -- catch it
+                try:
+                    kids = set(ch.name.value for ch in self.root.children)
+                except Exception:  # noqa: BLE001
+                    kids = set()
+                if self.prev_kids is not None and kids - self.prev_kids:
+                    print(f"[Diag] MOUSE GRAB -- new scene node(s): {kids - self.prev_kids}")
+                self.prev_kids = kids
+                if t - self.last_diag >= 0.4:
+                    self.last_diag = t
+                    print(f"[Diag] t={t:5.1f} maxVel={float(sp.max()):8.1f}@v{int(np.argmax(sp))} "
+                          f"maxForce={float(fmag.max()):9.1f}@v{int(np.argmax(fmag))} "
+                          f"maxDisp={float(disp.max()):6.1f} maxCoord={mc:7.1f}")
+                if mc > 30 and not self.diverged:
+                    self.diverged = True
+                    print(f"[Diag] *** BLOW-UP at t={t:.2f}: maxVel={float(sp.max()):.0f} "
+                          f"maxForce={float(fmag.max()):.0f}@v{int(np.argmax(fmag))} maxCoord={mc:.0f} "
+                          f"<-- this force/vel is the cause; paste this line to me ***")
 
     return _C(name="CapTearClickController")
 
