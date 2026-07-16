@@ -171,6 +171,17 @@ STRESS_NU = 0.3
 # FreeMotionAnimationLoop + an LCP solver: a much bigger rework.)
 MAX_SPEED = 25.0         # units/s; 0 disables the clamp
 
+# STRAIN CLAMP -- stops the membrane crushing into a knot. When the adhesion avalanche
+# unglues the whole sheet, nothing holds its shape, and the mouse spring + self-collision
+# keep cramming it against the lens with no in-plane strain limit, so triangles inflate to
+# 8x-33x their rest area and invert (measured: areaRatio 33, then 3056/4166 dead). A
+# membrane is inextensible-ish, so forbid a node from moving so far that its edges stretch
+# past MAX_STRETCH x rest length: project the offending node back. This is a hard geometric
+# backstop, independent of any stiffness. (The real cure is tearing; until then this keeps
+# the sim from exploding.)
+MAX_STRETCH = 1.6        # an edge may not exceed this multiple of its rest length; 0 = off
+STRAIN_ITERS = 3         # relaxation passes per step
+
 # --- AUTOMATIC plasticity: "拉完就不太彈回", no key press needed --------------
 # A purely elastic membrane snaps back to its rest shape the moment you let go. Real
 # tissue/gel does not. So the part that has ALREADY PEELED off the lens slowly adopts
@@ -283,6 +294,8 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.hot_tri = -1
             self.hot_pos = None
             self.hot_dir = None
+            self.edges = None
+            self.edge_rest = None
             self.base_objs = None      # graph snapshot taken on the first step
             self.grabbing = False
             self.tris = None
@@ -321,6 +334,19 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.last_ks = float(new_ks)
             print(f"[Tune] BEND_STIFFNESS = {float(new_ks):.1f}   "
                   f"(K = stiffer / J = softer; too low -> crumples, too high -> stands rigid)")
+
+        def _build_edges(self):
+            tris = np.array(self.topo.triangles.value)
+            E = set()
+            for a, b, c in tris:
+                for u, v in ((a, b), (b, c), (c, a)):
+                    E.add((min(u, v), max(u, v)))
+            self.edges = np.array(sorted(E), dtype=int) if E else np.zeros((0, 2), int)
+            R = np.array(self.mo.rest_position.value)
+            if len(self.edges):
+                self.edge_rest = np.linalg.norm(R[self.edges[:, 1]] - R[self.edges[:, 0]], axis=1)
+            else:
+                self.edge_rest = np.zeros(0)
 
         def _count_objs(self):
             """Total objects in the graph. The mouse attach adds one while you grab."""
@@ -372,21 +398,45 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 self._report()
 
         def onAnimateEndEvent(self, event):
-            # Velocity clamp: the last line of defence against a runaway node. Runs AFTER
-            # the step, so it clips the spike the solver just produced before it can turn
-            # into a giant triangle next step.
-            if MAX_SPEED <= 0.0:
-                return
-            v = self.mo.velocity.value
-            if len(v) == 0:
-                return
-            speed = np.linalg.norm(v, axis=1)
-            hot = speed > MAX_SPEED
-            if hot.any():
-                v2 = np.array(v, copy=True)
-                v2[hot] *= (MAX_SPEED / speed[hot])[:, None]
-                self.mo.velocity.value = v2
-                self.clamped += int(hot.sum())
+            # (1) Velocity clamp: clip a runaway node's speed before it flies a long way in
+            # one step and becomes a giant triangle.
+            if MAX_SPEED > 0.0:
+                v = self.mo.velocity.value
+                if len(v):
+                    speed = np.linalg.norm(v, axis=1)
+                    hot = speed > MAX_SPEED
+                    if hot.any():
+                        v2 = np.array(v, copy=True)
+                        v2[hot] *= (MAX_SPEED / speed[hot])[:, None]
+                        self.mo.velocity.value = v2
+                        self.clamped += int(hot.sum())
+
+            # (2) Strain clamp: forbid any edge from stretching past MAX_STRETCH x its rest
+            # length, so a triangle can never inflate to 8x-33x area and invert. A few
+            # Gauss-Seidel passes over the over-stretched edges, pulling their endpoints
+            # back along the edge. Rest edge lengths cached once from rest_position.
+            if MAX_STRETCH > 0.0:
+                if self.edges is None:
+                    self._build_edges()
+                if len(self.edges):
+                    P = np.array(self.mo.position.value)
+                    e0, e1 = self.edges[:, 0], self.edges[:, 1]
+                    limit = self.edge_rest * MAX_STRETCH
+                    moved = False
+                    for _ in range(STRAIN_ITERS):
+                        d = P[e1] - P[e0]
+                        L = np.linalg.norm(d, axis=1)
+                        over = L > limit
+                        if not over.any():
+                            break
+                        moved = True
+                        n = d[over] / L[over][:, None]
+                        excess = (L[over] - limit[over])[:, None]
+                        # split the correction between the two endpoints
+                        np.add.at(P, e0[over], 0.5 * excess * n)
+                        np.add.at(P, e1[over], -0.5 * excess * n)
+                    if moved:
+                        self.mo.position.value = P.tolist()
 
         def onAnimateBeginEvent(self, event):
             t = self.fem.getContext().getTime()
