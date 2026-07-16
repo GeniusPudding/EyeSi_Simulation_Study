@@ -197,8 +197,10 @@ STITCH_K = 2500.0        # stiffness holding the slit closed (match EDGE_STIFFNE
 TEAR_T = 3.0             # [s] start tearing the circle
 TEAR_DURATION = 3.0      # [s] to tear all the way around
 LIFT_HEIGHT = 4.5        # how high the freed central disc is lifted
-FIX_OUTER_RIM = True     # hard-anchor the outer ring (zonular fibers) so the
-                         # rim stays put while the central disc tears free
+FIX_OUTER_RIM = False    # NOTHING is clamped -- the membrane just sits on the lens held by the
+                         # breakable adhesion, so you can Shift+left-drag the RIM, lift it and
+                         # fold it over. (True hard-anchors the outer ring; that is the sister
+                         # cap_tear* route, not this free-rim one.)
 
 # --- AUTOMATIC plasticity: "拉完就不太彈回", no key press needed --------------
 # A purely elastic membrane snaps back to its rest shape the moment you let go. Real
