@@ -155,6 +155,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull):
             self.fully_peeled = False
             self.frozen = False
             self.step = 0
+            self.last_ks = None
 
         def _freeze(self, why):
             self.mo.rest_position.value = self.mo.position.value
@@ -169,9 +170,26 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull):
             self.frozen = True
             print(f"[Freeze] {why}: shape frozen; it will now stay deformed")
 
+        def _set_bend(self, new_ks):
+            # TriangularBendingSprings BAKES ks into per-edge data (ei.ks = getKs()), so
+            # changing the Data alone does nothing until reinit() re-reads it.
+            self.bending.stiffness.value = float(new_ks)
+            self.bending.reinit()
+            self.last_ks = float(new_ks)
+            print(f"[Tune] BEND_STIFFNESS = {float(new_ks):.1f}   "
+                  f"(K = stiffer / J = softer; too low -> crumples, too high -> stands rigid)")
+
         def onKeypressedEvent(self, event):
-            if event["key"] in ("F", "f") and not self.frozen:
+            k = event["key"]
+            if k in ("F", "f") and not self.frozen:
                 self._freeze("key F pressed")
+                return
+            # Live-tune the fold stiffness from the keyboard. The SofaImGui component
+            # Data panel segfaults inside ImGui's docking code, so tune it from here.
+            if k in ("K", "k"):
+                self._set_bend(float(self.bending.stiffness.value) * 1.5)
+            elif k in ("J", "j"):
+                self._set_bend(float(self.bending.stiffness.value) / 1.5)
 
         def onAnimateBeginEvent(self, event):
             t = self.fem.getContext().getTime()
@@ -239,8 +257,11 @@ def createScene(root):
     # hanging in mid-air. Small enough that it never peels anything by itself.
     root.gravity = [0.0, 0.0, GRAVITY_Z]
     root.dt = 0.02
+    # Group the ~20 RequiredPlugin entries into one collapsible node, otherwise they
+    # bury the actual components under a long row in the GUI's Scene Graph.
+    _plugins = root.addChild("RequiredPlugins")
     for name in PLUGINS:
-        root.addObject("RequiredPlugin", name=name)
+        _plugins.addObject("RequiredPlugin", name=name)
 
     root.addObject("VisualStyle",
                    displayFlags="showVisual showWireframe showBehaviorModels")
