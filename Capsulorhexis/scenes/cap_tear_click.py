@@ -53,6 +53,11 @@ RIM_FRAC = 0.9
 PRE_TEAR_DEG = 60.0
 
 # --- click-driven tear -------------------------------------------------------
+MAX_MOUSE_REACH = 8.0      # clamp SofaImGui's hidden Mouse TARGET point to within this of the
+                           # scene centre each step -> the spring extension (hence its force)
+                           # is bounded no matter how far you fling the cursor. THIS is what
+                           # actually stops the blow-up (a far drag hit MAX_DISP and spiked the
+                           # spring force to >5e5); stiffness alone could not.
 MOUSE_STIFFNESS_CAP = 250.0 # cap SofaImGui's hidden 'Mouse' attach spring stiffness. Its default
                            # is huge (force >1e6 = the blow-up). 30 was stable but too soft to
                            # see (disp 0.3); 250 pulls visibly and its force (~250 x <=8 = 2000)
@@ -344,8 +349,35 @@ def _make_controller(mo, topo, springs, mass, visual, cam, n_real, seed_v, v_a, 
                 if ch.name.value == "Mouse":
                     walk(ch)
 
+        def _clamp_mouse_reach(self):
+            """Each step, pull SofaImGui's Mouse TARGET point back to within MAX_MOUSE_REACH of
+            the scene centre. The mesh-attached point stays inside the mesh (r<=~7) so it is not
+            touched; only the far cursor point gets clamped -> spring extension (force) bounded
+            -> no divergence however far you drag."""
+            for ch in list(self.root.children):
+                if ch.name.value != "Mouse":
+                    continue
+
+                def walk(node):
+                    for o in list(node.objects):
+                        if o.getClassName() == "MechanicalObject":
+                            try:
+                                Pm = np.array(o.position.value, dtype=float)
+                                if Pm.ndim == 2 and Pm.shape[1] >= 3 and Pm.size:
+                                    r = np.linalg.norm(Pm[:, :3], axis=1)
+                                    far = r > MAX_MOUSE_REACH
+                                    if far.any():
+                                        Pm[far, :3] *= (MAX_MOUSE_REACH / r[far])[:, None]
+                                        o.position.value = Pm.tolist()
+                            except Exception:  # noqa: BLE001
+                                pass
+                    for sub in list(node.children):
+                        walk(sub)
+                walk(ch)
+
         # ---- per step ----------------------------------------------------
         def onAnimateBeginEvent(self, event):
+            self._clamp_mouse_reach()
             Pc = np.array(self.mo.position.value)
             if not np.isfinite(Pc).all():
                 if self.last_good is not None:
