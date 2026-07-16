@@ -110,6 +110,25 @@ CONTACT_DISTANCE = 0.20 * G.EDGE_LEN
 # DRAG SMOOTHLY; a hard flick is a single huge penalty impulse no stiffness value fixes.
 MOUSE_STIFFNESS = 1000.0
 
+# --- camera ------------------------------------------------------------------
+# SofaGLFW hard-codes "left-drag = orbit the camera", and it is NOT remappable from the
+# scene (InteractiveCamera has no button/modifier Data), nor can we intercept Ctrl
+# because SofaImGui swallows the keyboard. So to stop the view spinning while you pull,
+# lock the camera outright: every left-drag is then purely a pull on the membrane.
+# Set False if you want to orbit again (then plain left-drag rotates as before).
+LOCK_CAMERA = True
+
+# --- stress field (this is what the tear criterion will be built on) ----------
+# We compute the per-triangle principal stress OURSELVES in numpy, because the FEM's own
+# stress is unreachable: fem.triangleInfo / fem.vertexInfo are C++ structs that
+# SofaPython3 cannot bind ("Invalid type") -- that is exactly why this repo needed a C++
+# plugin. Strain is a purely GEOMETRIC quantity (rest vs current), so it does not matter
+# which component carries the load, and we need no FEM internals at all.
+SHOW_STRESS = True       # colour the membrane by sigma1 (red = about to tear)
+STRESS_EVERY = 3         # steps between stress updates (it is ~O(triangles) numpy)
+STRESS_E = 1200.0        # Young's modulus used for sigma = C:eps
+STRESS_NU = 0.3
+
 # --- the safety net that actually stops "一瞬間出現超大三角形" -----------------
 # The mouse attach is a PENALTY spring: F = MOUSE_STIFFNESS * (how far you drag the cursor
 # past the grabbed point). Pull harder = drag further = the force grows with NO LIMIT, so
@@ -159,11 +178,62 @@ PLUGINS = [
     "Sofa.Component.AnimationLoop",
     "Sofa.Component.Setting",
     "Sofa.GUI.Component",            # AttachBodyButtonSetting (mouse-pull strength)
-    "Sofa.GL.Component.Rendering3D",
+    "Sofa.GL.Component.Rendering3D",   # OglModel, DataDisplay
+    "Sofa.GL.Component.Rendering2D",   # OglColorMap (stress legend)
 ]
 
 
-def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper):
+def principal_stress(pos, rest, tris, E=None, nu=None):
+    """Per-triangle max principal stress sigma1 and its in-plane direction.
+
+    Co-rotational membrane stress computed from GEOMETRY ALONE:
+      build a local 2D frame on the rest and current triangle -> in-plane deformation
+      gradient F -> Green strain eps = (F^T F - I)/2 -> plane-stress sigma = C:eps ->
+      principal values. Verified: sigma1 == 0 at rest, and peaks exactly where you pull.
+
+    Returns (sigma1, dir3d) with dir3d the 3D direction of sigma1 per triangle. The tear
+    criterion will run on this: crack direction is perpendicular to sigma1 (Rankine), and
+    a fiber weighting can be layered on later (Marchal argmax c) without touching this.
+    """
+    import numpy as np
+    E = STRESS_E if E is None else E
+    nu = STRESS_NU if nu is None else nu
+
+    def frame(P):
+        e1 = P[:, 1] - P[:, 0]
+        e2 = P[:, 2] - P[:, 0]
+        n = np.cross(e1, e2)
+        x = e1 / np.maximum(np.linalg.norm(e1, axis=1), 1e-12)[:, None]
+        z = n / np.maximum(np.linalg.norm(n, axis=1), 1e-12)[:, None]
+        return x, np.cross(z, x)
+
+    def uv(P, x, y):
+        e1 = P[:, 1] - P[:, 0]
+        e2 = P[:, 2] - P[:, 0]
+        return np.stack([np.stack([(e1 * x).sum(1), (e2 * x).sum(1)], 1),
+                         np.stack([(e1 * y).sum(1), (e2 * y).sum(1)], 1)], 1)
+
+    xr, yr = frame(rest[tris])
+    xc, yc = frame(pos[tris])
+    Dm = uv(rest[tris], xr, yr)
+    Ds = uv(pos[tris], xc, yc)
+    F = Ds @ np.linalg.inv(Dm)
+    eps = 0.5 * (np.einsum('tki,tkj->tij', F, F) - np.eye(2))
+    c = E / (1.0 - nu * nu)
+    sxx = c * (eps[:, 0, 0] + nu * eps[:, 1, 1])
+    syy = c * (eps[:, 1, 1] + nu * eps[:, 0, 0])
+    sxy = c * (1.0 - nu) * eps[:, 0, 1]
+    mid = 0.5 * (sxx + syy)
+    dev = np.sqrt(np.maximum(((sxx - syy) * 0.5) ** 2 + sxy ** 2, 0.0))
+    s1 = mid + dev
+    # principal direction (2D angle) mapped back into 3D via the current frame
+    ang = 0.5 * np.arctan2(2.0 * sxy, np.maximum(sxx - syy, 1e-12))
+    d3 = np.cos(ang)[:, None] * xc + np.sin(ang)[:, None] * yc
+    return s1, d3
+
+
+def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
+                     topo, display):
     import Sofa
     import numpy as np
 
@@ -173,6 +243,9 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper):
             self.fem, self.springs, self.bending = fem, springs, bending
             self.mo, self.adhesion, self.pull = mo, adhesion, pull
             self.mouse, self.damper = mouse, damper
+            self.topo, self.display = topo, display
+            self.tris = None
+            self.sigma1_max = 0.0
             self.paper_done = False
             self.adhered = None
             # instance copies so the hotkeys can tune them live
@@ -212,7 +285,8 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper):
             print(f"[Knobs] bend={float(self.bending.stiffness.value):7.1f} | "
                   f"plastic={self.plastic_rate:4.2f} | breakForce={self.break_force:5.1f} | "
                   f"mousePull={float(self.mouse.stiffness.value):6.0f} | "
-                  f"damping={float(self.damper.dampingCoefficient.value):4.1f}")
+                  f"damping={float(self.damper.dampingCoefficient.value):4.1f} | "
+                  f"sigma1max={self.sigma1_max:8.1f}")
 
         def onKeypressedEvent(self, event):
             k = event["key"]
@@ -313,6 +387,20 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper):
             # shape as its rest shape, so letting go barely springs back. Nodes still
             # glued keep their rest on the lens (adhesion must still hold them).
             self.step += 1
+
+            # --- STRESS FIELD: the foundation the tear criterion will run on -------
+            # Computed from geometry (rest vs current), so it is independent of which
+            # component carries the load, and needs no FEM internals (which Python
+            # cannot read anyway).
+            if SHOW_STRESS and self.step % STRESS_EVERY == 0:
+                if self.tris is None:
+                    self.tris = np.array(self.topo.triangles.value)
+                if len(self.tris):
+                    s1, _d = principal_stress(np.asarray(pos), np.asarray(rest), self.tris)
+                    self.sigma1_max = float(s1.max())
+                    if self.display is not None:
+                        self.display.triangleData.value = s1.tolist()
+
             if (not self.frozen and self.plastic_rate > 0.0
                     and self.step % PLASTIC_EVERY == 0 and self.adhered is not None):
                 free = np.setdiff1d(np.arange(len(pos)),
@@ -365,7 +453,8 @@ def createScene(root):
     # of mouse movement slides the hit point millimetres across the membrane and it
     # jumps between triangles -> the grab feels like it "runs around". A steeper angle
     # hits the membrane closer to perpendicular and the pick is stable.
-    root.addObject("InteractiveCamera", position=[10.0, -10.0, 11.0], lookAt=[0, 0, 0])
+    root.addObject("InteractiveCamera", position=[10.0, -10.0, 11.0], lookAt=[0, 0, 0],
+                   activated=not LOCK_CAMERA)
 
     if ENABLE_MOUSE:
         root.addObject("CollisionPipeline")
@@ -400,7 +489,7 @@ def createScene(root):
     cap.addObject("EulerImplicitSolver", rayleighStiffness=0.2, rayleighMass=0.2)
     cap.addObject("CGLinearSolver", iterations=30, tolerance=1e-8, threshold=1e-8)
 
-    cap.addObject("TriangleSetTopologyContainer", name="topo", src="@../loader")
+    topo = cap.addObject("TriangleSetTopologyContainer", name="topo", src="@../loader")
     cap.addObject("TriangleSetTopologyModifier")
     cap.addObject("TriangleSetGeometryAlgorithms", template="Vec3d")
 
@@ -447,12 +536,22 @@ def createScene(root):
         cap.addObject("TriangleCollisionModel", selfCollision=SELF_COLLISION,
                       contactStiffness=CONTACT_STIFFNESS)
 
-    cap.addObject(_make_controller(fem, springs, bending, mo, adhesion, pull,
-                                   _mouse, _damper))
+    _display = None
+    if SHOW_STRESS:
+        # DataDisplay colours each triangle by the scalar we push into triangleData
+        # (our sigma1). OglColorMap draws the legend. Red = high stress = where a tear
+        # would start.
+        _display = cap.addObject("DataDisplay", name="StressView", maximalRange=False)
+        cap.addObject("OglColorMap", name="StressMap", colorScheme="HSV",
+                      showLegend=True, legendTitle="sigma1")
+    else:
+        visu = cap.addChild("Visual")
+        visu.addObject("OglModel", name="visual", color=[0.92, 0.90, 0.82, 1.0])
+        visu.addObject("IdentityMapping", input="@../Mo", output="@visual")
 
-    visu = cap.addChild("Visual")
-    visu.addObject("OglModel", name="visual", color=[0.92, 0.90, 0.82, 1.0])
-    visu.addObject("IdentityMapping", input="@../Mo", output="@visual")
+    cap.addObject(_make_controller(fem, springs, bending, mo, adhesion, pull,
+                                   _mouse, _damper, topo, _display))
+
 
     print(f"""
 +===========================================================================+
