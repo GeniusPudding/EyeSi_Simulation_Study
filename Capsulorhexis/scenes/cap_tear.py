@@ -44,11 +44,15 @@ sys.path.insert(0, _HERE)
 import generate_cap as G   # A, C, Z0, R, EDGE_LEN, _build_raw()
 
 # --- material --------------------------------------------------------------
-YOUNG = 600.0             # in-plane stiffness. Soft enough to be pullable and to gape; the
-                          # area clamp + rollback (not stiffness) are what stop the collapse
-                          # now, so this can come back down from 900 to stay pullable.
+# USE_FEM=False is the ROBUST default: the membrane is carried by mass-spring (edge springs
+# + bending) ALONE, no TriangularFEMForceField. That FEM's co-rotational polar decomposition
+# is what threw 'Null determinant' and vanished the scene on a hard pull; springs never do.
+# The tear criterion still works because sigma1 is computed in numpy from geometry (rest vs
+# current), independent of any force component -- YOUNG below only scales that sigma1.
+USE_FEM = False
+YOUNG = 600.0             # only scales the sigma1 used for the tear threshold now (no FEM)
 POISSON = 0.3
-EDGE_STIFFNESS = 1600.0   # per-edge springs -> triangles keep their size
+EDGE_STIFFNESS = 3000.0   # per-edge springs -> the ONLY in-plane stiffness now, so stiffer
 BEND_STIFFNESS = 8.0      # low = the freed flap folds/peels over instead of standing rigid
 AREA_MIN_FRAC = 0.30      # a triangle may not shrink below this fraction of its rest area
                           # (the collapse/inversion that null-determinants the FEM); clamped
@@ -329,7 +333,9 @@ def _make_controller(mo, topo, fem, springs, mass, visual, n_real, seed_v, v_a, 
             self.topo.triangles.value = tris.tolist()
             if self.visual is not None:
                 self.visual.triangles.value = tris.tolist()
-            self.fem.reinit(); self.springs.reinit(); self.mass.reinit()
+            if self.fem is not None:
+                self.fem.reinit()
+            self.springs.reinit(); self.mass.reinit()
             self.edges = None
             return spare
 
@@ -649,8 +655,8 @@ def createScene(root):
     cap.addObject("TriangleSetGeometryAlgorithms", template="Vec3d")
     mo = cap.addObject("MechanicalObject", name="Mo", position=verts)
     mass = cap.addObject("DiagonalMass", massDensity=1.0)
-    fem = cap.addObject("TriangularFEMForceField", name="FEM", method="large",
-                        youngModulus=YOUNG, poissonRatio=POISSON)
+    fem = (cap.addObject("TriangularFEMForceField", name="FEM", method="large",
+                         youngModulus=YOUNG, poissonRatio=POISSON) if USE_FEM else None)
     springs = cap.addObject("MeshSpringForceField", name="EdgeSprings",
                             linesStiffness=EDGE_STIFFNESS, linesDamping=1.0)
     bending = cap.addObject("TriangularBendingSprings", name="Bending", stiffness=BEND_STIFFNESS)
