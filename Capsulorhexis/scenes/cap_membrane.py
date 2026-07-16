@@ -115,8 +115,14 @@ MOUSE_STIFFNESS = 1000.0
 # scene (InteractiveCamera has no button/modifier Data), nor can we intercept Ctrl
 # because SofaImGui swallows the keyboard. So to stop the view spinning while you pull,
 # lock the camera outright: every left-drag is then purely a pull on the membrane.
-# Set False if you want to orbit again (then plain left-drag rotates as before).
-LOCK_CAMERA = True
+# LOCK_CAMERA = True kills orbiting entirely -- too blunt. Instead we FREEZE THE CAMERA
+# ONLY WHILE YOU ARE PULLING: when you Shift+drag, SOFA's AttachBodyPerformer inserts its
+# interaction spring into the scene graph (BaseAttachBodyPerformer::m_interactionObject),
+# so the controller watches for that object appearing and sets InteractiveCamera.activated
+# False for as long as the grab lasts, then True again. Result: orbit normally, but the
+# view holds still while you pull.
+LOCK_CAMERA = False            # True = never allow orbiting at all
+FREEZE_CAMERA_WHILE_PULLING = True
 
 # --- stress field (this is what the tear criterion will be built on) ----------
 # We compute the per-triangle principal stress OURSELVES in numpy, because the FEM's own
@@ -239,7 +245,7 @@ def principal_stress(pos, rest, tris, E=None, nu=None):
 
 
 def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
-                     topo, display):
+                     topo, display, camera, root):
     import Sofa
     import numpy as np
 
@@ -250,6 +256,9 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.mo, self.adhesion, self.pull = mo, adhesion, pull
             self.mouse, self.damper = mouse, damper
             self.topo, self.display = topo, display
+            self.camera, self.root = camera, root
+            self.base_objs = None      # graph snapshot taken on the first step
+            self.grabbing = False
             self.tris = None
             self.sigma1_max = 0.0
             self.paper_done = False
@@ -286,6 +295,19 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.last_ks = float(new_ks)
             print(f"[Tune] BEND_STIFFNESS = {float(new_ks):.1f}   "
                   f"(K = stiffer / J = softer; too low -> crumples, too high -> stands rigid)")
+
+        def _count_objs(self):
+            """Total objects in the graph. The mouse attach adds one while you grab."""
+            n = 0
+            stack = [self.root]
+            while stack:
+                nd = stack.pop()
+                try:
+                    n += len(nd.objects)
+                    stack.extend(list(nd.children))
+                except Exception:  # noqa: BLE001
+                    pass
+            return n
 
         def _report(self):
             print(f"[Knobs] bend={float(self.bending.stiffness.value):7.1f} | "
@@ -394,6 +416,21 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             # glued keep their rest on the lens (adhesion must still hold them).
             self.step += 1
 
+            # --- freeze the camera ONLY while you are actually pulling --------------
+            # Shift+drag makes AttachBodyPerformer insert its interaction spring into the
+            # graph; that new object is our "a grab is in progress" signal. We cannot read
+            # the mouse directly (SofaPython3 does not bind onMouseEvent) and the
+            # left-drag=orbit binding is hard-coded in SofaGLFW, so this is the way to
+            # stop the view spinning out from under you mid-pull.
+            if FREEZE_CAMERA_WHILE_PULLING and not LOCK_CAMERA and self.camera is not None:
+                now = self._count_objs()
+                if self.base_objs is None:
+                    self.base_objs = now
+                grabbing = now > self.base_objs
+                if grabbing != self.grabbing:
+                    self.grabbing = grabbing
+                    self.camera.activated.value = not grabbing
+
             # --- STRESS FIELD: the foundation the tear criterion will run on -------
             # Computed from geometry (rest vs current), so it is independent of which
             # component carries the load, and needs no FEM internals (which Python
@@ -459,7 +496,7 @@ def createScene(root):
     # of mouse movement slides the hit point millimetres across the membrane and it
     # jumps between triangles -> the grab feels like it "runs around". A steeper angle
     # hits the membrane closer to perpendicular and the pick is stable.
-    root.addObject("InteractiveCamera", position=[10.0, -10.0, 11.0], lookAt=[0, 0, 0],
+    _camera = root.addObject("InteractiveCamera", position=[10.0, -10.0, 11.0], lookAt=[0, 0, 0],
                    activated=not LOCK_CAMERA)
 
     if ENABLE_MOUSE:
@@ -556,7 +593,7 @@ def createScene(root):
         visu.addObject("IdentityMapping", input="@../Mo", output="@visual")
 
     cap.addObject(_make_controller(fem, springs, bending, mo, adhesion, pull,
-                                   _mouse, _damper, topo, _display))
+                                   _mouse, _damper, topo, _display, _camera, root))
 
 
     print(f"""
