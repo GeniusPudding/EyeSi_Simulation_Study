@@ -51,12 +51,15 @@ BEND_STIFFNESS = 15.0     # low = the freed flap folds over instead of standing 
 DAMPING = 2.0
 LENS_REPULSION = 2000.0   # analytic lens obstacle (do NOT raise -> penalty blow-up)
 MAX_STRETCH = 1.6         # hard edge-length cap (keeps the mesh from crushing)
+MAX_SPEED = 25.0          # hard per-node velocity cap: a hard mouse yank is one big penalty
+                          # impulse that would otherwise blow a triangle up mid-step (NaN,
+                          # "picture vanished"); clamping speed absorbs it. 0 disables.
 
 # --- tear rule --------------------------------------------------------------
 # sigma1 ~= YOUNG * local strain, so 90/1200 ~= 7.5% local stretch at the tip triggers a
 # step. Lowered from 180 so a GENTLE mouse pull can drive the crack (the scripted symmetric
 # lift used to slam sigma1 past 1000, which hid how high 180 really was for hand pulling).
-STRESS_THRESHOLD = 90.0
+STRESS_THRESHOLD = 45.0
 TEAR_CHECK_DT = 0.12      # [s] between tip-advance checks
 TEAR_SETTLE_T = 0.8       # [s] no tearing before this -> the mesh settles on load-in first
                           # (otherwise a startup transient at the pinned seed tears once)
@@ -75,6 +78,9 @@ TEAR_SETTLE_T = 0.8       # [s] no tearing before this -> the mesh settles on lo
 #             stress -> the crack follows the patch, NOT a circle. Used to prove the point
 #             headlessly (no mouse needed).
 PULL_MODE = "mouse"
+NICK_RADIUS = 5.0         # the initial nick (cystotome puncture) sits at this planar radius
+                          # -- inside the fixed rim, in the operating region, so a forceps
+                          # pull can actually stress the tip (a rim-pinned seed cannot tear)
 LIFT_RADIUS = 4.5         # "disc" mode: nodes with planar r < this get lifted
 LIFT_HEIGHT = 6.0         # "disc"/"patch" pull height (+z)
 PULL_START_T = 1.0
@@ -165,22 +171,29 @@ def _geometry():
     rim = [i for i in range(n_real) if r[i] > RIM_FRAC * G.R]
     disc = [i for i in range(n_real) if r[i] < LIFT_RADIUS]
 
-    # Seed the crack at a RIM vertex (an open boundary -> a clean half-fan to split) and
-    # its most-inward neighbour. Pick the rim vertex near angle 180 deg so the crack has
-    # the whole cap to run across.
+    # Seed the crack as an INTERIOR nick near r=NICK_RADIUS, angle 0 -- well inside the
+    # fixed rim, in the operating region, where a hand pull can actually stress the tip.
+    # (Seeding on the fixed rim is why it was un-tearable: a pinned tip never reaches the
+    # sigma1 threshold no matter how hard you pull.) seed_v is the nick centre; v_a and v0
+    # are two opposite neighbours -- the controller opens the closed fan along the line
+    # v_a - seed_v - v0 into a slit, making v0 a real crack tip.
     adj = {}
     for a, b, c in faces:
         for u, v in ((a, b), (b, c), (c, a)):
             adj.setdefault(u, set()).add(v)
             adj.setdefault(v, set()).add(u)
     ang = np.arctan2(P[:, 1], P[:, 0])
-    start_b = min(rim, key=lambda i: abs((ang[i] - math.pi + math.pi) % (2 * math.pi) - math.pi))
-    # inward neighbour = neighbour with the smallest planar radius
-    start_tip = min((v for v in adj[start_b] if v < n_real), key=lambda v: r[v])
-    return verts, faces, n_real, rim, disc, start_b, start_tip
+    cand = [i for i in range(n_real) if abs(r[i] - NICK_RADIUS) < 0.5 and abs(ang[i]) < 0.35]
+    if not cand:
+        cand = [min(range(n_real), key=lambda i: abs(r[i] - NICK_RADIUS) + abs(ang[i]))]
+    seed_v = min(cand, key=lambda i: abs(r[i] - NICK_RADIUS))
+    nb = [v for v in adj[seed_v] if v < n_real]
+    v_a = max(nb, key=lambda v: P[v, 1] - P[seed_v, 1])   # neighbour toward +y
+    v0 = min(nb, key=lambda v: P[v, 1] - P[seed_v, 1])    # opposite neighbour toward -y
+    return verts, faces, n_real, rim, disc, seed_v, v_a, v0
 
 
-def _make_controller(mo, topo, fem, springs, mass, visual, n_real, start_b, start_tip):
+def _make_controller(mo, topo, fem, springs, mass, visual, n_real, seed_v, v_a, v0):
     import Sofa
     import numpy as np
 
@@ -191,7 +204,9 @@ def _make_controller(mo, topo, fem, springs, mass, visual, n_real, start_b, star
             self.fem, self.springs, self.mass = fem, springs, mass
             self.visual = visual
             self.next_spare = n_real
-            self.crack = [start_b, start_tip]
+            self.crack = [v_a, seed_v]        # prev, tip -- v0 is opened in on the 1st step
+            self.first_fwd = v0
+            self.seeded = False
             self.last_check = -1e9
             self.pairs = []
             self.edges = None
@@ -262,7 +277,23 @@ def _make_controller(mo, topo, fem, springs, mass, visual, n_real, start_b, star
 
         def onAnimateBeginEvent(self, event):
             t = self.mo.getContext().getTime()
-            if self.stopped or t < TEAR_SETTLE_T or t - self.last_check < TEAR_CHECK_DT:
+            if self.stopped:
+                return
+            # One-time: open the interior nick. seed_v's fan is a CLOSED ring; splitting it
+            # along the line v_a - seed_v - v0 turns it into an OPEN slit, so v0 becomes a
+            # real crack tip that a pull can drive. Coincident spare -> nothing moves until
+            # you pull.
+            if not self.seeded:
+                self.seeded = True
+                sp = self._split_tip(self.crack[-1], self.crack[-2], self.first_fwd)
+                if sp is not None:
+                    self.pairs.append((self.crack[-1], sp))
+                    self.crack.append(self.first_fwd)
+                    print(f"[Tear] nick opened at v{self.crack[-2]} (r"
+                          f"={float(np.hypot(*np.array(self.mo.position.value)[self.crack[-2], :2])):.1f}); "
+                          f"Shift+drag the flap near it to tear")
+                return
+            if t < TEAR_SETTLE_T or t - self.last_check < TEAR_CHECK_DT:
                 return
             self.last_check = t
             if self.adj is None:
@@ -322,6 +353,16 @@ def _make_controller(mo, topo, fem, springs, mass, visual, n_real, start_b, star
                   f"crack len={len(self.pairs)} max-gap={max(gaps):.2f}")
 
         def onAnimateEndEvent(self, event):
+            # Velocity clamp first: catch a violent mouse yank before it can blow a triangle
+            # up (an in-plane tear pull is fine; a hard up-yank used to NaN the whole mesh).
+            if MAX_SPEED > 0:
+                Vel = np.array(self.mo.velocity.value)
+                if Vel.size:
+                    sp = np.linalg.norm(Vel, axis=1)
+                    hot = sp > MAX_SPEED
+                    if hot.any():
+                        Vel[hot] *= (MAX_SPEED / sp[hot])[:, None]
+                        self.mo.velocity.value = Vel.tolist()
             if MAX_STRETCH <= 0:
                 return
             if self.edges is None:
@@ -377,7 +418,7 @@ def createScene(root):
                        contactDistance=CONTACT_DISTANCE)
         root.addObject("AttachBodyButtonSetting", stiffness=MOUSE_STIFFNESS, arrowSize=0.3)
 
-    verts, faces, n_real, rim, disc, sb, stip = _geometry()
+    verts, faces, n_real, rim, disc, seed_v, seed_a, seed_fwd = _geometry()
 
     # The lens (visual obstacle the flap folds up over).
     lens = root.addChild("Lens")
@@ -435,7 +476,8 @@ def createScene(root):
     oglm = visu.addObject("OglModel", name="visual", color=[0.9, 0.9, 0.82, 1.0], triangles=faces)
     visu.addObject("IdentityMapping", input="@../Mo", output="@visual")
 
-    cap.addObject(_make_controller(mo, topo, fem, springs, mass, oglm, n_real, sb, stip))
+    cap.addObject(_make_controller(mo, topo, fem, springs, mass, oglm, n_real,
+                                   seed_v, seed_a, seed_fwd))
 
     print("=" * 68)
     print(" cap_tear.py  |  FREE stress-driven tearing (NO hardcoded circle)")
