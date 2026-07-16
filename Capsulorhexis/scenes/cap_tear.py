@@ -44,11 +44,11 @@ sys.path.insert(0, _HERE)
 import generate_cap as G   # A, C, Z0, R, EDGE_LEN, _build_raw()
 
 # --- material --------------------------------------------------------------
-YOUNG = 900.0             # in-plane stiffness. A middle ground: soft enough that the cut
-                          # gapes, stiff enough that a hard mouse yank does not collapse a
-                          # triangle (500 gaped nicely but inverted -> FEM null determinant).
+YOUNG = 600.0             # in-plane stiffness. Soft enough to be pullable and to gape; the
+                          # area clamp + rollback (not stiffness) are what stop the collapse
+                          # now, so this can come back down from 900 to stay pullable.
 POISSON = 0.3
-EDGE_STIFFNESS = 2000.0   # per-edge springs -> triangles keep their size
+EDGE_STIFFNESS = 1600.0   # per-edge springs -> triangles keep their size
 BEND_STIFFNESS = 8.0      # low = the freed flap folds/peels over instead of standing rigid
 AREA_MIN_FRAC = 0.30      # a triangle may not shrink below this fraction of its rest area
                           # (the collapse/inversion that null-determinants the FEM); clamped
@@ -86,9 +86,9 @@ MAX_SPEED = 25.0          # hard per-node velocity cap: a hard mouse yank is one
 # sigma1 ~= YOUNG * local strain, so 90/1200 ~= 7.5% local stretch at the tip triggers a
 # step. Lowered from 180 so a GENTLE mouse pull can drive the crack (the scripted symmetric
 # lift used to slam sigma1 past 1000, which hid how high 180 really was for hand pulling).
-STRESS_THRESHOLD = 10.0    # sigma1 the tip must exceed to advance (sigma1 ~= YOUNG*strain).
-                           # Idle tip sigma1 is ~0, so this stays well clear of auto-tearing;
-                           # with the gain below the real bar is ~5.
+STRESS_THRESHOLD = 7.0     # sigma1 the tip must exceed to advance (sigma1 ~= YOUNG*strain, so
+                           # lowered with YOUNG 900->600). Idle tip sigma1 is ~0, so this
+                           # stays clear of auto-tearing; with the gain the real bar is ~3.5.
 TIP_STRESS_GAIN = 2.0      # a real crack tip has a stress SINGULARITY that a coarse mesh
                            # smears/underestimates; this concentration factor multiplies the
                            # tip sigma1 before the threshold test, so a hand pull tears more
@@ -135,11 +135,9 @@ SHOW_TIP_MARKER = False   # small red dot on the crack tip = where to grab (set 
 PRE_TEAR_DEG = 100.0      # pre-open this much of the tear circle at startup (a visible
                           # starting flap the surgeon already made); 0 = just the nick
 ENABLE_MOUSE = True
-MOUSE_STIFFNESS = 250.0   # Shift+left-drag attach spring. LOW on purpose: force = stiffness x
-                          # drag distance is UNBOUNDED, so dragging the cursor far off-screen
-                          # at high stiffness is a huge impulse that collapses a triangle
-                          # (FEM null determinant -> scene vanishes). Low stiffness caps how
-                          # hard a far drag can pull; tearing is easy anyway (low threshold).
+MOUSE_STIFFNESS = 550.0   # Shift+left-drag attach spring. Back up from 250 (which was too weak
+                          # to pull) now that the area clamp + rollback stop the collapse a
+                          # hard drag used to cause. Drag SMOOTHLY, not a far off-screen yank.
 ALARM_DISTANCE = 0.40 * G.EDGE_LEN
 CONTACT_DISTANCE = 0.20 * G.EDGE_LEN
 
