@@ -35,8 +35,9 @@ sys.path.insert(0, _HERE)
 import generate_cap as G
 
 # --- physics (mass-spring, robust) -------------------------------------------
-EDGE_STIFFNESS = 3000.0
-BEND_STIFFNESS = 8.0
+EDGE_STIFFNESS = 1200.0    # softer than 3000 so your drag visibly LIFTS the flap where you
+                           # pull (at 3000 the pull barely moved it -> "microscopic crack")
+BEND_STIFFNESS = 5.0       # low = the lifted flap folds/peels rather than staying flat
 DAMPING = 1.5
 LENS_REPULSION = 2000.0
 MAX_STRETCH = 1.5
