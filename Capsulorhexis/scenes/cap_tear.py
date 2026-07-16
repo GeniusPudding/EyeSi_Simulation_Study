@@ -436,6 +436,14 @@ def createScene(root):
     visu.addObject("IdentityMapping", input="@../Mo", output="@visual")
 
     cap.addObject(_make_controller(mo, topo, fem, springs, mass, oglm, n_real, sb, stip))
+
+    print("=" * 68)
+    print(" cap_tear.py  |  FREE stress-driven tearing (NO hardcoded circle)")
+    print(f" PULL_MODE={PULL_MODE!r}  threshold={STRESS_THRESHOLD}  mouse={ENABLE_MOUSE}")
+    if PULL_MODE == "mouse":
+        print(" Shift + LEFT-DRAG the flap near the nick (outer edge, ~180deg) to tear.")
+        print(" The crack follows YOUR pull. It prints [Tear] lines (never [Peel]).")
+    print("=" * 68)
     return root
 
 

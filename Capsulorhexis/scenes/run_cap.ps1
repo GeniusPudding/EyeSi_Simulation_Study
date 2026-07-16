@@ -1,11 +1,18 @@
 <#
-    Launch the circular spherical-cap-on-a-ball adhesion-peel demo in the runSofa GUI.
-    Stock SOFA only (no Capsulorhexis.dll). Regenerates cap.obj if missing.
+    Launch the cap-on-lens capsulorhexis demo in the runSofa GUI. Stock SOFA only
+    (no Capsulorhexis.dll). Regenerates the meshes first.
+
+    DEFAULT is cap_tear.py -- the FREE, stress-driven tear: Shift+left-drag the flap and
+    the crack follows YOUR pull (perpendicular-to-sigma1), no hardcoded circle. It prints
+    [Tear] lines (NOT [Peel]/[ClothToPaper] -- those belong to the old scene).
+
+    Old adhesion-peel scene (pre-slit stitch circle, no free tearing):
+        ./scenes/run_cap.ps1 -Scene cap_membrane.py
 
     Usage:  ./scenes/run_cap.ps1
 #>
 [CmdletBinding()]
-param([string]$Scene = "cap_membrane.py")
+param([string]$Scene = "cap_tear.py")
 
 $ErrorActionPreference = "Stop"
 if (-not $env:SOFA_ROOT) { $env:SOFA_ROOT = "C:\SOFA\SOFA_v25.12.00_Win64" }
