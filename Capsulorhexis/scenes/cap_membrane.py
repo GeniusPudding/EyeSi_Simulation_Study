@@ -102,7 +102,10 @@ CONTACT_DISTANCE = 0.20 * G.EDGE_LEN
 # Mouse-pull strength. The GUI's default attach spring is far too weak to beat the
 # adhesion, which is why the membrane felt "拉不動". This spring must be able to lift a
 # node past BREAK_FORCE (= ADHESION_STIFF * break lift), so keep it well above that.
-MOUSE_STIFFNESS = 1000.0
+# BUT it is also a penalty spring (F = stiffness * how far you drag past the node), so
+# too high + a fast drag = the same explosion as LENS_REPULSION=8000 gave. 400 still
+# beats BREAK_FORCE=60 easily. Tune live with M (harder) / H (softer).
+MOUSE_STIFFNESS = 400.0
 
 # --- AUTOMATIC plasticity: "拉完就不太彈回", no key press needed --------------
 # A purely elastic membrane snaps back to its rest shape the moment you let go. Real
@@ -112,8 +115,9 @@ MOUSE_STIFFNESS = 1000.0
 # back. Only peeled nodes creep -- nodes still glued keep their rest ON the lens, so
 # the adhesion still holds them down.
 #   PLASTIC_RATE: 0 = fully elastic (springs back), 1 = instantly plastic (putty).
-PLASTIC_RATE = 0.12      # fraction of the remaining springback forgotten per update
-PLASTIC_EVERY = 5        # steps between plasticity updates (cheap: reinit is O(edges))
+PLASTIC_RATE = 0.35      # fraction of the remaining springback forgotten per update
+PLASTIC_EVERY = 5        # STEPS (not seconds) between plasticity updates -> the creep
+                         # rate is coupled to dt; changing dt changes the plastic feel.
 
 # Pressing F still force-freezes the WHOLE membrane instantly (optional shortcut).
 FREEZE_T = None          # None = never auto-freeze on a timer (creep handles it)
@@ -145,7 +149,7 @@ PLUGINS = [
 ]
 
 
-def _make_controller(fem, springs, bending, mo, adhesion, pull):
+def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper):
     import Sofa
     import numpy as np
 
@@ -154,8 +158,12 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull):
             Sofa.Core.Controller.__init__(self, *a, **k)
             self.fem, self.springs, self.bending = fem, springs, bending
             self.mo, self.adhesion, self.pull = mo, adhesion, pull
+            self.mouse, self.damper = mouse, damper
             self.paper_done = False
             self.adhered = None
+            # instance copies so the hotkeys can tune them live
+            self.plastic_rate = PLASTIC_RATE
+            self.break_force = BREAK_FORCE
             self.break_lift = BREAK_FORCE / ADHESION_STIFF
             self.last_log_t = -1.0
             self.fully_peeled = False
@@ -185,17 +193,40 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull):
             print(f"[Tune] BEND_STIFFNESS = {float(new_ks):.1f}   "
                   f"(K = stiffer / J = softer; too low -> crumples, too high -> stands rigid)")
 
+        def _report(self):
+            print(f"[Knobs] bend={float(self.bending.stiffness.value):7.1f} | "
+                  f"plastic={self.plastic_rate:4.2f} | breakForce={self.break_force:5.1f} | "
+                  f"mousePull={float(self.mouse.stiffness.value):6.0f} | "
+                  f"damping={float(self.damper.dampingCoefficient.value):4.1f}")
+
         def onKeypressedEvent(self, event):
             k = event["key"]
-            if k in ("F", "f") and not self.frozen:
-                self._freeze("key F pressed")
-                return
-            # Live-tune the fold stiffness from the keyboard. The SofaImGui component
-            # Data panel segfaults inside ImGui's docking code, so tune it from here.
-            if k in ("K", "k"):
+            if k in ("F", "f"):
+                if not self.frozen:
+                    self._freeze("key F pressed")
+            # --- live knobs (the SofaImGui Data panel segfaults, so tune from here) ---
+            elif k in ("K", "k"):      # fold stiffness
                 self._set_bend(float(self.bending.stiffness.value) * 1.5)
             elif k in ("J", "j"):
                 self._set_bend(float(self.bending.stiffness.value) / 1.5)
+            elif k in ("O", "o"):      # plasticity: higher = keeps its shape, less recoil
+                self.plastic_rate = min(0.9, self.plastic_rate * 1.4); self._report()
+            elif k in ("I", "i"):
+                self.plastic_rate = max(0.0, self.plastic_rate / 1.4); self._report()
+            elif k in ("N", "n"):      # adhesion threshold: higher = stickier
+                self.break_force *= 1.4
+                self.break_lift = self.break_force / ADHESION_STIFF; self._report()
+            elif k in ("B", "b"):
+                self.break_force /= 1.4
+                self.break_lift = self.break_force / ADHESION_STIFF; self._report()
+            elif k in ("M", "m"):      # mouse pull strength (too high -> explosions)
+                self.mouse.stiffness.value = float(self.mouse.stiffness.value) * 1.4
+                self._report()
+            elif k in ("H", "h"):
+                self.mouse.stiffness.value = float(self.mouse.stiffness.value) / 1.4
+                self._report()
+            elif k in ("P", "p"):      # print current values
+                self._report()
 
         def onAnimateBeginEvent(self, event):
             t = self.fem.getContext().getTime()
@@ -237,7 +268,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull):
             # shape as its rest shape, so letting go barely springs back. Nodes still
             # glued keep their rest on the lens (adhesion must still hold them).
             self.step += 1
-            if (not self.frozen and PLASTIC_RATE > 0.0
+            if (not self.frozen and self.plastic_rate > 0.0
                     and self.step % PLASTIC_EVERY == 0 and self.adhered is not None):
                 free = np.setdiff1d(np.arange(len(pos)),
                                     np.fromiter(self.adhered, dtype=int)
@@ -245,7 +276,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull):
                                     assume_unique=False)
                 if free.size:
                     newrest = np.array(rest, copy=True)
-                    newrest[free] += PLASTIC_RATE * (pos[free] - rest[free])
+                    newrest[free] += self.plastic_rate * (pos[free] - rest[free])
                     self.mo.rest_position.value = newrest
                     # Re-bake ONLY the bending rest (so folds become permanent).
                     # Deliberately NOT springs.reinit(): that would let the EDGE rest
@@ -267,6 +298,10 @@ def createScene(root):
     # Gentle gravity so a peeled flap actually flops over onto the membrane instead of
     # hanging in mid-air. Small enough that it never peels anything by itself.
     root.gravity = [0.0, 0.0, GRAVITY_Z]
+    # dt = 0.02 on purpose. Halving it to 0.01 makes the membrane MORE explosive under a
+    # hard yank, not less (measured: bend=60 -> max|coord| 110 vs 12.9 at dt=0.02).
+    # Implicit Euler's numerical dissipation scales with dt, so the larger step is quietly
+    # damping the yank's energy away. Do not "improve" this to a smaller dt.
     root.dt = 0.02
     # Group the ~20 RequiredPlugin entries into one collapsible node, otherwise they
     # bury the actual components under a long row in the GUI's Scene Graph.
@@ -301,8 +336,8 @@ def createScene(root):
         # particle moves in a plane PARALLEL TO THE SCREEN at the picked depth, so you
         # can only drag within the screen plane. arrowSize>0 draws that spring, so you
         # can SEE exactly which spot it grabbed.
-        root.addObject("AttachBodyButtonSetting", stiffness=MOUSE_STIFFNESS,
-                       arrowSize=0.3)
+        _mouse = root.addObject("AttachBodyButtonSetting", stiffness=MOUSE_STIFFNESS,
+                                arrowSize=0.3)
 
     # The flattened (oblate) LENS the membrane sticks to. Generated from the SAME
     # analytic surface as cap.obj and finely tessellated, so the membrane lies exactly
@@ -333,7 +368,8 @@ def createScene(root):
                             linesStiffness=EDGE_STIFFNESS, linesDamping=1.0)
     bending = cap.addObject("TriangularBendingSprings", name="Bending",
                             stiffness=BEND_STIFFNESS)
-    cap.addObject("UniformVelocityDampingForceField", dampingCoefficient=DAMPING)
+    _damper = cap.addObject("UniformVelocityDampingForceField",
+                            dampingCoefficient=DAMPING)
 
     # The lens as a SOLID obstacle: analytic ellipsoid repulsion pushes any membrane
     # node that dips inside back out, so the membrane folds UP over the lens instead of
@@ -366,12 +402,26 @@ def createScene(root):
         cap.addObject("TriangleCollisionModel", selfCollision=SELF_COLLISION,
                       contactStiffness=CONTACT_STIFFNESS)
 
-    cap.addObject(_make_controller(fem, springs, bending, mo, adhesion, pull))
+    cap.addObject(_make_controller(fem, springs, bending, mo, adhesion, pull,
+                                   _mouse, _damper))
 
     visu = cap.addChild("Visual")
     visu.addObject("OglModel", name="visual", color=[0.92, 0.90, 0.82, 1.0])
     visu.addObject("IdentityMapping", input="@../Mo", output="@visual")
 
+    print("""
++---------------------------------------------------------------------------+
+|  Shift + LEFT-DRAG = pull the membrane   (drag ACROSS to fold it over;     |
+|                                           use a top-down view to drag      |
+|                                           parallel to the membrane)        |
+|  ---------------------------- live knobs -------------------------------- |
+|   K / J   fold stiffness   harder / softer   (crumples? -> K ; rigid? -> J)|
+|   O / I   plasticity       keeps shape / springs back more                 |
+|   N / B   adhesion         stickier / easier to peel                       |
+|   M / H   mouse pull       harder / softer   (too hard = explosions)       |
+|   P       print current values                                             |
+|   F       freeze the whole membrane now                                    |
++---------------------------------------------------------------------------+""")
     return root
 
 
