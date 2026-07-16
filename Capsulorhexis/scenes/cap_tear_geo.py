@@ -69,8 +69,9 @@ RIM_FRAC = 0.9            # nodes with r > RIM_FRAC*R are anchored (zonular fibr
 PRE_TEAR_DEG = 100.0      # pre-open this much of the circle at startup (a starting flap)
 
 # --- the GEOMETRIC crack rule (follow the forceps) ---------------------------
-PULL_TRIGGER = 0.35       # min EXTRA displacement (beyond the tension-settled shape) of the
-                          # grabbed node before the crack advances
+PULL_TRIGGER = 0.12       # min displacement of the grabbed node before the crack advances.
+                          # LOW so a GENTLE drag tears (0.35 needed a hard pull -> you had to
+                          # yank, which explodes). The geometric tear only needs direction.
 ALIGN_MIN = 0.25          # the next vertex must point at least this much toward the pull
 SETTLE_T = 1.5            # [s] let the outward tension settle, then measure YOUR pull as the
                           # displacement BEYOND that baseline (else the tension auto-tears)
@@ -290,6 +291,10 @@ def _make_controller(mo, topo, springs, mass, bending, visual, n_real,
             if disp[jmax] < PULL_TRIGGER:
                 return "no_pull"
             want = P[jmax] - P[tip]                       # tear TOWARD the forceps
+            want[2] = 0.0                                 # ...but only the IN-PLANE direction:
+            # the crack runs within the membrane, so an out-of-plane pull (dragging UP) must
+            # steer by its horizontal component, else nothing aligns with the ring and it
+            # never advances (the 'cannot tear' bug).
             wn = np.linalg.norm(want)
             if wn < 1e-6:
                 return "no_pull"
@@ -350,12 +355,13 @@ def _make_controller(mo, topo, springs, mass, bending, visual, n_real,
                     if PRE_TEAR_DEG > 0:
                         self._pretear(int(PRE_TEAR_DEG / 360.0 * (2.0 * math.pi * NICK_RADIUS / G.EDGE_LEN)))
                 return
-            # once the outward tension has settled, snapshot it as the baseline; from here a
-            # crack advance needs displacement BEYOND this (= your actual pull), not the
-            # steady tension.
-            if self.baseline is None and t >= SETTLE_T:
+            # The baseline is ONLY for the tension rim (so the steady outward pull is not
+            # mistaken for a forceps pull). In fixed-rim mode there is no tension, so tear
+            # straight from rest with NO settle delay -- else the baseline captures your
+            # early pull and cancels it (= 'cannot tear at all').
+            if RIM_MODE == "tension" and self.baseline is None and t >= SETTLE_T:
                 self.baseline = Pcur[:n_real].copy()
-            if self.baseline is None or t - self.last_check < TEAR_CHECK_DT:
+            if (RIM_MODE == "tension" and self.baseline is None) or (t - self.last_check < TEAR_CHECK_DT):
                 return
             self.last_check = t
             self.last_check = t
