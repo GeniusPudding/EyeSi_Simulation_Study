@@ -51,7 +51,12 @@ EDGE_STIFFNESS = 1500.0   # per-edge springs -> triangles keep their size
 BEND_STIFFNESS = 8.0      # low = the freed flap folds/peels over instead of standing rigid
 DAMPING = 2.0
 LENS_REPULSION = 2000.0   # analytic lens obstacle (do NOT raise -> penalty blow-up)
-MAX_STRETCH = 1.6         # hard edge-length cap (keeps the mesh from crushing)
+MAX_STRETCH = 1.5         # hard edge-length cap (keeps the mesh from crushing/inverting)
+# Once you have torn most of the circle, lift the (now nearly free) central disc off so it
+# peels up and reveals the round hole = "tearing the whole piece off". Enabling this only
+# AFTER a big tear means it cannot auto-tear from the start (the earlier buoyancy problem).
+LIFT_AFTER_CRACKLEN = 75  # start lifting the disc once the crack passes this many vertices
+DISC_LIFT_Z = 14.0        # upward buoyancy applied to the freed disc after that
 MAX_SPEED = 25.0
 # Buoyancy was tried (upward body force so a freed flap floats up) but it is the wrong tool:
 # any force big enough to lift the disc also stresses the crack tip past threshold and
@@ -225,7 +230,8 @@ def _geometry():
     return verts, faces, n_real, rim, disc, seed_v, v_a, v0
 
 
-def _make_controller(mo, topo, fem, springs, mass, visual, n_real, seed_v, v_a, v0, marker):
+def _make_controller(mo, topo, fem, springs, mass, visual, n_real, seed_v, v_a, v0,
+                     marker, root):
     import Sofa
     import numpy as np
 
@@ -236,6 +242,9 @@ def _make_controller(mo, topo, fem, springs, mass, visual, n_real, seed_v, v_a, 
             self.fem, self.springs, self.mass = fem, springs, mass
             self.visual = visual
             self.marker = marker
+            self.root = root
+            self.last_good_pos = None      # safety net: last finite positions to roll back to
+            self.lifting = False           # disc-lift (buoyancy) engaged?
             self.next_spare = n_real
             self.crack = [v_a, seed_v]        # prev, tip -- v0 is opened in on the 1st step
             self.first_fwd = v0
@@ -311,6 +320,19 @@ def _make_controller(mo, topo, fem, springs, mass, visual, n_real, seed_v, v_a, 
 
         def onAnimateBeginEvent(self, event):
             t = self.mo.getContext().getTime()
+            # SAFETY NET: if the previous step blew a triangle up (soft membrane + hard yank
+            # -> inverted triangle -> FEM null determinant -> inf), the positions are now
+            # non-finite. Roll back to the last finite state and zero the velocity so the
+            # scene can NEVER permanently vanish -- worst case the membrane judders and you
+            # ease off. This is the backstop the strain/velocity clamps cannot cover (the
+            # blow-up happens inside the FEM solve, before those run).
+            Pcur = np.array(self.mo.position.value)
+            if not np.isfinite(Pcur).all():
+                if self.last_good_pos is not None:
+                    self.mo.position.value = self.last_good_pos
+                    self.mo.velocity.value = [[0.0, 0.0, 0.0]] * len(self.last_good_pos)
+                    print("[Tear] recovered from an unstable step -- drag more gently")
+                return
             if self.stopped:
                 return
             # One-time: open the interior nick. seed_v's fan is a CLOSED ring; splitting it
@@ -482,31 +504,46 @@ def _make_controller(mo, topo, fem, springs, mass, visual, n_real, seed_v, v_a, 
                     if hot.any():
                         Vel[hot] *= (MAX_SPEED / sp[hot])[:, None]
                         self.mo.velocity.value = Vel.tolist()
-            if MAX_STRETCH <= 0:
-                return
-            if self.edges is None:
-                tris = np.array(self.topo.triangles.value)
-                E = set()
-                for a, b, c in tris:
-                    for u, w in ((a, b), (b, c), (c, a)):
-                        E.add((min(u, w), max(u, w)))
-                self.edges = np.array(sorted(E), dtype=int)
-                R = np.array(self.mo.rest_position.value)
-                self.edge_rest = np.linalg.norm(R[self.edges[:, 1]] - R[self.edges[:, 0]], axis=1)
-            P = np.array(self.mo.position.value)
-            e0, e1 = self.edges[:, 0], self.edges[:, 1]
-            limit = self.edge_rest * MAX_STRETCH
-            for _ in range(3):
-                dd = P[e1] - P[e0]
-                L = np.linalg.norm(dd, axis=1)
-                over = L > limit
-                if not over.any():
-                    break
-                n = dd[over] / L[over][:, None]
-                ex = (L[over] - limit[over])[:, None]
-                np.add.at(P, e0[over], 0.5 * ex * n)
-                np.add.at(P, e1[over], -0.5 * ex * n)
-            self.mo.position.value = P.tolist()
+            if MAX_STRETCH > 0:
+                if self.edges is None:
+                    tris = np.array(self.topo.triangles.value)
+                    E = set()
+                    for a, b, c in tris:
+                        for u, w in ((a, b), (b, c), (c, a)):
+                            E.add((min(u, w), max(u, w)))
+                    self.edges = np.array(sorted(E), dtype=int)
+                    R = np.array(self.mo.rest_position.value)
+                    self.edge_rest = np.linalg.norm(
+                        R[self.edges[:, 1]] - R[self.edges[:, 0]], axis=1)
+                P = np.array(self.mo.position.value)
+                e0, e1 = self.edges[:, 0], self.edges[:, 1]
+                limit = self.edge_rest * MAX_STRETCH
+                for _ in range(3):
+                    dd = P[e1] - P[e0]
+                    L = np.linalg.norm(dd, axis=1)
+                    over = L > limit
+                    if not over.any():
+                        break
+                    n = dd[over] / L[over][:, None]
+                    ex = (L[over] - limit[over])[:, None]
+                    np.add.at(P, e0[over], 0.5 * ex * n)
+                    np.add.at(P, e1[over], -0.5 * ex * n)
+                self.mo.position.value = P.tolist()
+
+            # Once most of the circle is torn, switch on upward buoyancy so the (now nearly
+            # free) central disc peels up and reveals the round hole -- "the whole piece
+            # comes off". Safe here: it only fires after a big user-driven tear, so it cannot
+            # auto-tear from the start the way buoyancy-from-t0 did.
+            if not self.lifting and len(self.pairs) >= LIFT_AFTER_CRACKLEN:
+                self.lifting = True
+                self.root.gravity.value = [0.0, 0.0, DISC_LIFT_Z]
+                print(f"[Tear] circle mostly cut ({len(self.pairs)} verts) -> lifting the "
+                      f"disc off to reveal the hole")
+
+            # remember this state IF it is finite -> the rollback target for the next step
+            Pnow = np.array(self.mo.position.value)
+            if np.isfinite(Pnow).all():
+                self.last_good_pos = Pnow.tolist()
 
     return _C(name="CapTearController")
 
@@ -603,7 +640,7 @@ def createScene(root):
                           showColor=[1.0, 0.15, 0.1, 1.0])
 
     cap.addObject(_make_controller(mo, topo, fem, springs, mass, oglm, n_real,
-                                   seed_v, seed_a, seed_fwd, marker))
+                                   seed_v, seed_a, seed_fwd, marker, root))
 
     print("=" * 68)
     print(" cap_tear.py  |  FREE stress-driven tearing (NO hardcoded circle)")
