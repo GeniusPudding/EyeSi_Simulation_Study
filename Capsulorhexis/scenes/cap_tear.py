@@ -92,6 +92,13 @@ PULL_MODE = "mouse"
 NICK_RADIUS = 5.0         # the initial nick (cystotome puncture) sits at this planar radius
                           # -- inside the fixed rim, in the operating region, so a forceps
                           # pull can actually stress the tip (a rim-pinned seed cannot tear)
+# Keep the crack in the OPERATING ANNULUS. Below R_MIN is the central pole -- a mesh
+# singularity where all rings converge; splitting there makes a degenerate sliver whose
+# co-rotational FEM force explodes to inf and NaNs the whole mesh (the 'scene vanished'
+# bug). Above R_MAX is the fixed rim. A capsulorhexis is a ring at r~5 anyway, so the path
+# still emerges from perpendicular-to-sigma1 -- it just cannot run into the pole or the rim.
+TEAR_R_MIN = 3.0
+TEAR_R_MAX = 6.0
 LIFT_RADIUS = 4.5         # "disc" mode: nodes with planar r < this get lifted
 LIFT_HEIGHT = 6.0         # "disc"/"patch" pull height (+z)
 PULL_START_T = 1.0
@@ -99,6 +106,7 @@ PULL_END_T = 12.0
 RIM_FRAC = 0.9            # nodes with r > RIM_FRAC*R are anchored (zonular fibres)
 
 # --- mouse (forceps) --------------------------------------------------------
+SHOW_TIP_MARKER = True    # small red dot on the crack tip = where to grab (set False to hide)
 ENABLE_MOUSE = True
 MOUSE_STIFFNESS = 700.0   # Shift+left-drag attach spring. Softer than before: a stiff spring
                           # + a fast yank is one big penalty impulse that NaNs the mesh
@@ -164,6 +172,9 @@ def sigma1_of(pos, rest, tris, E, nu):
     mid = 0.5 * (sxx + syy)
     dev = np.sqrt(np.maximum(((sxx - syy) * 0.5) ** 2 + sxy ** 2, 0.0))
     s1 = mid + dev
+    # Overflow guard: a collapsed/inverted triangle gives a garbage huge sigma1 (even inf);
+    # scrub non-finite and cap it so it cannot poison the tear test, the marker or the log.
+    s1 = np.clip(np.nan_to_num(s1, nan=0.0, posinf=0.0, neginf=0.0), -1.0e6, 1.0e6)
     ang = 0.5 * np.arctan2(2.0 * sxy, np.maximum(sxx - syy, 1e-12))
     d3 = np.cos(ang)[:, None] * xc + np.sin(ang)[:, None] * yc
     return s1, d3
@@ -381,6 +392,12 @@ def _make_controller(mo, topo, fem, springs, mass, visual, n_real, seed_v, v_a, 
                 self.stopped = True
                 print(f"[Tear] t={t:.2f} reached a boundary; stopping")
                 return "dead_end"
+            # stay in the operating annulus: never step toward the central pole (explodes)
+            # or onto the fixed rim
+            rc = np.hypot(P[:, 0], P[:, 1])
+            cands = [v for v in cands if TEAR_R_MIN <= rc[v] <= TEAR_R_MAX]
+            if not cands:
+                return "out_of_annulus"      # crack hit the ring edge -> wait, do not force
 
             def align(v):
                 w = P[v] - P[tip]
@@ -531,7 +548,7 @@ def createScene(root):
     # coincident slit -- invisible until pulled). The controller moves it onto the tip.
     mk = root.addChild("TipMarker")
     marker = mk.addObject("MechanicalObject", name="mk", position=[list(verts[seed_v])],
-                          showObject=True, showObjectScale=0.6, drawMode=1,
+                          showObject=SHOW_TIP_MARKER, showObjectScale=0.25, drawMode=1,
                           showColor=[1.0, 0.15, 0.1, 1.0])
 
     cap.addObject(_make_controller(mo, topo, fem, springs, mass, oglm, n_real,
