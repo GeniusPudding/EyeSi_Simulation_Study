@@ -59,8 +59,9 @@ MAX_SPEED = 25.0          # hard per-node velocity cap: a hard mouse yank is one
 # sigma1 ~= YOUNG * local strain, so 90/1200 ~= 7.5% local stretch at the tip triggers a
 # step. Lowered from 180 so a GENTLE mouse pull can drive the crack (the scripted symmetric
 # lift used to slam sigma1 past 1000, which hid how high 180 really was for hand pulling).
-STRESS_THRESHOLD = 45.0
-TEAR_CHECK_DT = 0.12      # [s] between tip-advance checks
+STRESS_THRESHOLD = 20.0    # sigma1 the tip must exceed to advance -- low so a gentle drag
+                           # tears (raise if it tears too eagerly / from noise)
+TEAR_CHECK_DT = 0.10       # [s] between tip-advance checks
 TEAR_SETTLE_T = 0.8       # [s] no tearing before this -> the mesh settles on load-in first
                           # (otherwise a startup transient at the pinned seed tears once)
 
@@ -89,8 +90,10 @@ RIM_FRAC = 0.9            # nodes with r > RIM_FRAC*R are anchored (zonular fibr
 
 # --- mouse (forceps) --------------------------------------------------------
 ENABLE_MOUSE = True
-MOUSE_STIFFNESS = 1500.0  # Shift+left-drag attach spring; no adhesion here, so this alone
-                          # must load the tip -> a bit stiffer than cap_membrane's 1000.
+MOUSE_STIFFNESS = 700.0   # Shift+left-drag attach spring. Softer than before: a stiff spring
+                          # + a fast yank is one big penalty impulse that NaNs the mesh
+                          # ("whole scene disappears"). Softer = you must drag a bit further
+                          # but it will not explode.
 ALARM_DISTANCE = 0.40 * G.EDGE_LEN
 CONTACT_DISTANCE = 0.20 * G.EDGE_LEN
 
@@ -193,7 +196,7 @@ def _geometry():
     return verts, faces, n_real, rim, disc, seed_v, v_a, v0
 
 
-def _make_controller(mo, topo, fem, springs, mass, visual, n_real, seed_v, v_a, v0):
+def _make_controller(mo, topo, fem, springs, mass, visual, n_real, seed_v, v_a, v0, marker):
     import Sofa
     import numpy as np
 
@@ -203,6 +206,7 @@ def _make_controller(mo, topo, fem, springs, mass, visual, n_real, seed_v, v_a, 
             self.mo, self.topo = mo, topo
             self.fem, self.springs, self.mass = fem, springs, mass
             self.visual = visual
+            self.marker = marker
             self.next_spare = n_real
             self.crack = [v_a, seed_v]        # prev, tip -- v0 is opened in on the 1st step
             self.first_fwd = v0
@@ -283,6 +287,10 @@ def _make_controller(mo, topo, fem, springs, mass, visual, n_real, seed_v, v_a, 
             # along the line v_a - seed_v - v0 turns it into an OPEN slit, so v0 becomes a
             # real crack tip that a pull can drive. Coincident spare -> nothing moves until
             # you pull.
+            # keep the bright marker on the current crack tip (where to grab / pull toward)
+            if self.marker is not None:
+                self.marker.position.value = [
+                    np.array(self.mo.position.value)[self.crack[-1]].tolist()]
             if not self.seeded:
                 self.seeded = True
                 sp = self._split_tip(self.crack[-1], self.crack[-2], self.first_fwd)
@@ -426,7 +434,7 @@ def createScene(root):
     lens.addObject("OglModel", name="lensVisual", src="@bloader", color=[0.45, 0.55, 0.75, 0.45])
 
     cap = root.addChild("Cap")
-    cap.addObject("EulerImplicitSolver", rayleighStiffness=0.2, rayleighMass=0.2)
+    cap.addObject("EulerImplicitSolver", rayleighStiffness=0.4, rayleighMass=0.2)
     cap.addObject("CGLinearSolver", iterations=30, tolerance=1e-8, threshold=1e-8)
     topo = cap.addObject("TriangleSetTopologyContainer", name="topo",
                          position=verts, triangles=faces)
@@ -476,8 +484,15 @@ def createScene(root):
     oglm = visu.addObject("OglModel", name="visual", color=[0.9, 0.9, 0.82, 1.0], triangles=faces)
     visu.addObject("IdentityMapping", input="@../Mo", output="@visual")
 
+    # A bright marker sitting on the crack TIP so you can SEE where to grab (the nick is a
+    # coincident slit -- invisible until pulled). The controller moves it onto the tip.
+    mk = root.addChild("TipMarker")
+    marker = mk.addObject("MechanicalObject", name="mk", position=[list(verts[seed_v])],
+                          showObject=True, showObjectScale=0.6, drawMode=1,
+                          showColor=[1.0, 0.15, 0.1, 1.0])
+
     cap.addObject(_make_controller(mo, topo, fem, springs, mass, oglm, n_real,
-                                   seed_v, seed_a, seed_fwd))
+                                   seed_v, seed_a, seed_fwd, marker))
 
     print("=" * 68)
     print(" cap_tear.py  |  FREE stress-driven tearing (NO hardcoded circle)")
