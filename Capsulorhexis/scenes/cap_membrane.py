@@ -108,7 +108,12 @@ CONTACT_DISTANCE = 0.20 * G.EDGE_LEN
 # raising rayleighStiffness 0.2->0.5 does not save it either. So lowering this does NOT
 # buy stability -- it only makes the membrane hard to pull. Keep it pullable at 1000 and
 # DRAG SMOOTHLY; a hard flick is a single huge penalty impulse no stiffness value fixes.
-MOUSE_STIFFNESS = 1000.0
+# HISTORY: this was 400 in the smooth-feeling 6787996 ("safer mouse pull, less recoil"), then
+# reverted to 1000 in c9c9101 because lowering it did not, by itself, stop the blow-up. Back to
+# 400 for the low recoil that makes SMOOTH dragging pleasant. Honest caveat: a hard/fast flick
+# on this FEM sheet can still diverge (giant-triangle inflation -> coords to millions) at any
+# stiffness; the only real cure is swapping FEM for mass-spring, as the tear demos did.
+MOUSE_STIFFNESS = 400.0
 
 # --- camera ------------------------------------------------------------------
 # SofaGLFW hard-codes "left-drag = orbit the camera", and it is NOT remappable from the
