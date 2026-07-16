@@ -31,15 +31,17 @@ def _controller():
 
         def onMouseEvent(self, event):
             self.n += 1
-            # throttle: print every move, but label state
             st = event.get('State', -1)
+            # print EVERY event (throttled only for pure moves so it does not flood), so we
+            # can tell if MOVE (State 0) events fire during a HOLD-DRAG (needed for a smooth
+            # drag). HOLD the left button and drag slowly.
             if st == 0:
-                if self.n % 15 == 0:
-                    print(f"[MOUSE] move  x={event.get('mouseX')} y={event.get('mouseY')}  (events so far: {self.n})")
+                if self.n % 5 == 0:
+                    print(f"[MOUSE] MOVE  x={event.get('mouseX')} y={event.get('mouseY')}  (#{self.n})")
             elif st == 1:
-                print(f"[MOUSE] LEFT CLICK  x={event.get('mouseX')} y={event.get('mouseY')}")
+                print(f"[MOUSE] LEFT DOWN  x={event.get('mouseX')} y={event.get('mouseY')}")
             elif st == 2:
-                print("[MOUSE] left release")
+                print("[MOUSE] left up")
             else:
                 print(f"[MOUSE] state={st} {event}")
 
