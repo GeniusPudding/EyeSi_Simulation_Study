@@ -36,14 +36,30 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 import generate_cap as G
 
-# --- membrane physics: MASS-SPRING only (robust, never null-determinants) ----
-EDGE_STIFFNESS = 3000.0   # edge springs = in-plane stiffness (triangles keep their size)
+# --- membrane physics --------------------------------------------------------
+# USE_FEM: True = the original co-rotational membrane FEM ("paper" feel, resists shear);
+# False = mass-spring only (robust, never null-determinants). Try FEM here with the TENSION
+# rim below, which keeps the membrane taut and is gentler on the FEM than a rigid clamp.
+USE_FEM = True
+YOUNG = 800.0             # FEM in-plane stiffness (only used if USE_FEM)
+EDGE_STIFFNESS = 1200.0   # edge springs (always on; the only in-plane stiffness if not FEM)
 BEND_STIFFNESS = 8.0      # low = freed flap folds/peels over instead of standing rigid
 DAMPING = 2.0
 LENS_REPULSION = 2000.0
 MAX_STRETCH = 1.5         # edge may not exceed this x rest length
 MAX_SPEED = 25.0          # per-node velocity cap (absorbs a violent yank)
+MAX_DISP = 8.0            # HARD cap on how far any node may move from its rest position.
+                          # Stops a far mouse yank (the pull=48 blow-up) cold, while still
+                          # allowing the flap to lift/fold (needs ~6). 0 disables.
 AREA_MIN_FRAC = 0.30      # a triangle may not shrink below this fraction of its rest area
+
+# --- boundary: the zonular fibres pull the capsule OUTWARD (not a rigid clamp) --
+# RIM_MODE "tension": each rim node is softly anchored to its rest (so it cannot drift) AND
+# pulled radially OUTWARD -> the membrane is taut and the tear GAPES open as it runs (you can
+# see it), like the real zonular tension. "fixed" = the old rigid clamp.
+RIM_MODE = "tension"      # "tension" | "fixed"
+RIM_ANCHOR_STIFF = 60.0   # soft anchor of each rim node to its rest position
+RIM_TENSION = 45.0        # outward radial force per rim node (the zonular pull)
 
 # --- geometry / seed ---------------------------------------------------------
 NICK_RADIUS = 5.0
@@ -53,8 +69,11 @@ RIM_FRAC = 0.9            # nodes with r > RIM_FRAC*R are anchored (zonular fibr
 PRE_TEAR_DEG = 100.0      # pre-open this much of the circle at startup (a starting flap)
 
 # --- the GEOMETRIC crack rule (follow the forceps) ---------------------------
-PULL_TRIGGER = 0.35       # min displacement of the grabbed node before the crack advances
+PULL_TRIGGER = 0.35       # min EXTRA displacement (beyond the tension-settled shape) of the
+                          # grabbed node before the crack advances
 ALIGN_MIN = 0.25          # the next vertex must point at least this much toward the pull
+SETTLE_T = 1.5            # [s] let the outward tension settle, then measure YOUR pull as the
+                          # displacement BEYOND that baseline (else the tension auto-tears)
 TEAR_CHECK_DT = 0.08      # [s] between advance checks
 MAX_ADVANCE_PER_CHECK = 4 # unzip up to this many vertices per check while you keep pulling
 PULL_LOG_DT = 0.4
@@ -74,7 +93,8 @@ LIFT_RADIUS = 4.5
 PLUGINS = [
     "Sofa.Component.StateContainer", "Sofa.Component.Topology.Container.Dynamic",
     "Sofa.Component.ODESolver.Backward", "Sofa.Component.LinearSolver.Iterative",
-    "Sofa.Component.SolidMechanics.Spring", "Sofa.Component.Mass",
+    "Sofa.Component.SolidMechanics.Spring", "Sofa.Component.SolidMechanics.FEM.Elastic",
+    "Sofa.Component.Mass",
     "Sofa.Component.Constraint.Projective", "Sofa.Component.MechanicalLoad",
     "Sofa.Component.Mapping.Linear",
     "Sofa.Component.Collision.Detection.Algorithm",
@@ -117,7 +137,7 @@ def _geometry():
 
 
 def _make_controller(mo, topo, springs, mass, bending, visual, n_real,
-                     seed_v, v_a, v0, marker, root):
+                     seed_v, v_a, v0, marker, root, fem):
     import Sofa
     import numpy as np
 
@@ -126,6 +146,7 @@ def _make_controller(mo, topo, springs, mass, bending, visual, n_real,
             Sofa.Core.Controller.__init__(self, *a, **k)
             self.mo, self.topo = mo, topo
             self.springs, self.mass, self.bending = springs, mass, bending
+            self.fem = fem
             self.visual, self.marker, self.root = visual, marker, root
             self.next_spare = n_real
             self.crack = [v_a, seed_v]
@@ -144,6 +165,7 @@ def _make_controller(mo, topo, springs, mass, bending, visual, n_real,
             self.last_good_pos = None
             self.lifting = False
             self.step = 0
+            self.baseline = None           # tension-settled shape; YOUR pull is measured vs this
 
         # ---- topology helpers (identical to the proven cap_tear.py) ---------
         def _build_adj(self):
@@ -199,6 +221,8 @@ def _make_controller(mo, topo, springs, mass, bending, visual, n_real,
             self.topo.triangles.value = tris.tolist()
             if self.visual is not None:
                 self.visual.triangles.value = tris.tolist()
+            if self.fem is not None:
+                self.fem.reinit()
             self.springs.reinit(); self.mass.reinit()
             self.edges = None
             self.adj = None                # topology changed -> adjacency is stale, rebuild
@@ -254,10 +278,11 @@ def _make_controller(mo, topo, springs, mass, bending, visual, n_real,
         # ---- the GEOMETRIC advance: follow the forceps ----------------------
         def _advance_once(self, t):
             P = np.array(self.mo.position.value)
-            R = np.array(self.mo.rest_position.value)
             tip, prev = self.crack[-1], self.crack[-2]
-            # forceps grip = the most-displaced real node (where you are pulling)
-            disp = np.linalg.norm(P[:n_real] - R[:n_real], axis=1)
+            # forceps grip = the node displaced most BEYOND the tension-settled baseline
+            # (measuring from rest would mistake the steady outward tension for a pull).
+            ref = self.baseline if self.baseline is not None else np.array(self.mo.rest_position.value)[:n_real]
+            disp = np.linalg.norm(P[:n_real] - ref, axis=1)
             jmax = int(np.argmax(disp))
             if disp[jmax] < PULL_TRIGGER:
                 return "no_pull"
@@ -322,8 +347,14 @@ def _make_controller(mo, topo, springs, mass, bending, visual, n_real,
                     if PRE_TEAR_DEG > 0:
                         self._pretear(int(PRE_TEAR_DEG / 360.0 * (2.0 * math.pi * NICK_RADIUS / G.EDGE_LEN)))
                 return
-            if t - self.last_check < TEAR_CHECK_DT:
+            # once the outward tension has settled, snapshot it as the baseline; from here a
+            # crack advance needs displacement BEYOND this (= your actual pull), not the
+            # steady tension.
+            if self.baseline is None and t >= SETTLE_T:
+                self.baseline = Pcur[:n_real].copy()
+            if self.baseline is None or t - self.last_check < TEAR_CHECK_DT:
                 return
+            self.last_check = t
             self.last_check = t
             if self.adj is None:
                 self._build_adj()
@@ -380,6 +411,13 @@ def _make_controller(mo, topo, springs, mass, bending, visual, n_real,
                         np.add.at(cnt, Tb[:, j], 1.0)
                     m = cnt > 0
                     P[m] += corr[m] / cnt[m][:, None]
+            if MAX_DISP > 0:                               # cap how far any node leaves rest
+                R = np.array(self.mo.rest_position.value)
+                d = P - R
+                dn = np.linalg.norm(d, axis=1)
+                far = dn > MAX_DISP
+                if far.any():
+                    P[far] = R[far] + d[far] * (MAX_DISP / dn[far])[:, None]
             self.mo.position.value = P.tolist()
 
             if not self.lifting and len(self.pairs) >= LIFT_AFTER_CRACKLEN:
@@ -430,7 +468,9 @@ def createScene(root):
     cap.addObject("TriangleSetGeometryAlgorithms", template="Vec3d")
     mo = cap.addObject("MechanicalObject", name="Mo", position=verts)
     mass = cap.addObject("DiagonalMass", massDensity=1.0)
-    # MASS-SPRING membrane: NO TriangularFEMForceField (that is what null-determinants).
+    # Optional co-rotational FEM ("original paper feel"); mass-spring edge/bending always on.
+    fem = (cap.addObject("TriangularFEMForceField", name="FEM", method="large",
+                         youngModulus=YOUNG, poissonRatio=0.3) if USE_FEM else None)
     springs = cap.addObject("MeshSpringForceField", name="EdgeSprings",
                             linesStiffness=EDGE_STIFFNESS, linesDamping=1.0)
     bending = cap.addObject("TriangularBendingSprings", name="Bending", stiffness=BEND_STIFFNESS)
@@ -438,7 +478,22 @@ def createScene(root):
     cap.addObject("EllipsoidForceField", name="LensObstacle",
                   center=[0.0, 0.0, G.Z0], vradius=[G.A, G.A, G.C],
                   stiffness=LENS_REPULSION, damping=1.0)
-    cap.addObject("FixedProjectiveConstraint", name="RimAnchor", indices=rim, showObject=False)
+
+    # Boundary: the zonular fibres. RIM_MODE "tension" = soft anchor + outward radial pull
+    # (taut, and the tear gapes open as it runs); "fixed" = old rigid clamp.
+    if RIM_MODE == "tension":
+        cap.addObject("RestShapeSpringsForceField", name="RimAnchor",
+                      points=rim, stiffness=RIM_ANCHOR_STIFF)
+        import numpy as _np
+        Vr = _np.array(verts)
+        rimf = []
+        for i in rim:
+            d = Vr[i, :2]; nn = float(_np.linalg.norm(d))
+            d = d / nn if nn > 1e-6 else _np.array([0.0, 0.0])
+            rimf.append([float(d[0] * RIM_TENSION), float(d[1] * RIM_TENSION), 0.0])
+        cap.addObject("ConstantForceField", name="RimTension", indices=rim, forces=rimf)
+    else:
+        cap.addObject("FixedProjectiveConstraint", name="RimAnchor", indices=rim, showObject=False)
     if ENABLE_MOUSE:
         cap.addObject("TriangleCollisionModel", selfCollision=False, contactStiffness=200.0)
 
@@ -452,7 +507,7 @@ def createScene(root):
                           showColor=[1.0, 0.15, 0.1, 1.0])
 
     cap.addObject(_make_controller(mo, topo, springs, mass, bending, oglm, n_real,
-                                   seed_v, seed_a, seed_fwd, marker, root))
+                                   seed_v, seed_a, seed_fwd, marker, root, fem))
 
     print("=" * 70)
     print(" cap_tear_geo.py | GEOMETRIC tear: the crack FOLLOWS your forceps (no stress)")
