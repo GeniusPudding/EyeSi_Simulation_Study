@@ -143,7 +143,10 @@ FREEZE_CAMERA_WHILE_PULLING = False
 # sigma1. So we draw a marker at the hottest triangle plus a direction probe, and print
 # sigma1 stats. (Also avoids DataDisplay, which aborts this build's GUI.)
 STRESS_MARKER = True     # draw a marker at the peak-stress triangle + its sigma1 direction
-STRESS_TOP_N = 6         # also mark this many next-hottest spots (0 = only the peak)
+STRESS_TOP_N = 0         # extra markers beyond the peak. 0 = just the peak + its
+                         # direction. (6 scattered red balls were unreadable.)
+STRESS_TABLE_N = 5       # how many triangles to print in the terminal table
+DEGEN_LO, DEGEN_HI = 0.25, 4.0   # area_ratio outside this = collapsed/blown-up
 STRESS_LOG_EVERY = 1.0   # [s] how often to print the sigma1 stats line
 SHOW_STRESS = True       # compute sigma1 every STRESS_EVERY steps (the tear criterion
                          # will run on this). Cheap, headless-safe, no GUI involvement.
@@ -218,7 +221,8 @@ def principal_stress(pos, rest, tris, E=None, nu=None):
       gradient F -> Green strain eps = (F^T F - I)/2 -> plane-stress sigma = C:eps ->
       principal values. Verified: sigma1 == 0 at rest, and peaks exactly where you pull.
 
-    Returns (sigma1, dir3d) with dir3d the 3D direction of sigma1 per triangle. The tear
+    Returns (sigma1, dir3d, area_ratio). area_ratio = |det F| (1.0 = undeformed): far
+    from 1 means the triangle collapsed or blew up and its sigma1 is NOT physical. The tear
     criterion will run on this: crack direction is perpendicular to sigma1 (Rankine), and
     a fiber weighting can be layered on later (Marchal argmax c) without touching this.
     """
@@ -253,10 +257,11 @@ def principal_stress(pos, rest, tris, E=None, nu=None):
     mid = 0.5 * (sxx + syy)
     dev = np.sqrt(np.maximum(((sxx - syy) * 0.5) ** 2 + sxy ** 2, 0.0))
     s1 = mid + dev
+    area_ratio = np.abs(np.linalg.det(F))     # 1.0 = undeformed area
     # principal direction (2D angle) mapped back into 3D via the current frame
     ang = 0.5 * np.arctan2(2.0 * sxy, np.maximum(sxx - syy, 1e-12))
     d3 = np.cos(ang)[:, None] * xc + np.sin(ang)[:, None] * yc
-    return s1, d3
+    return s1, d3, area_ratio
 
 
 def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
@@ -459,8 +464,8 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 if self.tris is None:
                     self.tris = np.array(self.topo.triangles.value)
                 if len(self.tris):
-                    s1, sdir = principal_stress(np.asarray(pos), np.asarray(rest),
-                                                self.tris)
+                    s1, sdir, aratio = principal_stress(np.asarray(pos),
+                                                       np.asarray(rest), self.tris)
                     self.sigma1_max = float(s1.max())
                     if self.display is not None:
                         self.display.triangleData.value = s1.tolist()
@@ -486,12 +491,21 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
 
                     if t - self.last_stress_log >= STRESS_LOG_EVERY:
                         self.last_stress_log = t
-                        r = float(np.linalg.norm(self.hot_pos[:2]))
-                        print(f"[sigma1] max={self.sigma1_max:8.1f} "
+                        bad = (aratio < DEGEN_LO) | (aratio > DEGEN_HI)
+                        good = ~bad
+                        healthy = float(s1[good].max()) if good.any() else 0.0
+                        print(f"[sigma1] t={t:6.2f} healthyMax={healthy:8.1f} "
                               f"p99={float(np.percentile(s1, 99)):7.1f} "
                               f"p50={float(np.percentile(s1, 50)):6.1f} | "
-                              f"peak at r={r:4.2f} z={float(self.hot_pos[2]):5.2f} "
-                              f"(tri {self.hot_tri})")
+                              f"rawMax={self.sigma1_max:10.1f} "
+                              f"degenerateTris={int(bad.sum())}")
+                        for k in order[:STRESS_TABLE_N]:
+                            c = cen[k]
+                            flag = "  <-- DEGENERATE, sigma1 is garbage" if bad[k] else ""
+                            print(f"         tri {int(k):5d} sigma1={s1[k]:10.1f} "
+                                  f"areaRatio={aratio[k]:6.3f} "
+                                  f"r={float(np.linalg.norm(c[:2])):5.2f} "
+                                  f"z={float(c[2]):5.2f}{flag}")
 
             if (not self.frozen and self.plastic_rate > 0.0
                     and self.step % PLASTIC_EVERY == 0 and self.adhered is not None):
