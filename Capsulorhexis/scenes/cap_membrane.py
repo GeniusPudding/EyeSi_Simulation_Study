@@ -142,12 +142,13 @@ FREEZE_CAMERA_WHILE_PULLING = False
 # WHICH WAY it points, because that is where a crack starts and it runs perpendicular to
 # sigma1. So we draw a marker at the hottest triangle plus a direction probe, and print
 # sigma1 stats. (Also avoids DataDisplay, which aborts this build's GUI.)
-STRESS_MARKER = True     # draw a marker at the peak-stress triangle + its sigma1 direction
+STRESS_MARKER = False    # no 3D marker: terminal only (red spheres were unreadable)
 STRESS_TOP_N = 0         # extra markers beyond the peak. 0 = just the peak + its
                          # direction. (6 scattered red balls were unreadable.)
 STRESS_TABLE_N = 5       # how many triangles to print in the terminal table
 DEGEN_LO, DEGEN_HI = 0.25, 4.0   # area_ratio outside this = collapsed/blown-up
-STRESS_LOG_EVERY = 1.0   # [s] how often to print the sigma1 stats line
+STRESS_LOG_EVERY = 1.0   # [s] how often to print the sigma1 report
+STRESS_HOT_FRAC = 0.5    # a triangle counts as 'loaded' above this fraction of the peak
 SHOW_STRESS = True       # compute sigma1 every STRESS_EVERY steps (the tear criterion
                          # will run on this). Cheap, headless-safe, no GUI involvement.
 # Colouring the mesh by sigma1 via DataDisplay CRASHES this SOFA build: SIGABRT in
@@ -494,18 +495,55 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                         bad = (aratio < DEGEN_LO) | (aratio > DEGEN_HI)
                         good = ~bad
                         healthy = float(s1[good].max()) if good.any() else 0.0
+                        if healthy < 1.0:
+                            # nothing is loaded: sigma1 and its direction are meaningless
+                            print(f"[sigma1] t={t:6.2f} idle (nothing being pulled)")
+                            return
                         print(f"[sigma1] t={t:6.2f} healthyMax={healthy:8.1f} "
                               f"p99={float(np.percentile(s1, 99)):7.1f} "
                               f"p50={float(np.percentile(s1, 50)):6.1f} | "
                               f"rawMax={self.sigma1_max:10.1f} "
                               f"degenerateTris={int(bad.sum())}")
+                        # the LOADED REGION: which cells actually carry load right now
+                        if healthy > 1e-6:
+                            hotm = good & (s1 > STRESS_HOT_FRAC * healthy)
+                            nh = int(hotm.sum())
+                            if nh:
+                                rr = np.linalg.norm(cen[hotm][:, :2], axis=1)
+                                print(f"         loaded region: {nh} cells above "
+                                      f"{STRESS_HOT_FRAC:.0%} of peak, r={rr.min():.2f}..{rr.max():.2f}")
+                        # per-cell: how hard, and WHICH WAY the crack would run.
+                        # sigma1 direction vs the RADIAL direction is what decides whether
+                        # the tear stays curvilinear or runs away to the periphery.
                         for k in order[:STRESS_TABLE_N]:
                             c = cen[k]
+                            rad = c[:2]
+                            rn = float(np.linalg.norm(rad))
+                            if rn > 1e-9 and not bad[k]:
+                                rad = rad / rn
+                                d2 = sdir[k][:2]
+                                dn = float(np.linalg.norm(d2))
+                                if dn > 1e-9:
+                                    ang = np.degrees(np.arccos(
+                                        min(1.0, abs(float(np.dot(d2 / dn, rad))))))
+                                else:
+                                    ang = float('nan')
+                            else:
+                                ang = float('nan')
+                            # crack runs PERPENDICULAR to sigma1
+                            if ang != ang:
+                                crack = "?"
+                            elif ang < 30:
+                                crack = "CIRCUMFERENTIAL (good, curvilinear)"
+                            elif ang > 60:
+                                crack = "RADIAL (runs to the periphery!)"
+                            else:
+                                crack = "oblique"
                             flag = "  <-- DEGENERATE, sigma1 is garbage" if bad[k] else ""
-                            print(f"         tri {int(k):5d} sigma1={s1[k]:10.1f} "
-                                  f"areaRatio={aratio[k]:6.3f} "
-                                  f"r={float(np.linalg.norm(c[:2])):5.2f} "
-                                  f"z={float(c[2]):5.2f}{flag}")
+                            print(f"         tri {int(k):5d} sigma1={s1[k]:9.1f} "
+                                  f"areaRatio={aratio[k]:5.2f} r={rn:5.2f} "
+                                  f"z={float(c[2]):5.2f} sigma1_vs_radial={ang:5.1f}deg "
+                                  f"-> crack {crack}{flag}")
 
             if (not self.frozen and self.plastic_rate > 0.0
                     and self.step % PLASTIC_EVERY == 0 and self.adhered is not None):
