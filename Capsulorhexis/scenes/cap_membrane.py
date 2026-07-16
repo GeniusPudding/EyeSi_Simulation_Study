@@ -137,6 +137,14 @@ FREEZE_CAMERA_WHILE_PULLING = False
 # SofaPython3 cannot bind ("Invalid type") -- that is exactly why this repo needed a C++
 # plugin. Strain is a purely GEOMETRIC quantity (rest vs current), so it does not matter
 # which component carries the load, and we need no FEM internals at all.
+# Observation is deliberately MINIMAL: a full colormap of 4000+ triangles is unreadable
+# in realtime, and tearing only ever cares about ONE thing -- WHERE the stress peaks and
+# WHICH WAY it points, because that is where a crack starts and it runs perpendicular to
+# sigma1. So we draw a marker at the hottest triangle plus a direction probe, and print
+# sigma1 stats. (Also avoids DataDisplay, which aborts this build's GUI.)
+STRESS_MARKER = True     # draw a marker at the peak-stress triangle + its sigma1 direction
+STRESS_TOP_N = 6         # also mark this many next-hottest spots (0 = only the peak)
+STRESS_LOG_EVERY = 1.0   # [s] how often to print the sigma1 stats line
 SHOW_STRESS = True       # compute sigma1 every STRESS_EVERY steps (the tear criterion
                          # will run on this). Cheap, headless-safe, no GUI involvement.
 # Colouring the mesh by sigma1 via DataDisplay CRASHES this SOFA build: SIGABRT in
@@ -252,7 +260,7 @@ def principal_stress(pos, rest, tris, E=None, nu=None):
 
 
 def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
-                     topo, display, camera, root):
+                     topo, display, camera, root, probe):
     import Sofa
     import numpy as np
 
@@ -264,6 +272,11 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.mouse, self.damper = mouse, damper
             self.topo, self.display = topo, display
             self.camera, self.root = camera, root
+            self.probe = probe
+            self.last_stress_log = -1e9
+            self.hot_tri = -1
+            self.hot_pos = None
+            self.hot_dir = None
             self.base_objs = None      # graph snapshot taken on the first step
             self.grabbing = False
             self.tris = None
@@ -446,10 +459,39 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 if self.tris is None:
                     self.tris = np.array(self.topo.triangles.value)
                 if len(self.tris):
-                    s1, _d = principal_stress(np.asarray(pos), np.asarray(rest), self.tris)
+                    s1, sdir = principal_stress(np.asarray(pos), np.asarray(rest),
+                                                self.tris)
                     self.sigma1_max = float(s1.max())
                     if self.display is not None:
                         self.display.triangleData.value = s1.tolist()
+
+                    # Where is it hottest, and which way does it point? That -- not the
+                    # whole field -- is what decides where a crack starts and where it
+                    # goes (crack runs PERPENDICULAR to sigma1).
+                    P = np.asarray(pos)
+                    cen = P[self.tris].mean(axis=1)          # triangle centroids
+                    order = np.argsort(-s1)
+                    hot = order[:max(1, STRESS_TOP_N + 1)]
+                    self.hot_tri = int(order[0])
+                    self.hot_pos = cen[order[0]]
+                    self.hot_dir = sdir[order[0]]
+                    if self.probe is not None:
+                        pts = [cen[i].tolist() for i in hot]
+                        # last point: offset along sigma1 -> shows the direction; the
+                        # crack would advance perpendicular to this pair.
+                        pts.append((cen[order[0]] + self.hot_dir * 0.8).tolist())
+                        need = STRESS_TOP_N + 2
+                        pts = (pts + [pts[-1]] * need)[:need]
+                        self.probe.position.value = pts
+
+                    if t - self.last_stress_log >= STRESS_LOG_EVERY:
+                        self.last_stress_log = t
+                        r = float(np.linalg.norm(self.hot_pos[:2]))
+                        print(f"[sigma1] max={self.sigma1_max:8.1f} "
+                              f"p99={float(np.percentile(s1, 99)):7.1f} "
+                              f"p50={float(np.percentile(s1, 50)):6.1f} | "
+                              f"peak at r={r:4.2f} z={float(self.hot_pos[2]):5.2f} "
+                              f"(tri {self.hot_tri})")
 
             if (not self.frozen and self.plastic_rate > 0.0
                     and self.step % PLASTIC_EVERY == 0 and self.adhered is not None):
@@ -566,6 +608,18 @@ def createScene(root):
     adhesion = cap.addObject("RestShapeSpringsForceField", name="Adhesion",
                              stiffness=ADHESION_STIFF, drawSpring=False)
 
+    # Peak-stress marker. A plain MechanicalObject that draws itself as spheres: no
+    # visual model, no mapping, nothing that can crash the GUI. The controller moves these
+    # points onto the hottest triangles each step. Point 0 = the peak; the last point is
+    # offset along the sigma1 direction, so the pair shows you the crack direction.
+    _probe = None
+    if STRESS_MARKER:
+        _pn = root.addChild("StressProbe")
+        _probe = _pn.addObject("MechanicalObject", name="probe",
+                               position=[[0, 0, 0]] * (STRESS_TOP_N + 2),
+                               showObject=True, showObjectScale=0.25, drawMode=1,
+                               showColor=[1.0, 0.15, 0.05, 1.0])
+
     pull = None
     if SCRIPTED_PULL:
         # Grab the +x rim arc and lift it up/out to peel the cap off the ball.
@@ -600,7 +654,8 @@ def createScene(root):
         visu.addObject("IdentityMapping", input="@../Mo", output="@visual")
 
     cap.addObject(_make_controller(fem, springs, bending, mo, adhesion, pull,
-                                   _mouse, _damper, topo, _display, _camera, root))
+                                   _mouse, _damper, topo, _display, _camera, root,
+                                   _probe))
 
 
     print(f"""
