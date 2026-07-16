@@ -182,6 +182,19 @@ MAX_SPEED = 25.0         # units/s; 0 disables the clamp
 MAX_STRETCH = 1.6        # an edge may not exceed this multiple of its rest length; 0 = off
 STRAIN_ITERS = 3         # relaxation passes per step
 
+# --- RUNG 1 TEARING: break the pre-slit r~5 circle, then lift the central disc --------
+# generate_cap pre-slits the mesh at TEAR_RADIUS: the tear-ring vertices are doubled
+# (inner copy = the central disc, outer copy = the anchored rim), coincident and held
+# together by these STITCH springs so it looks continuous. "Tearing the circle" = drop the
+# stitches, progressively around the ring, so the central disc separates and lifts,
+# deforming with the SAME physics. This is the simplest rung: it can only tear this one
+# pre-designed circle; runtime splitting along an arbitrary path is a later rung.
+SCRIPTED_TEAR = True     # auto-run the demo: tear the circle and lift the flap
+STITCH_K = 2500.0        # stiffness holding the slit closed (match EDGE_STIFFNESS)
+TEAR_T = 3.0             # [s] start tearing the circle
+TEAR_DURATION = 3.0      # [s] to tear all the way around
+LIFT_HEIGHT = 4.5        # how high the freed central disc is lifted
+
 # --- AUTOMATIC plasticity: "拉完就不太彈回", no key press needed --------------
 # A purely elastic membrane snaps back to its rest shape the moment you let go. Real
 # tissue/gel does not. So the part that has ALREADY PEELED off the lens slowly adopts
@@ -277,7 +290,7 @@ def principal_stress(pos, rest, tris, E=None, nu=None):
 
 
 def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
-                     topo, display, camera, root, probe):
+                     topo, display, camera, root, probe, stitch, central, lift):
     import Sofa
     import numpy as np
 
@@ -291,6 +304,12 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.camera, self.root = camera, root
             self.probe = probe
             self.last_stress_log = -1e9
+            self.stitch = stitch
+            self.central = central
+            self.lift = lift
+            self.n_stitch = len(stitch.indices1.value) if stitch else 0
+            self.enabled = [True] * self.n_stitch     # per-stitch alive flag
+            self.tear_detached = False
             self.hot_tri = -1
             self.hot_pos = None
             self.hot_dir = None
@@ -460,6 +479,30 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 self.springs.linesStiffness.value = EDGE_STIFFNESS
                 self.paper_done = True
                 print(f"[ClothToPaper] t={t:.2f}s -> paper (young={PAPER_YOUNG})")
+
+            # --- RUNG 1 TEAR: break the pre-slit circle progressively, detach the disc ---
+            if SCRIPTED_TEAR and self.stitch is not None and self.n_stitch:
+                frac = (t - TEAR_T) / max(TEAR_DURATION, 1e-6)
+                if frac > 0.0:
+                    n_break = int(min(1.0, frac) * self.n_stitch)   # how many are torn
+                    already = self.enabled.count(False)
+                    if n_break > already:               # tear the next arc of the circle
+                        for k in range(n_break):
+                            self.enabled[k] = False
+                        self.stitch.enabled.value = list(self.enabled)
+                    if not self.tear_detached and self.adhered is not None:
+                        # the moment the tear starts, unglue the central disc from the lens
+                        # so it can be lifted; the rim stays glued and anchored.
+                        self.adhered.difference_update(self.central)
+                        if self.adhered:
+                            self.adhesion.points.value = sorted(self.adhered)
+                        else:
+                            self.adhesion.stiffness.value = [0.0]
+                        self.tear_detached = True
+                        print(f"[Tear] t={t:.2f}s circle tearing; central disc "
+                              f"({len(self.central)} nodes) detached from the lens")
+                    if n_break >= self.n_stitch and already < self.n_stitch:
+                        print(f"[Tear] t={t:.2f}s circle fully torn -> central disc is free")
 
             pos = self.mo.position.value
             rest = self.mo.rest_position.value
@@ -710,6 +753,48 @@ def createScene(root):
     adhesion = cap.addObject("RestShapeSpringsForceField", name="Adhesion",
                              stiffness=ADHESION_STIFF, drawSpring=False)
 
+    # STITCH springs holding the pre-slit tear circle closed. Each entry is
+    # [inner_vid, outer_vid, ks, kd, restLength=0] (the pair is coincident). Breaking a
+    # stitch = removing it from this list. Angle-sorted so the tear can run around the
+    # circle progressively.
+    import math as _math
+    _pairs = G.stitch_pairs()
+    _capV = None
+    try:
+        _capV = [ln.split()[1:4] for ln in open(CAP_OBJ) if ln.startswith("v ")]
+    except Exception:  # noqa: BLE001
+        pass
+    if _capV is not None:
+        def _ang(pr):
+            x, y = float(_capV[pr[0]][0]), float(_capV[pr[0]][1])
+            return _math.atan2(y, x)
+        _pairs = sorted(_pairs, key=_ang)
+    # Build with indices1/indices2 (the 'spring' Data cannot be read back from Python --
+    # "Invalid type" -- but indices1/indices2/stiffness/enabled all can). Break a stitch by
+    # flipping its 'enabled' bool. Pairs are angle-sorted, so disabling the first k tears
+    # the first k of the circle = the tear runs around progressively.
+    stitch = cap.addObject("SpringForceField", name="Stitch",
+                           indices1=[int(a) for a, b in _pairs],
+                           indices2=[int(b) for a, b in _pairs],
+                           stiffness=[STITCH_K], damping=[1.0], showArrowSize=0.0)
+    central = set(int(i) for i in G.central_indices())
+
+    # Lift handle: the central pole nodes. After the circle tears, this pulls the freed
+    # disc up so you see it come off round.
+    lift = None
+    if SCRIPTED_TEAR:
+        cap.addObject("BoxROI", name="poleBox", box=[-1.0, -1.0, -1.0, 1.0, 1.0, 3.0],
+                      drawBoxes=False)
+        # Lift only AFTER the circle is fully torn. If the lift overlaps the tear, the
+        # still-intact stiff stitches (k=2500) drag the rim up faster than the weak
+        # adhesion (120) can hold it down, so the rim rises too. Tear first, then lift.
+        _t1 = TEAR_T + TEAR_DURATION + 0.3      # lift starts here
+        lift = cap.addObject("LinearMovementProjectiveConstraint", name="lift",
+                             indices="@poleBox.indices",
+                             keyTimes=[0.0, _t1, _t1 + 3.0, 60.0],
+                             movements=[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0],
+                                        [0.0, 0.0, LIFT_HEIGHT], [0.0, 0.0, LIFT_HEIGHT]])
+
     # Peak-stress marker. A plain MechanicalObject that draws itself as spheres: no
     # visual model, no mapping, nothing that can crash the GUI. The controller moves these
     # points onto the hottest triangles each step. Point 0 = the peak; the last point is
@@ -757,7 +842,7 @@ def createScene(root):
 
     cap.addObject(_make_controller(fem, springs, bending, mo, adhesion, pull,
                                    _mouse, _damper, topo, _display, _camera, root,
-                                   _probe))
+                                   _probe, stitch, central, lift))
 
 
     print(f"""
