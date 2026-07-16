@@ -278,7 +278,19 @@ def principal_stress(pos, rest, tris, E=None, nu=None):
     xc, yc = frame(pos[tris])
     Dm = uv(rest[tris], xr, yr)
     Ds = uv(pos[tris], xc, yc)
-    F = Ds @ np.linalg.inv(Dm)
+    # Per-triangle guarded 2x2 inverse. A degenerate REST triangle (collinear/zero-area,
+    # e.g. after a crush or a plastic-freeze onto a collapsed cell) makes Dm singular; a
+    # batched np.linalg.inv would then raise for the WHOLE array and kill the observer.
+    # Here a bad triangle just gets Dm_inv=0 -> F=0 -> area_ratio=0 -> flagged degenerate
+    # and excluded downstream, while every healthy triangle is still measured.
+    a11 = Dm[:, 0, 0]; a12 = Dm[:, 0, 1]; a21 = Dm[:, 1, 0]; a22 = Dm[:, 1, 1]
+    det = a11 * a22 - a12 * a21
+    safe = np.abs(det) > 1e-9
+    inv_det = np.where(safe, 1.0 / np.where(safe, det, 1.0), 0.0)
+    Dm_inv = np.empty_like(Dm)
+    Dm_inv[:, 0, 0] = a22 * inv_det; Dm_inv[:, 0, 1] = -a12 * inv_det
+    Dm_inv[:, 1, 0] = -a21 * inv_det; Dm_inv[:, 1, 1] = a11 * inv_det
+    F = Ds @ Dm_inv
     eps = 0.5 * (np.einsum('tki,tkj->tij', F, F) - np.eye(2))
     c = E / (1.0 - nu * nu)
     sxx = c * (eps[:, 0, 0] + nu * eps[:, 1, 1])

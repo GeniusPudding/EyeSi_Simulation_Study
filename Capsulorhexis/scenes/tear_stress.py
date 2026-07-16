@@ -30,7 +30,8 @@ NX, NY = 17, 13
 YOUNG = 800.0
 EDGE_K = 1500.0
 MAX_STRETCH = 1.6
-STRESS_THRESHOLD = 300.0    # sigma1 the tip must exceed to advance
+STRESS_THRESHOLD = 120.0    # sigma1 the tip must exceed to advance (~15% local stretch
+                            # at YOUNG=800; lower = tears more easily / sooner)
 TEAR_CHECK_DT = 0.15        # [s] between tip advance checks
 PULL_MOVE = [0.0, 6.0, 4.0]  # top edge pulled up-and-back to load the sheet
 PULL_START_T = 1.0
@@ -69,7 +70,16 @@ def sigma1_of(pos, rest, tris, E, nu):
     xc, yc = frame(pos[tris])
     Dm = uv(rest[tris], xr, yr)
     Ds = uv(pos[tris], xc, yc)
-    F = Ds @ np.linalg.inv(Dm)
+    # Per-triangle guarded 2x2 inverse: one degenerate rest triangle must not make the
+    # batched inverse raise for the whole array (see cap_membrane.py for the full note).
+    a11 = Dm[:, 0, 0]; a12 = Dm[:, 0, 1]; a21 = Dm[:, 1, 0]; a22 = Dm[:, 1, 1]
+    det = a11 * a22 - a12 * a21
+    safe = np.abs(det) > 1e-9
+    inv_det = np.where(safe, 1.0 / np.where(safe, det, 1.0), 0.0)
+    Dm_inv = np.empty_like(Dm)
+    Dm_inv[:, 0, 0] = a22 * inv_det; Dm_inv[:, 0, 1] = -a12 * inv_det
+    Dm_inv[:, 1, 0] = -a21 * inv_det; Dm_inv[:, 1, 1] = a11 * inv_det
+    F = Ds @ Dm_inv
     eps = 0.5 * (np.einsum('tki,tkj->tij', F, F) - np.eye(2))
     c = E / (1.0 - nu * nu)
     sxx = c * (eps[:, 0, 0] + nu * eps[:, 1, 1])
@@ -274,7 +284,7 @@ def createScene(root):
     root.addObject("DefaultAnimationLoop")
     root.addObject("DefaultVisualManagerLoop")
     root.addObject("BackgroundSetting", color=[0.09, 0.10, 0.13, 1.0])
-    root.addObject("InteractiveCamera", position=[NX / 2, NY / 2 - 4, 24], lookAt=[NX / 2, NY / 2, 0])
+    root.addObject("InteractiveCamera", position=[NX / 2, NY / 2, 28], lookAt=[NX / 2, NY / 2, 0])
 
     verts, tris, n_real, bottom, top, sb, stip = _grid()
     m = root.addChild("Membrane")
