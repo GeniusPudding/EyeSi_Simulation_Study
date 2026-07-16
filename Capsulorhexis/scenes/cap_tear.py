@@ -43,12 +43,15 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 import generate_cap as G   # A, C, Z0, R, EDGE_LEN, _build_raw()
 
-# --- material (softer than cap_membrane so the tear GAPES visibly) ----------
-YOUNG = 500.0             # in-plane stiffness. Softer than the 1200 "paper" so the cut
-                          # actually opens as you pull (stiff paper barely gaped).
+# --- material --------------------------------------------------------------
+YOUNG = 900.0             # in-plane stiffness. A middle ground: soft enough that the cut
+                          # gapes, stiff enough that a hard mouse yank does not collapse a
+                          # triangle (500 gaped nicely but inverted -> FEM null determinant).
 POISSON = 0.3
-EDGE_STIFFNESS = 1500.0   # per-edge springs -> triangles keep their size
+EDGE_STIFFNESS = 2000.0   # per-edge springs -> triangles keep their size
 BEND_STIFFNESS = 8.0      # low = the freed flap folds/peels over instead of standing rigid
+AREA_MIN_FRAC = 0.30      # a triangle may not shrink below this fraction of its rest area
+                          # (the collapse/inversion that null-determinants the FEM); clamped
 DAMPING = 2.0
 LENS_REPULSION = 2000.0   # analytic lens obstacle (do NOT raise -> penalty blow-up)
 MAX_STRETCH = 1.5         # hard edge-length cap (keeps the mesh from crushing/inverting)
@@ -71,10 +74,9 @@ MAX_SPEED = 25.0          # hard per-node velocity cap: a hard mouse yank is one
 # sigma1 ~= YOUNG * local strain, so 90/1200 ~= 7.5% local stretch at the tip triggers a
 # step. Lowered from 180 so a GENTLE mouse pull can drive the crack (the scripted symmetric
 # lift used to slam sigma1 past 1000, which hid how high 180 really was for hand pulling).
-STRESS_THRESHOLD = 6.0     # sigma1 the tip must exceed to advance. sigma1 ~= YOUNG*strain, so
-                           # softening YOUNG 1200->500 roughly halves the tip sigma1 a pull
-                           # produces -> the threshold is lowered to match. Idle tip sigma1
-                           # is ~0, so this stays well clear of auto-tearing.
+STRESS_THRESHOLD = 10.0    # sigma1 the tip must exceed to advance (sigma1 ~= YOUNG*strain).
+                           # Idle tip sigma1 is ~0, so this stays well clear of auto-tearing;
+                           # with the gain below the real bar is ~5.
 TIP_STRESS_GAIN = 2.0      # a real crack tip has a stress SINGULARITY that a coarse mesh
                            # smears/underestimates; this concentration factor multiplies the
                            # tip sigma1 before the threshold test, so a hand pull tears more
@@ -121,10 +123,11 @@ SHOW_TIP_MARKER = False   # small red dot on the crack tip = where to grab (set 
 PRE_TEAR_DEG = 100.0      # pre-open this much of the tear circle at startup (a visible
                           # starting flap the surgeon already made); 0 = just the nick
 ENABLE_MOUSE = True
-MOUSE_STIFFNESS = 700.0   # Shift+left-drag attach spring. Softer than before: a stiff spring
-                          # + a fast yank is one big penalty impulse that NaNs the mesh
-                          # ("whole scene disappears"). Softer = you must drag a bit further
-                          # but it will not explode.
+MOUSE_STIFFNESS = 250.0   # Shift+left-drag attach spring. LOW on purpose: force = stiffness x
+                          # drag distance is UNBOUNDED, so dragging the cursor far off-screen
+                          # at high stiffness is a huge impulse that collapses a triangle
+                          # (FEM null determinant -> scene vanishes). Low stiffness caps how
+                          # hard a far drag can pull; tearing is easy anyway (low threshold).
 ALARM_DISTANCE = 0.40 * G.EDGE_LEN
 CONTACT_DISTANCE = 0.20 * G.EDGE_LEN
 
@@ -504,18 +507,22 @@ def _make_controller(mo, topo, fem, springs, mass, visual, n_real, seed_v, v_a, 
                     if hot.any():
                         Vel[hot] *= (MAX_SPEED / sp[hot])[:, None]
                         self.mo.velocity.value = Vel.tolist()
+            if self.edges is None:
+                tris = np.array(self.topo.triangles.value)
+                E = set()
+                for a, b, c in tris:
+                    for u, w in ((a, b), (b, c), (c, a)):
+                        E.add((min(u, w), max(u, w)))
+                self.edges = np.array(sorted(E), dtype=int)
+                R = np.array(self.mo.rest_position.value)
+                self.edge_rest = np.linalg.norm(
+                    R[self.edges[:, 1]] - R[self.edges[:, 0]], axis=1)
+                self.tri_arr = tris
+                self.rest_area = 0.5 * np.linalg.norm(np.cross(
+                    R[tris[:, 1]] - R[tris[:, 0]], R[tris[:, 2]] - R[tris[:, 0]]), axis=1)
+            P = np.array(self.mo.position.value)
+            # (1) edge strain clamp: no edge past MAX_STRETCH x rest length
             if MAX_STRETCH > 0:
-                if self.edges is None:
-                    tris = np.array(self.topo.triangles.value)
-                    E = set()
-                    for a, b, c in tris:
-                        for u, w in ((a, b), (b, c), (c, a)):
-                            E.add((min(u, w), max(u, w)))
-                    self.edges = np.array(sorted(E), dtype=int)
-                    R = np.array(self.mo.rest_position.value)
-                    self.edge_rest = np.linalg.norm(
-                        R[self.edges[:, 1]] - R[self.edges[:, 0]], axis=1)
-                P = np.array(self.mo.position.value)
                 e0, e1 = self.edges[:, 0], self.edges[:, 1]
                 limit = self.edge_rest * MAX_STRETCH
                 for _ in range(3):
@@ -528,7 +535,31 @@ def _make_controller(mo, topo, fem, springs, mass, visual, n_real, seed_v, v_a, 
                     ex = (L[over] - limit[over])[:, None]
                     np.add.at(P, e0[over], 0.5 * ex * n)
                     np.add.at(P, e1[over], -0.5 * ex * n)
-                self.mo.position.value = P.tolist()
+            # (2) area clamp: stop any triangle collapsing/inverting below AREA_MIN_FRAC of
+            # its rest area -- that collapse is what null-determinants the FEM and vanishes
+            # the scene on a hard yank. Blow the offending triangles back up around their
+            # centroid (edge clamps alone miss a pure shear/inversion).
+            if AREA_MIN_FRAC > 0:
+                T = self.tri_arr
+                floor = AREA_MIN_FRAC * self.rest_area
+                for _ in range(2):
+                    A = P[T[:, 0]]; B = P[T[:, 1]]; C = P[T[:, 2]]
+                    area = 0.5 * np.linalg.norm(np.cross(B - A, C - A), axis=1)
+                    bad = area < floor
+                    if not bad.any():
+                        break
+                    Tb = T[bad]
+                    cen = (P[Tb[:, 0]] + P[Tb[:, 1]] + P[Tb[:, 2]]) / 3.0
+                    s = np.sqrt(np.maximum(floor[bad] / np.maximum(area[bad], 1e-9), 1.0))[:, None]
+                    corr = np.zeros_like(P)
+                    cnt = np.zeros(len(P))
+                    for j in range(3):
+                        newp = cen + s * (P[Tb[:, j]] - cen)
+                        np.add.at(corr, Tb[:, j], newp - P[Tb[:, j]])
+                        np.add.at(cnt, Tb[:, j], 1.0)
+                    m = cnt > 0
+                    P[m] += corr[m] / cnt[m][:, None]
+            self.mo.position.value = P.tolist()
 
             # Once most of the circle is torn, switch on upward buoyancy so the (now nearly
             # free) central disc peels up and reveals the round hole -- "the whole piece
