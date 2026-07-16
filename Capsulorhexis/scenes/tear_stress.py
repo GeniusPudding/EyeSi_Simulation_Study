@@ -125,7 +125,7 @@ def _grid():
     return verts, tris, n_real, bottom, top, start_boundary, start_tip
 
 
-def _make_controller(mo, topo, fem, springs, mass, n_real, start_b, start_tip):
+def _make_controller(mo, topo, fem, springs, mass, n_real, start_b, start_tip, visual):
     import Sofa
     import numpy as np
 
@@ -134,6 +134,7 @@ def _make_controller(mo, topo, fem, springs, mass, n_real, start_b, start_tip):
             Sofa.Core.Controller.__init__(self, *a, **k)
             self.mo, self.topo = mo, topo
             self.fem, self.springs, self.mass = fem, springs, mass
+            self.visual = visual
             self.next_spare = n_real
             self.crack = [start_b, start_tip]     # [.., prev, tip]
             self.last_check = -1e9
@@ -192,6 +193,13 @@ def _make_controller(mo, topo, fem, springs, mass, n_real, start_b, start_tip):
             self.mo.position.value = P.tolist()
             self.mo.rest_position.value = R.tolist()
             self.topo.triangles.value = tris.tolist()
+            # Push the new connectivity to the OglModel too: we edit topo.triangles
+            # directly (not via the topology-modifier API), so the visual model never gets
+            # a topology-change event and would keep drawing the OLD triangles -- the crack
+            # opens mechanically but the rendered skin stays bridged. Setting its triangle
+            # Data makes the gap actually show.
+            if self.visual is not None:
+                self.visual.triangles.value = tris.tolist()
             self.fem.reinit(); self.springs.reinit(); self.mass.reinit()
             self.edges = None
             return spare
@@ -310,11 +318,13 @@ def createScene(root):
     m.addObject("LinearMovementProjectiveConstraint", name="pull", indices=top,
                 keyTimes=[0.0, PULL_START_T, PULL_END_T, 60.0],
                 movements=[[0, 0, 0], [0, 0, 0], PULL_MOVE, PULL_MOVE])
-    m.addObject(_make_controller(mo, topo, fem, springs, mass, n_real, sb, stip))
 
     visu = m.addChild("Visual")
-    visu.addObject("OglModel", name="visual", color=[0.9, 0.9, 0.82, 1.0])
+    oglm = visu.addObject("OglModel", name="visual", color=[0.9, 0.9, 0.82, 1.0],
+                          triangles=tris)
     visu.addObject("IdentityMapping", input="@../mo", output="@visual")
+
+    m.addObject(_make_controller(mo, topo, fem, springs, mass, n_real, sb, stip, oglm))
     return root
 
 
