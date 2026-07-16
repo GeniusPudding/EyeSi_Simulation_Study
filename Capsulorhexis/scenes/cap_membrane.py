@@ -189,7 +189,10 @@ STRAIN_ITERS = 3         # relaxation passes per step
 # stitches, progressively around the ring, so the central disc separates and lifts,
 # deforming with the SAME physics. This is the simplest rung: it can only tear this one
 # pre-designed circle; runtime splitting along an arbitrary path is a later rung.
-SCRIPTED_TEAR = True     # auto-run the demo: tear the circle and lift the flap
+SCRIPTED_TEAR = False    # OFF: the pre-slit fixed-circle tear was artificial (the
+                         # user is right -- the tear should follow the instrument).
+                         # Kept only as reference; runtime instrument-driven tearing
+                         # is the next build (feasibility proven: numpy split works).
 STITCH_K = 2500.0        # stiffness holding the slit closed (match EDGE_STIFFNESS)
 TEAR_T = 3.0             # [s] start tearing the circle
 TEAR_DURATION = 3.0      # [s] to tear all the way around
@@ -790,7 +793,8 @@ def createScene(root):
         _outer = [i for i, xyz in enumerate(_capV)
                   if _m2.hypot(float(xyz[0]), float(xyz[1])) > 0.9 * G.R]
         if _outer:
-            cap.addObject("FixedProjectiveConstraint", name="RimAnchor", indices=_outer)
+            cap.addObject("FixedProjectiveConstraint", name="RimAnchor", indices=_outer,
+                          showObject=False)
 
     # Lift handle: the central pole nodes. After the circle tears, this pulls the freed
     # disc up so you see it come off round.
