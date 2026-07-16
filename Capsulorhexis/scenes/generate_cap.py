@@ -22,10 +22,10 @@ import os
 
 # --- base ellipsoid (the lens) ----------------------------------------------
 A = 7.0        # semi-axis in x and y
-C = 1.75       # semi-axis in z (smaller = flatter lens)
+C = 1.5       # semi-axis in z (smaller = flatter lens)
 
 # --- membrane ---------------------------------------------------------------
-CAP_ANGLE_DEG = 90.0   # 90 = cover the WHOLE upper half (rim on the equator, z=0)
+CAP_ANGLE_DEG = 80.0   # 90 = cover the WHOLE upper half (rim on the equator, z=0)
 TARGET_EDGE = 0.30     # desired triangle edge length -> THE resolution knob.
                        # 0.60 = the old coarse mesh; 0.30 = ~4x the triangles.
 MIN_SEG = 6            # minimum segments on the innermost ring
