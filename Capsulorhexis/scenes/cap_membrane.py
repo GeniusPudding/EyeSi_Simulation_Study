@@ -124,7 +124,13 @@ LOCK_CAMERA = True
 # SofaPython3 cannot bind ("Invalid type") -- that is exactly why this repo needed a C++
 # plugin. Strain is a purely GEOMETRIC quantity (rest vs current), so it does not matter
 # which component carries the load, and we need no FEM internals at all.
-SHOW_STRESS = True       # colour the membrane by sigma1 (red = about to tear)
+SHOW_STRESS = True       # compute sigma1 every STRESS_EVERY steps (the tear criterion
+                         # will run on this). Cheap, headless-safe, no GUI involvement.
+# Colouring the mesh by sigma1 via DataDisplay CRASHES this SOFA build: SIGABRT in
+# DataDisplay::computeNormals during VisualModel::updateVisual / initTextures, i.e. at
+# GUI visual init. Batch mode never initialises visuals, which is why a headless test
+# passed and the app still would not open. Left OFF until a safe visualisation exists.
+STRESS_COLOR = False
 STRESS_EVERY = 3         # steps between stress updates (it is ~O(triangles) numpy)
 STRESS_E = 1200.0        # Young's modulus used for sigma = C:eps
 STRESS_NU = 0.3
@@ -537,14 +543,14 @@ def createScene(root):
                       contactStiffness=CONTACT_STIFFNESS)
 
     _display = None
-    if SHOW_STRESS:
+    if STRESS_COLOR:
         # DataDisplay colours each triangle by the scalar we push into triangleData
         # (our sigma1). OglColorMap draws the legend. Red = high stress = where a tear
         # would start.
         _display = cap.addObject("DataDisplay", name="StressView", maximalRange=False)
         cap.addObject("OglColorMap", name="StressMap", colorScheme="HSV",
                       showLegend=True, legendTitle="sigma1")
-    else:
+    if not STRESS_COLOR:
         visu = cap.addChild("Visual")
         visu.addObject("OglModel", name="visual", color=[0.92, 0.90, 0.82, 1.0])
         visu.addObject("IdentityMapping", input="@../Mo", output="@visual")
