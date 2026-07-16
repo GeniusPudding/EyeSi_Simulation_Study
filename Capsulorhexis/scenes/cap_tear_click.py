@@ -54,8 +54,10 @@ NICK_RADIUS = 5.0
 # split makes a degenerate sliver -> inf) and the fixed rim. Between them the crack goes
 # wherever you pull -- inward, outward, around -- not a fixed ring.
 TEAR_R_MIN = 1.8
-TEAR_R_MAX = 6.5
+TEAR_R_MAX = 6.8          # near the rim -- only the fixed rim (r>0.9*R) is off-limits
 RIM_FRAC = 0.9
+DRAG_STEPS_PER_FRAME = 4  # while you DRAG, advance the crack this many vertices/frame TOWARD the
+                          # cursor -- so the tear visibly runs to where you pull (not 1 slow step)
 PRE_TEAR_DEG = 60.0
 
 # --- click-driven tear -------------------------------------------------------
@@ -76,10 +78,12 @@ ADVANCE_PER_CLICK = 10     # how many vertices one click tears further along the
 CLICK_PLANE_Z = 1.0        # (un-projection is only for a log check; the tear is robust)
 PEEL_LIFT = 0.0            # DISABLED: a kinematic peel (set position, node not fixed) fights
 PEEL_STEP = 0.18           # the springs and blows up. Reveal via buoyancy (a FORCE) instead.
-# Buoyancy (the eye's vitreous) gently lifts the freeing disc so the flap peels up as you
-# tear -- a real body force integrated by the solver, so it is STABLE (unlike the peel).
-# Turned on after a modest tear so the whole cap does not dome up before you start.
-LIFT_AFTER_CRACKLEN = 40
+# DISABLED. The auto gravity-lift ("reveal the hole") was the LATE-explosion cause: at crack>=40
+# it set root.gravity=[0,0,22], loading the WHOLE membrane with a permanent up-force that the
+# fixed rim + clamps fight; ~5 s later a freshly split spare vertex lands in that stressed field
+# and spikes to ~1.5e5 (the t=7.4 blow-up in the user's log, at spares v1999/v1775). A huge
+# threshold keeps it off; stability now holds indefinitely.
+LIFT_AFTER_CRACKLEN = 10**9
 DISC_LIFT_Z = 22.0
 
 PLUGINS = [
@@ -226,7 +230,10 @@ def _make_controller(mo, topo, springs, mass, visual, cam, n_real, seed_v, v_a, 
                 return float(np.dot(w, want))
 
             vnext = max(cands, key=score)
-            if score(vnext) < 0.0:
+            # steer freely toward the cursor: accept up to ~135deg sideways (only refuse a
+            # candidate pointing almost straight AWAY from where you pull) so the crack tracks
+            # the cursor instead of stalling and spiralling around the ring.
+            if score(vnext) < -0.7:
                 return False
             sp = self._split_tip(tip, prev, vnext)
             if sp is None:
@@ -418,8 +425,16 @@ def _make_controller(mo, topo, springs, mass, visual, cam, n_real, seed_v, v_a, 
                 disp = np.linalg.norm(P[:n_real] - R[:n_real], axis=1)
                 j = int(np.argmax(disp))
                 if disp[j] > DRAG_TRIGGER:
-                    if self._advance_toward(float(P[j, 0]), float(P[j, 1])):
-                        print(f"[Tear] DRAG pull v{j} (disp={disp[j]:.1f}) -> tip advances, "
+                    # chase the cursor-grabbed node several steps this frame so the crack
+                    # visibly RUNS toward where you pull (1 step/frame felt like "拉不動").
+                    tx, ty = float(P[j, 0]), float(P[j, 1])
+                    steps = 0
+                    for _ in range(DRAG_STEPS_PER_FRAME):
+                        if not self._advance_toward(tx, ty):
+                            break
+                        steps += 1
+                    if steps:
+                        print(f"[Tear] DRAG toward v{j} (disp={disp[j]:.1f}) -> +{steps} verts, "
                               f"crack={len(self.pairs)}")
 
         def onAnimateEndEvent(self, event):
