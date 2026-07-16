@@ -2,17 +2,15 @@
     Launch the cap-on-lens capsulorhexis demo in the runSofa GUI. Stock SOFA only
     (no Capsulorhexis.dll). Regenerates the meshes first.
 
-    DEFAULT is cap_tear.py -- the FREE, stress-driven tear: Shift+left-drag the flap and
-    the crack follows YOUR pull (perpendicular-to-sigma1), no hardcoded circle. It prints
-    [Tear] lines (NOT [Peel]/[ClothToPaper] -- those belong to the old scene).
-
-    Old adhesion-peel scene (pre-slit stitch circle, no free tearing):
-        ./scenes/run_cap.ps1 -Scene cap_membrane.py
+    DEFAULT is cap_membrane.py -- the membrane simply SITS on the oblate lens, held down
+    by a breakable adhesion. NOTHING is clamped (FIX_OUTER_RIM=False), so you can
+    Shift+left-drag the RIM, lift it and FOLD IT OVER. Pull gently and the adhesion
+    holds; pull harder and that spot peels off. It prints [Peel]/[ClothToPaper] lines.
 
     Usage:  ./scenes/run_cap.ps1
 #>
 [CmdletBinding()]
-param([string]$Scene = "cap_tear.py")
+param([string]$Scene = "cap_membrane.py")
 
 $ErrorActionPreference = "Stop"
 if (-not $env:SOFA_ROOT) { $env:SOFA_ROOT = "C:\SOFA\SOFA_v25.12.00_Win64" }
