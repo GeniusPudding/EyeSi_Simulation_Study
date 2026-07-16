@@ -94,10 +94,14 @@ def sigma1_of(pos, rest, tris, E, nu):
 
 
 def _grid():
+    # Centre the grid on the ORIGIN so it frames correctly regardless of which camera the
+    # GUI ends up using (SofaImGui's default camera looks at the origin and ignores a
+    # scripted InteractiveCamera lookAt -- an off-origin grid lands in a screen corner).
+    cx, cy = (NX - 1) * 0.5, (NY - 1) * 0.5
     verts = []
     for j in range(NY):
         for i in range(NX):
-            verts.append([float(i), float(j), 0.0])
+            verts.append([float(i) - cx, float(j) - cy, 0.0])
     n_real = len(verts)
     verts += [[-99.0, -99.0, -99.0]] * (NX * NY)      # generous spare pool
 
@@ -284,7 +288,7 @@ def createScene(root):
     root.addObject("DefaultAnimationLoop")
     root.addObject("DefaultVisualManagerLoop")
     root.addObject("BackgroundSetting", color=[0.09, 0.10, 0.13, 1.0])
-    root.addObject("InteractiveCamera", position=[NX / 2, NY / 2, 28], lookAt=[NX / 2, NY / 2, 0])
+    root.addObject("InteractiveCamera", position=[0, 0, 28], lookAt=[0, 0, 0])
 
     verts, tris, n_real, bottom, top, sb, stip = _grid()
     m = root.addChild("Membrane")
