@@ -42,13 +42,19 @@ DAMPING = 1.5
 LENS_REPULSION = 2000.0
 MAX_STRETCH = 1.5
 MAX_SPEED = 25.0
-MAX_DISP = 8.0
+MAX_DISP = 2.5             # HARD cap on how far ONE node may leave rest. 8 was catastrophic:
+                           # the mouse pulls a single node, at disp 8 its 0.3-rest edges are
+                           # stretched ~23x -> ~8000 internal force -> divergence. 2.5 keeps
+                           # the pull visible but the edge stretch (hence force) bounded.
 AREA_MIN_FRAC = 0.30
 
 # --- geometry / seed ---------------------------------------------------------
 NICK_RADIUS = 5.0
-TEAR_R_MIN = 3.0
-TEAR_R_MAX = 6.0
+# FREE path: only forbid the tiny central POLE (r<TEAR_R_MIN, where all rings converge and a
+# split makes a degenerate sliver -> inf) and the fixed rim. Between them the crack goes
+# wherever you pull -- inward, outward, around -- not a fixed ring.
+TEAR_R_MIN = 1.8
+TEAR_R_MAX = 6.5
 RIM_FRAC = 0.9
 PRE_TEAR_DEG = 60.0
 
