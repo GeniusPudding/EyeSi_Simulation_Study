@@ -454,19 +454,28 @@ def createScene(root):
     visu.addObject("OglModel", name="visual", color=[0.92, 0.90, 0.82, 1.0])
     visu.addObject("IdentityMapping", input="@../Mo", output="@visual")
 
-    print("""
+    print(f"""
++===========================================================================+
+| Shift + LEFT-DRAG = pull the membrane. Drag ACROSS (not just up) to fold   |
+| it over; a near-top-down view makes the drag parallel to the membrane.     |
+| Drag distance = pull force, so do not drag the cursor miles away.          |
++--- TUNE LIVE in the GUI: click the component, type, then PRESS ENTER ------+
+|  Cap > Bending > stiffness          fold: small=floppy/creases  big=rigid  |
+|                                     (now {BEND_STIFFNESS:g}; try 15 / 30 / 50)         |
+|  Cap > Adhesion > stiffness         how strongly it sticks to the lens     |
+|  Cap > UniformVelocityDam..> dampingCoefficient   viscosity                |
+|  AttachBodyButtonSetting > stiffness              mouse pull strength      |
+|  (ENTER is required -- ImGui does not commit the number until you do.)     |
++--- EDIT THE FILE (these are not SOFA Data, so the GUI cannot show them) ---+
+|  cap_membrane.py : PLASTIC_RATE={PLASTIC_RATE:g}  BREAK_FORCE={BREAK_FORCE:g}  MAX_SPEED={MAX_SPEED:g}          |
+|  generate_cap.py : C={G.C:g} (flatness)  CAP_ANGLE_DEG={G.CAP_ANGLE_DEG:g} (coverage)         |
+|                    A={G.A:g} (size)  TARGET_EDGE={G.TARGET_EDGE:g} (mesh resolution)      |
+|                    -> re-run run_cap.ps1; it regenerates the meshes.       |
 +---------------------------------------------------------------------------+
-|  Shift + LEFT-DRAG = pull the membrane   (drag ACROSS to fold it over;     |
-|                                           use a top-down view to drag      |
-|                                           parallel to the membrane)        |
-|  ---------------------------- live knobs -------------------------------- |
-|   K / J   fold stiffness   harder / softer   (crumples? -> K ; rigid? -> J)|
-|   O / I   plasticity       keeps shape / springs back more                 |
-|   N / B   adhesion         stickier / easier to peel                       |
-|   M / H   mouse pull       harder / softer   (too hard = explosions)       |
-|   P       print current values                                             |
-|   F       freeze the whole membrane now                                    |
-+---------------------------------------------------------------------------+""")
+| NOTE: keyboard shortcuts do NOT work here -- SofaImGui swallows the        |
+| keyboard (KeypressedEvent is in SofaGLFW.dll but not SofaImGui.dll).       |
+| Use the Data fields above instead.                                         |
++===========================================================================+""")
     return root
 
 
