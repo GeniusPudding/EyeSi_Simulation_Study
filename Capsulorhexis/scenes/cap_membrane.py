@@ -103,9 +103,12 @@ CONTACT_DISTANCE = 0.20 * G.EDGE_LEN
 # adhesion, which is why the membrane felt "拉不動". This spring must be able to lift a
 # node past BREAK_FORCE (= ADHESION_STIFF * break lift), so keep it well above that.
 # BUT it is also a penalty spring (F = stiffness * how far you drag past the node), so
-# too high + a fast drag = the same explosion as LENS_REPULSION=8000 gave. 400 still
-# beats BREAK_FORCE=60 easily. Tune live with M (harder) / H (softer).
-MOUSE_STIFFNESS = 400.0
+# too high + a fast drag = the same explosion as LENS_REPULSION=8000 gave. BUT measured:
+# a FAST FLICK explodes it at 400, 1000 AND 2000 alike (max|coord| 41 / 77 / 108), and
+# raising rayleighStiffness 0.2->0.5 does not save it either. So lowering this does NOT
+# buy stability -- it only makes the membrane hard to pull. Keep it pullable at 1000 and
+# DRAG SMOOTHLY; a hard flick is a single huge penalty impulse no stiffness value fixes.
+MOUSE_STIFFNESS = 1000.0
 
 # --- AUTOMATIC plasticity: "拉完就不太彈回", no key press needed --------------
 # A purely elastic membrane snaps back to its rest shape the moment you let go. Real
@@ -230,6 +233,19 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper):
 
         def onAnimateBeginEvent(self, event):
             t = self.fem.getContext().getTime()
+
+            # Make the GUI's Bending->stiffness field actually WORK. TriangularBendingSprings
+            # bakes ks into per-edge data (ei.ks = getKs()), so typing a new value in the
+            # Data panel changes nothing until reinit() re-reads it. Poll it and re-bake.
+            # (Hotkeys are unreliable here: SofaImGui swallows the keyboard unless the 3D
+            # viewport has focus, so editing the Data field is the dependable route.)
+            ks_now = float(self.bending.stiffness.value)
+            if self.last_ks is None:
+                self.last_ks = ks_now
+            elif abs(ks_now - self.last_ks) > 1e-9:
+                self.bending.reinit()
+                self.last_ks = ks_now
+                print(f"[Tune] BEND_STIFFNESS -> {ks_now:.1f} (applied)")
 
             if not self.paper_done and t >= SWITCH_T:
                 self.fem.youngModulus.value = [PAPER_YOUNG]
