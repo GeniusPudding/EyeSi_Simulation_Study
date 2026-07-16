@@ -59,9 +59,19 @@ MAX_SPEED = 25.0          # hard per-node velocity cap: a hard mouse yank is one
 # sigma1 ~= YOUNG * local strain, so 90/1200 ~= 7.5% local stretch at the tip triggers a
 # step. Lowered from 180 so a GENTLE mouse pull can drive the crack (the scripted symmetric
 # lift used to slam sigma1 past 1000, which hid how high 180 really was for hand pulling).
-STRESS_THRESHOLD = 20.0    # sigma1 the tip must exceed to advance -- low so a gentle drag
-                           # tears (raise if it tears too eagerly / from noise)
+STRESS_THRESHOLD = 10.0    # sigma1 the tip must exceed to advance. Measured: idle tip sigma1
+                           # is 0 (the tip is only stressed when you pull near it), so this
+                           # can be low without auto-tearing -- with the gain below the real
+                           # bar is ~7, and a near-tip pull gives ~10-14, so it keeps tearing
+                           # even as your grab drifts a bit from the advancing tip.
+TIP_STRESS_GAIN = 1.5      # a real crack tip has a stress SINGULARITY that a coarse mesh
+                           # smears/underestimates; this concentration factor multiplies the
+                           # tip sigma1 before the threshold test, so a hand pull tears more
+                           # readily (raise to make tearing easier)
 TEAR_CHECK_DT = 0.10       # [s] between tip-advance checks
+MAX_ADVANCE_PER_CHECK = 6  # unzip up to this many vertices per check while the tip stays
+                           # over threshold -> a firm pull tears a RUN, not one vertex
+PULL_LOG_DT = 0.3          # [s] between [Pull] diagnostic lines (only while you are pulling)
 TEAR_SETTLE_T = 0.8       # [s] no tearing before this -> the mesh settles on load-in first
                           # (otherwise a startup transient at the pinned seed tears once)
 
@@ -212,6 +222,7 @@ def _make_controller(mo, topo, fem, springs, mass, visual, n_real, seed_v, v_a, 
             self.first_fwd = v0
             self.seeded = False
             self.last_check = -1e9
+            self.last_pull_log = -1e9
             self.pairs = []
             self.edges = None
             self.edge_rest = None
@@ -306,35 +317,70 @@ def _make_controller(mo, topo, fem, springs, mass, visual, n_real, seed_v, v_a, 
             self.last_check = t
             if self.adj is None:
                 self._build_adj()
+
+            # --- PULL DIAGNOSTIC: is your pull even reaching the tip? ------------------
+            # Prints, while you are pulling: the stress AT THE TIP (what the tear test uses),
+            # WHERE the stress is actually highest, and WHERE you are pulling + its distance
+            # to the tip. If tipSigma1 stays tiny while you pull far from the tip, the tear
+            # criterion is behaving correctly -- the load just is not reaching the crack.
+            P = np.array(self.mo.position.value)
+            R = np.array(self.mo.rest_position.value)
+            tris = np.array(self.topo.triangles.value)
+            s1, _ = sigma1_of(P, R, tris, YOUNG, POISSON)
+            pull = np.linalg.norm(P[:n_real] - R[:n_real], axis=1)
+            jmax = int(np.argmax(pull)) if pull.size else 0
+            if pull.size and pull[jmax] > 0.12 and t - self.last_pull_log >= PULL_LOG_DT:
+                self.last_pull_log = t
+                tip = self.crack[-1]
+                touch = [k for k in range(len(tris)) if tip in tris[k]]
+                tipS = max((s1[k] for k in touch), default=0.0)
+                kmax = int(np.argmax(s1))
+                cen = P[tris].mean(axis=1)
+                gr = float(np.hypot(cen[kmax, 0], cen[kmax, 1]))
+                ga = float(np.degrees(np.arctan2(cen[kmax, 1], cen[kmax, 0])))
+                tr = float(np.hypot(P[tip, 0], P[tip, 1]))
+                ta = float(np.degrees(np.arctan2(P[tip, 1], P[tip, 0])))
+                pr = float(np.hypot(P[jmax, 0], P[jmax, 1]))
+                pa = float(np.degrees(np.arctan2(P[jmax, 1], P[jmax, 0])))
+                d2t = float(np.hypot(P[jmax, 0] - P[tip, 0], P[jmax, 1] - P[tip, 1]))
+                print(f"[Pull] tipSigma1={tipS:5.0f} (x{TIP_STRESS_GAIN}={tipS * TIP_STRESS_GAIN:5.0f} "
+                      f"vs thr {STRESS_THRESHOLD:.0f}) tip@r{tr:.1f},{ta:.0f}d | "
+                      f"maxSigma1={s1[kmax]:5.0f}@r{gr:.1f},{ga:.0f}d | "
+                      f"youPull {pull[jmax]:.1f}@r{pr:.1f},{pa:.0f}d dist-to-tip={d2t:.1f} | "
+                      f"crackLen={len(self.pairs)}")
+
+            # --- ADVANCE: unzip up to MAX_ADVANCE_PER_CHECK while the tip stays loaded ----
+            for _ in range(MAX_ADVANCE_PER_CHECK):
+                if self._advance_once(t) != "advanced":
+                    break
+
+        def _advance_once(self, t):
+            """Try to advance the crack tip ONE vertex. Returns 'advanced' on success, or a
+            reason string. Only a true dead-end (no neighbours left) stops the crack for
+            good; 'below_threshold'/'no_forward' just wait for a better pull."""
             P = np.array(self.mo.position.value)
             R = np.array(self.mo.rest_position.value)
             tris = np.array(self.topo.triangles.value)
             s1, sdir = sigma1_of(P, R, tris, YOUNG, POISSON)
-
             tip, prev = self.crack[-1], self.crack[-2]
             touch = [k for k in range(len(tris)) if tip in tris[k]]
             if not touch:
-                return
+                return "no_touch"
             khot = max(touch, key=lambda k: s1[k])
-            if s1[khot] < STRESS_THRESHOLD:
-                return                            # tip not stressed enough yet
-
-            # crack runs PERPENDICULAR to sigma1, in the tip's LOCAL tangent plane (so it
-            # follows the curved surface), forced FORWARD (away from prev).
+            if s1[khot] * TIP_STRESS_GAIN < STRESS_THRESHOLD:
+                return "below_threshold"
             nrm = self._tip_normal(P, tris, touch)
-            d = sdir[khot]
-            perp = np.cross(nrm, d)
+            perp = np.cross(nrm, sdir[khot])
             if np.linalg.norm(perp) < 1e-6:
-                return
+                return "no_perp"
             perp = perp / np.linalg.norm(perp)
-            fwd = P[tip] - P[prev]
-            if np.dot(perp, fwd) < 0:
+            if np.dot(perp, P[tip] - P[prev]) < 0:
                 perp = -perp
             cands = [v for v in self.adj.get(tip, ()) if v not in self.crack and v < n_real]
             if not cands:
                 self.stopped = True
-                print(f"[Tear] t={t:.2f} reached a boundary/dead-end; stopping")
-                return
+                print(f"[Tear] t={t:.2f} reached a boundary; stopping")
+                return "dead_end"
 
             def align(v):
                 w = P[v] - P[tip]
@@ -342,23 +388,20 @@ def _make_controller(mo, topo, fem, springs, mass, visual, n_real, seed_v, v_a, 
 
             vnext = max(cands, key=align)
             if align(vnext) < 0.2:
-                self.stopped = True
-                print(f"[Tear] t={t:.2f} no forward direction; stopping")
-                return
+                return "no_forward"           # wait for a better pull, do NOT stop for good
             sp = self._split_tip(tip, prev, vnext)
             if sp is None:
-                self.stopped = True
-                print(f"[Tear] t={t:.2f} split failed at v{tip}; stopping")
-                return
+                return "split_fail"
             self.pairs.append((tip, sp))
             self.crack.append(vnext)
             P = np.array(self.mo.position.value)
             gaps = [float(np.linalg.norm(P[a] - P[b])) for a, b in self.pairs]
             rr = float(np.hypot(P[vnext, 0], P[vnext, 1]))
             aa = float(np.degrees(np.arctan2(P[vnext, 1], P[vnext, 0])))
-            print(f"[Tear] t={t:5.2f} sigma1={s1[khot]:6.0f} tip v{tip}->v{vnext} "
+            print(f"[Tear] t={t:5.2f} sigma1={s1[khot]:5.0f} tip v{tip}->v{vnext} "
                   f"(r={rr:4.1f} ang={aa:6.1f}deg z={P[vnext,2]:4.1f}); "
                   f"crack len={len(self.pairs)} max-gap={max(gaps):.2f}")
+            return "advanced"
 
         def onAnimateEndEvent(self, event):
             # Velocity clamp first: catch a violent mouse yank before it can blow a triangle
