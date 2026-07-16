@@ -52,8 +52,10 @@ RIM_FRAC = 0.9
 PRE_TEAR_DEG = 60.0
 
 # --- click-driven tear -------------------------------------------------------
-MOUSE_STIFFNESS_CAP = 30.0 # cap the stiffness of SofaImGui's hidden 'Mouse' attach spring, whose
-                           # UNBOUNDED force (climbed to >1e6 in the diagnostic) is the blow-up.
+MOUSE_STIFFNESS_CAP = 250.0 # cap SofaImGui's hidden 'Mouse' attach spring stiffness. Its default
+                           # is huge (force >1e6 = the blow-up). 30 was stable but too soft to
+                           # see (disp 0.3); 250 pulls visibly and its force (~250 x <=8 = 2000)
+                           # stays well under the ~6000 where it started diverging.
 DRAG_TRIGGER = 0.30        # if a node gets pulled this far from rest, tear toward it -> you can
                            # DRAG to tear (works with SofaImGui's own mouse pull), not just click
 DIAG = True                # log, every ~0.4s, what YOUR real pull does to the mesh (velocity /
@@ -335,8 +337,6 @@ def _make_controller(mo, topo, springs, mass, visual, cam, n_real, seed_v, v_a, 
                                 print(f"[Diag] tamed {cn}.{dn} {old} -> {MOUSE_STIFFNESS_CAP}")
                             except Exception as e:  # noqa: BLE001
                                 print(f"[Diag] {cn}.{dn} not settable: {e}")
-                    if not any(hasattr(o, a) and o.findData(a) for a in ("stiffness", "forceCoef")):
-                        print(f"[Diag] Mouse node has: {cn}")
                 for sub in list(node.children):
                     walk(sub)
             for ch in list(self.root.children):
