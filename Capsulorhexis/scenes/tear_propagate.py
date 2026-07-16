@@ -50,6 +50,7 @@ PLUGINS = [
     "Sofa.Component.ODESolver.Backward", "Sofa.Component.LinearSolver.Iterative",
     "Sofa.Component.SolidMechanics.FEM.Elastic", "Sofa.Component.SolidMechanics.Spring",
     "Sofa.Component.Mass", "Sofa.Component.Constraint.Projective",
+    "Sofa.Component.Mapping.Linear",
     "Sofa.Component.Visual", "Sofa.Component.AnimationLoop", "Sofa.Component.Setting",
     "Sofa.GL.Component.Rendering3D",
 ]
