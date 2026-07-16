@@ -43,14 +43,21 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 import generate_cap as G   # A, C, Z0, R, EDGE_LEN, _build_raw()
 
-# --- material (same feel as the flat paper / cap_membrane) ------------------
-YOUNG = 1200.0            # in-plane stiffness ("paper", not stretchy)
+# --- material (softer than cap_membrane so the tear GAPES visibly) ----------
+YOUNG = 500.0             # in-plane stiffness. Softer than the 1200 "paper" so the cut
+                          # actually opens as you pull (stiff paper barely gaped).
 POISSON = 0.3
-EDGE_STIFFNESS = 2500.0   # per-edge springs -> triangles keep their size
-BEND_STIFFNESS = 15.0     # low = the freed flap folds over instead of standing rigid
+EDGE_STIFFNESS = 1500.0   # per-edge springs -> triangles keep their size
+BEND_STIFFNESS = 8.0      # low = the freed flap folds/peels over instead of standing rigid
 DAMPING = 2.0
 LENS_REPULSION = 2000.0   # analytic lens obstacle (do NOT raise -> penalty blow-up)
 MAX_STRETCH = 1.6         # hard edge-length cap (keeps the mesh from crushing)
+MAX_SPEED = 25.0
+# Buoyancy was tried (upward body force so a freed flap floats up) but it is the wrong tool:
+# any force big enough to lift the disc also stresses the crack tip past threshold and
+# auto-tears the whole circle, while a force small enough not to auto-tear barely lifts it.
+# Instead the visible result comes from a big PRE-TORN flap the user folds up by pulling.
+BUOYANCY_Z = 0.0
 MAX_SPEED = 25.0          # hard per-node velocity cap: a hard mouse yank is one big penalty
                           # impulse that would otherwise blow a triangle up mid-step (NaN,
                           # "picture vanished"); clamping speed absorbs it. 0 disables.
@@ -59,12 +66,11 @@ MAX_SPEED = 25.0          # hard per-node velocity cap: a hard mouse yank is one
 # sigma1 ~= YOUNG * local strain, so 90/1200 ~= 7.5% local stretch at the tip triggers a
 # step. Lowered from 180 so a GENTLE mouse pull can drive the crack (the scripted symmetric
 # lift used to slam sigma1 past 1000, which hid how high 180 really was for hand pulling).
-STRESS_THRESHOLD = 10.0    # sigma1 the tip must exceed to advance. Measured: idle tip sigma1
-                           # is 0 (the tip is only stressed when you pull near it), so this
-                           # can be low without auto-tearing -- with the gain below the real
-                           # bar is ~7, and a near-tip pull gives ~10-14, so it keeps tearing
-                           # even as your grab drifts a bit from the advancing tip.
-TIP_STRESS_GAIN = 1.5      # a real crack tip has a stress SINGULARITY that a coarse mesh
+STRESS_THRESHOLD = 6.0     # sigma1 the tip must exceed to advance. sigma1 ~= YOUNG*strain, so
+                           # softening YOUNG 1200->500 roughly halves the tip sigma1 a pull
+                           # produces -> the threshold is lowered to match. Idle tip sigma1
+                           # is ~0, so this stays well clear of auto-tearing.
+TIP_STRESS_GAIN = 2.0      # a real crack tip has a stress SINGULARITY that a coarse mesh
                            # smears/underestimates; this concentration factor multiplies the
                            # tip sigma1 before the threshold test, so a hand pull tears more
                            # readily (raise to make tearing easier)
@@ -106,7 +112,9 @@ PULL_END_T = 12.0
 RIM_FRAC = 0.9            # nodes with r > RIM_FRAC*R are anchored (zonular fibres)
 
 # --- mouse (forceps) --------------------------------------------------------
-SHOW_TIP_MARKER = True    # small red dot on the crack tip = where to grab (set False to hide)
+SHOW_TIP_MARKER = False   # small red dot on the crack tip = where to grab (set True to show)
+PRE_TEAR_DEG = 100.0      # pre-open this much of the tear circle at startup (a visible
+                          # starting flap the surgeon already made); 0 = just the nick
 ENABLE_MOUSE = True
 MOUSE_STIFFNESS = 700.0   # Shift+left-drag attach spring. Softer than before: a stiff spring
                           # + a fast yank is one big penalty impulse that NaNs the mesh
@@ -320,8 +328,10 @@ def _make_controller(mo, topo, fem, springs, mass, visual, n_real, seed_v, v_a, 
                     self.pairs.append((self.crack[-1], sp))
                     self.crack.append(self.first_fwd)
                     print(f"[Tear] nick opened at v{self.crack[-2]} (r"
-                          f"={float(np.hypot(*np.array(self.mo.position.value)[self.crack[-2], :2])):.1f}); "
-                          f"Shift+drag the flap near it to tear")
+                          f"={float(np.hypot(*np.array(self.mo.position.value)[self.crack[-2], :2])):.1f})")
+                    if PRE_TEAR_DEG > 0:
+                        n_pre = int(PRE_TEAR_DEG / 360.0 * (2.0 * math.pi * NICK_RADIUS / G.EDGE_LEN))
+                        self._pretear(n_pre)
                 return
             if t < TEAR_SETTLE_T or t - self.last_check < TEAR_CHECK_DT:
                 return
@@ -420,6 +430,47 @@ def _make_controller(mo, topo, fem, springs, mass, visual, n_real, seed_v, v_a, 
                   f"crack len={len(self.pairs)} max-gap={max(gaps):.2f}")
             return "advanced"
 
+        def _pretear(self, n_steps):
+            """Geometrically pre-open the tear circle by n_steps vertices along the
+            CIRCUMFERENTIAL direction (no stress gate) -- the starting flap the surgeon
+            already made. Same split machinery; just a scripted initial arc so there is
+            something visible to grab and continue from."""
+            if self.adj is None:
+                self._build_adj()
+            for _ in range(max(0, n_steps)):
+                P = np.array(self.mo.position.value)
+                tip, prev = self.crack[-1], self.crack[-2]
+                rad = P[tip, :2]
+                rn = float(np.linalg.norm(rad))
+                if rn < 1e-6:
+                    break
+                rad = rad / rn
+                tang = np.array([-rad[1], rad[0], 0.0])          # circumferential
+                if np.dot(tang, P[tip] - P[prev]) < 0:
+                    tang = -tang
+                rc = np.hypot(P[:, 0], P[:, 1])
+                cands = [v for v in self.adj.get(tip, ()) if v not in self.crack
+                         and v < n_real and TEAR_R_MIN <= rc[v] <= TEAR_R_MAX]
+                if not cands:
+                    break
+
+                def al(v):
+                    w = P[v] - P[tip]
+                    return float(np.dot(w / (np.linalg.norm(w) + 1e-9), tang))
+
+                vnext = max(cands, key=al)
+                if al(vnext) < 0.2:
+                    break
+                sp = self._split_tip(tip, prev, vnext)
+                if sp is None:
+                    break
+                self.pairs.append((tip, sp))
+                self.crack.append(vnext)
+            P = np.array(self.mo.position.value)
+            aa = float(np.degrees(np.arctan2(P[self.crack[-1], 1], P[self.crack[-1], 0])))
+            print(f"[Tear] pre-torn {len(self.pairs)} vertices (starting flap); "
+                  f"tip now at ang={aa:.0f}deg. Grab the flap and drag to tear further.")
+
         def onAnimateEndEvent(self, event):
             # Velocity clamp first: catch a violent mouse yank before it can blow a triangle
             # up (an in-plane tear pull is fine; a hard up-yank used to NaN the whole mesh).
@@ -462,7 +513,7 @@ def _make_controller(mo, topo, fem, springs, mass, visual, n_real, seed_v, v_a, 
 
 def createScene(root):
     import Sofa
-    root.gravity = [0.0, 0.0, 0.0]
+    root.gravity = [0.0, 0.0, BUOYANCY_Z]      # upward buoyancy: freed flaps float up
     root.dt = 0.02
     _pl = root.addChild("RequiredPlugins")
     for name in PLUGINS:
