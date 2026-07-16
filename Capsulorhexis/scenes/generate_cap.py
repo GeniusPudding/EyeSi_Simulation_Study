@@ -1,60 +1,65 @@
-"""Generate a LENS-like flattened ellipsoid base + a circular membrane cap that lies
-EXACTLY on its top surface.
+"""Generate a LENS-like flattened ellipsoid + a circular membrane that covers its
+UPPER HALF, both from the SAME analytic surface (so the membrane lies exactly flush).
 
-Both meshes come from the SAME analytic surface, so the membrane sits perfectly flush
-on the base (no floating gap). The base is an OBLATE ellipsoid (a bit flattened, like
-the lens), not a full sphere:
+The base is an OBLATE ellipsoid (flattened, like the lens), centred on the origin:
 
-    x^2/A^2 + y^2/A^2 + (z - Z0)^2 / C^2 = 1      with C < A  (flattened)
+    x^2/A^2 + y^2/A^2 + z^2/C^2 = 1        with C < A   (C = how domed it is)
 
-The membrane covers the top out to planar radius R (< A). Its surface is
+The membrane is parametrised by POLAR ANGLE v (not planar radius): rings run from the
+pole (v = 0) out to CAP_ANGLE_DEG. At CAP_ANGLE_DEG = 90 the rim lands exactly on the
+equator (z = 0), i.e. the membrane covers the ENTIRE upper half.
 
-    z(r) = C * sqrt(1 - r^2/A^2) + Z0 ,   Z0 = -C * sqrt(1 - R^2/A^2)   (rim at z = 0)
+    P(v, u) = ( A sin v cos u , A sin v sin u , C cos v )
 
-so the cap rim sits at z = 0 and the cap centre bulges up by CAP_HEIGHT.
+Using the polar angle matters: near the equator the surface turns vertical, so spacing
+rings by planar radius would give hopelessly stretched triangles there.
 
 Run:  py -3.12 scenes/generate_cap.py   ->  cap.obj (membrane) + lens.obj (base)
 """
 import math
 import os
 
-# --- base ellipsoid (the "ball", flattened like a lens) ---------------------
-A = 7.0       # semi-axis in x and y
-C = 3.5       # semi-axis in z  -> C < A = oblate/flattened. Lower C = flatter.
+# --- base ellipsoid (the lens) ----------------------------------------------
+A = 7.0        # semi-axis in x and y
+C = 1.75       # semi-axis in z. HALVED (was 3.5) -> half the dome/curvature.
+               # Smaller C = flatter lens. C/A is the flatness ratio.
 
-# --- membrane cap -----------------------------------------------------------
-R = 5.0       # membrane radius in the xy-plane (must be < A)
-N = 10        # concentric rings (0.5 mm pitch, like the capsule fibers)
-M = 60        # angular divisions -> ~1200 triangles
+# --- membrane ---------------------------------------------------------------
+CAP_ANGLE_DEG = 90.0   # 90 = cover the WHOLE upper half (rim on the equator, z=0)
+N = 12         # rings from pole to rim
+M = 72         # angular divisions
 
-# base mesh tessellation (fine, so the cap sits flush on it, no faceting gap)
-BASE_U = 96   # azimuth divisions
-BASE_V = 48   # polar divisions
+# base mesh tessellation (fine, so the membrane sits flush with no faceting gap)
+BASE_U = 96
+BASE_V = 48
 
-Z0 = -C * math.sqrt(1.0 - (R * R) / (A * A))   # so the cap rim lands at z = 0
-CAP_HEIGHT = C + Z0                            # centre bulge above the rim
+Z0 = 0.0                                   # ellipsoid centred on the origin
+CAP_ANGLE = math.radians(CAP_ANGLE_DEG)
+R = A * math.sin(CAP_ANGLE)                # planar radius the membrane rim reaches
+RIM_Z = C * math.cos(CAP_ANGLE) + Z0       # height of the rim (0 when angle = 90)
+CAP_HEIGHT = (C + Z0) - RIM_Z              # pole height above the rim
 
 
-def z_of_r(r):
-    """Height of the ellipsoid surface at planar radius r (same surface for both)."""
-    s = 1.0 - (r * r) / (A * A)
-    return C * math.sqrt(max(s, 0.0)) + Z0
+def surface(v, u):
+    """A point on the ellipsoid at polar angle v, azimuth u."""
+    return (A * math.sin(v) * math.cos(u),
+            A * math.sin(v) * math.sin(u),
+            C * math.cos(v) + Z0)
 
 
 def build_cap():
-    verts = [(0.0, 0.0, z_of_r(0.0))]                 # index 0 = cap centre
+    verts = [surface(0.0, 0.0)]                       # index 0 = pole
     for i in range(1, N + 1):
-        r = R * i / N
-        z = z_of_r(r)
+        v = CAP_ANGLE * i / N                         # rings by POLAR ANGLE
         for j in range(M):
-            a = 2.0 * math.pi * j / M
-            verts.append((r * math.cos(a), r * math.sin(a), z))
+            u = 2.0 * math.pi * j / M
+            verts.append(surface(v, u))
 
     def idx(ring, j):
         return 1 + (ring - 1) * M + (j % M)
 
     faces = []
-    for j in range(M):                                # fan: centre -> ring 1
+    for j in range(M):                                # fan: pole -> ring 1
         faces.append((0, idx(1, j), idx(1, j + 1)))
     for ring in range(1, N):
         for j in range(M):
@@ -66,15 +71,13 @@ def build_cap():
 
 
 def build_lens():
-    """Full oblate ellipsoid, finely tessellated (UV sphere scaled to A, A, C)."""
+    """The full oblate ellipsoid, finely tessellated."""
     verts = []
     for iv in range(BASE_V + 1):
-        v = math.pi * iv / BASE_V                     # polar angle 0..pi
+        v = math.pi * iv / BASE_V
         for iu in range(BASE_U):
             u = 2.0 * math.pi * iu / BASE_U
-            verts.append((A * math.sin(v) * math.cos(u),
-                          A * math.sin(v) * math.sin(u),
-                          C * math.cos(v) + Z0))
+            verts.append(surface(v, u))
 
     def idx(iv, iu):
         return iv * BASE_U + (iu % BASE_U)
@@ -107,14 +110,15 @@ def main():
     here = os.path.dirname(os.path.abspath(__file__))
     cv, cf = build_cap()
     _write_obj(os.path.join(here, "cap.obj"), cv, cf,
-               "membrane cap on oblate lens: R=%g A=%g C=%g capH=%.3f Z0=%.3f"
-               % (R, A, C, CAP_HEIGHT, Z0))
+               "membrane covering %.0fdeg of an oblate lens: A=%g C=%g R=%.3f capH=%.3f"
+               % (CAP_ANGLE_DEG, A, C, R, CAP_HEIGHT))
     lv, lf = build_lens()
     _write_obj(os.path.join(here, "lens.obj"), lv, lf,
-               "oblate lens base: A=%g C=%g Z0=%.3f" % (A, C, Z0))
-    print("cap.obj : %d verts %d tris (R=%g, capHeight=%.3f)" % (len(cv), len(cf), R, CAP_HEIGHT))
-    print("lens.obj: %d verts %d tris (oblate A=%g C=%g, flatness C/A=%.2f, Z0=%.3f)"
-          % (len(lv), len(lf), A, C, C / A, Z0))
+               "oblate lens: A=%g C=%g (flatness %.2f)" % (A, C, C / A))
+    print("cap.obj : %d verts %d tris | covers %.0f deg -> rim radius R=%.3f at z=%.3f, "
+          "pole height=%.3f" % (len(cv), len(cf), CAP_ANGLE_DEG, R, RIM_Z, CAP_HEIGHT))
+    print("lens.obj: %d verts %d tris | oblate A=%g C=%g, flatness C/A=%.2f"
+          % (len(lv), len(lf), A, C, C / A))
 
 
 if __name__ == "__main__":

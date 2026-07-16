@@ -45,18 +45,27 @@ SWITCH_T = 1.0
 EDGE_STIFFNESS = 2500.0   # per-edge -> the membrane does not stretch (in-plane)
 DAMPING = 2.0
 
-# How SHARPLY the membrane folds when you lift it = TriangularBendingSprings.stiffness.
-#   BIGGER  -> resists bending -> a GENTLER, rounder, wider fold (no tight crease)
-#   SMALLER -> floppier        -> a TIGHTER, sharper crease ("太彎")
-# NOTE: this is NOT the same as "soft". In-plane softness is PAPER_YOUNG/EDGE_STIFFNESS;
-# fold sharpness is this. If the fold looks too sharply curled, RAISE this.
-BEND_STIFFNESS = 600.0
+# THE knob for "does the lifted flap flop over, or stand up stiff in the air?"
+# = TriangularBendingSprings.stiffness.
+#   SMALLER -> floppy: the flap folds over easily and drapes back onto the membrane
+#   BIGGER  -> stiff : the flap stands up straight and holds a gentle, wide curve
+# (This is NOT in-plane softness -- that is PAPER_YOUNG/EDGE_STIFFNESS.)
+# Lowered 600 -> 120 so the flap folds over instead of standing rigid.
+BEND_STIFFNESS = 40.0
+
+# Gravity is deliberately 0. Tested as a way to make the lifted flap flop over: it does
+# NOT work. Weak gravity (-2..-10) cannot bend the flap at all once plasticity has set
+# its shape; gravity strong enough to bend it (-40) also beats the adhesion threshold
+# and rips the WHOLE membrane off the lens (glued 865->1, it just falls away). Gravity
+# and BREAK_FORCE share the same force budget, so it is the wrong knob. Fold the flap
+# over by DRAGGING IT ACROSS with the mouse instead -- plasticity then keeps it folded.
+GRAVITY_Z = 0.0
 
 # The lens acts as a solid obstacle so the membrane cannot sink through it: an analytic
 # ellipsoid repulsion (cheap + robust, no mesh collision needed). SOFA convention
 # (EllipsoidForceField.h): stiffness POSITIVE = repulse OUTWARD, negative = inward.
 # Without this the membrane bends down and passes straight through the lens.
-LENS_REPULSION = 800.0
+LENS_REPULSION = 8000.0
 
 # --- adhesion of the membrane to the BALL -----------------------------------
 ADHESION_STIFF = 120.0
@@ -72,6 +81,18 @@ PULL_END_T = 6.0
 PULL_MOVE = [1.5, 0.0, 3.0]   # lift the +x rim up (+z) and outward (+x) to peel
 
 ENABLE_MOUSE = True
+# Let the folded flap land ON the membrane below instead of passing through it.
+# (Costs some FPS: self-collision is checked every step.)
+SELF_COLLISION = True
+CONTACT_STIFFNESS = 200.0   # penalty contact strength; also silences the SceneCheck warning
+# Self-collision proximity MUST stay well BELOW the mesh edge length (~0.61 here, see
+# generate_cap: 2*pi*A/M). If alarmDistance approaches the edge length, NEIGHBOURING
+# triangles fall inside each other's alarm radius and the membrane starts pushing
+# against itself (jitter / wasted contacts). 0.25 << 0.61 is safe and still catches a
+# fold before it interpenetrates.
+ALARM_DISTANCE = 0.25
+CONTACT_DISTANCE = 0.12
+
 # Mouse-pull strength. The GUI's default attach spring is far too weak to beat the
 # adhesion, which is why the membrane felt "拉不動". This spring must be able to lift a
 # node past BREAK_FORCE (= ADHESION_STIFF * break lift), so keep it well above that.
@@ -85,7 +106,7 @@ MOUSE_STIFFNESS = 1000.0
 # back. Only peeled nodes creep -- nodes still glued keep their rest ON the lens, so
 # the adhesion still holds them down.
 #   PLASTIC_RATE: 0 = fully elastic (springs back), 1 = instantly plastic (putty).
-PLASTIC_RATE = 0.25      # fraction of the remaining springback forgotten per update
+PLASTIC_RATE = 0.12      # fraction of the remaining springback forgotten per update
 PLASTIC_EVERY = 5        # steps between plasticity updates (cheap: reinit is O(edges))
 
 # Pressing F still force-freezes the WHOLE membrane instantly (optional shortcut).
@@ -214,7 +235,9 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull):
 def createScene(root):
     import Sofa
 
-    root.gravity = [0.0, 0.0, 0.0]     # the ball adhesion holds the cap; no gravity
+    # Gentle gravity so a peeled flap actually flops over onto the membrane instead of
+    # hanging in mid-air. Small enough that it never peels anything by itself.
+    root.gravity = [0.0, 0.0, GRAVITY_Z]
     root.dt = 0.02
     for name in PLUGINS:
         root.addObject("RequiredPlugin", name=name)
@@ -224,16 +247,30 @@ def createScene(root):
     root.addObject("DefaultAnimationLoop")
     root.addObject("DefaultVisualManagerLoop")
     root.addObject("BackgroundSetting", color=[0.06, 0.09, 0.12, 1.0])
-    root.addObject("InteractiveCamera", position=[11.0, -11.0, 8.5], lookAt=[0, 0, -1.0])
+    # Camera elevation matters for PICKING, not just looks. Shift+drag casts a ray from
+    # the camera through the cursor and grabs the nearest collision triangle. At a
+    # grazing angle (low camera) that ray skims along this flat, wide lens, so one pixel
+    # of mouse movement slides the hit point millimetres across the membrane and it
+    # jumps between triangles -> the grab feels like it "runs around". A steeper angle
+    # hits the membrane closer to perpendicular and the pick is stable.
+    root.addObject("InteractiveCamera", position=[10.0, -10.0, 11.0], lookAt=[0, 0, 0])
 
     if ENABLE_MOUSE:
         root.addObject("CollisionPipeline")
         root.addObject("BruteForceBroadPhase")
         root.addObject("BVHNarrowPhase")
         root.addObject("CollisionResponse", response="PenalityContactForceField")
-        root.addObject("MinProximityIntersection", alarmDistance=0.5, contactDistance=0.2)
-        # Make Shift+left-drag strong enough to actually rip a spot off the lens.
-        root.addObject("AttachBodyButtonSetting", stiffness=MOUSE_STIFFNESS)
+        root.addObject("MinProximityIntersection", alarmDistance=ALARM_DISTANCE,
+                       contactDistance=CONTACT_DISTANCE)
+        # Shift+left-drag: SOFA casts a ray from the camera through the cursor, takes the
+        # nearest hit on a collision model (only the membrane has one -- the lens is
+        # visual, so it can never be grabbed), and attaches a SpringForceField of this
+        # stiffness between that point and a virtual "mouse" particle you drag. The mouse
+        # particle moves in a plane PARALLEL TO THE SCREEN at the picked depth, so you
+        # can only drag within the screen plane. arrowSize>0 draws that spring, so you
+        # can SEE exactly which spot it grabbed.
+        root.addObject("AttachBodyButtonSetting", stiffness=MOUSE_STIFFNESS,
+                       arrowSize=0.3)
 
     # The flattened (oblate) LENS the membrane sticks to. Generated from the SAME
     # analytic surface as cap.obj and finely tessellated, so the membrane lies exactly
@@ -291,7 +328,11 @@ def createScene(root):
                                         PULL_MOVE, PULL_MOVE])
 
     if ENABLE_MOUSE:
-        cap.addObject("TriangleCollisionModel")
+        # selfCollision=True lets the folded-over flap REST ON the membrane underneath
+        # instead of passing through it (default is False = it would interpenetrate).
+        # This model is also what the mouse ray picks.
+        cap.addObject("TriangleCollisionModel", selfCollision=SELF_COLLISION,
+                      contactStiffness=CONTACT_STIFFNESS)
 
     cap.addObject(_make_controller(fem, springs, bending, mo, adhesion, pull))
 
