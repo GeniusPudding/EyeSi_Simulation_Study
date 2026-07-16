@@ -38,9 +38,9 @@ import generate_cap as G
 
 # --- membrane physics --------------------------------------------------------
 # USE_FEM: True = the original co-rotational membrane FEM ("paper" feel, resists shear);
-# False = mass-spring only (robust, never null-determinants). Try FEM here with the TENSION
-# rim below, which keeps the membrane taut and is gentler on the FEM than a rigid clamp.
-USE_FEM = True
+# False = mass-spring only (robust, never null-determinants). Default False: FEM + a mouse
+# yank in the GUI explodes here (the whole point of this stable tear-the-middle demo).
+USE_FEM = False
 YOUNG = 800.0             # FEM in-plane stiffness (only used if USE_FEM)
 EDGE_STIFFNESS = 1200.0   # edge springs (always on; the only in-plane stiffness if not FEM)
 BEND_STIFFNESS = 8.0      # low = freed flap folds/peels over instead of standing rigid
@@ -57,7 +57,7 @@ AREA_MIN_FRAC = 0.30      # a triangle may not shrink below this fraction of its
 # RIM_MODE "tension": each rim node is softly anchored to its rest (so it cannot drift) AND
 # pulled radially OUTWARD -> the membrane is taut and the tear GAPES open as it runs (you can
 # see it), like the real zonular tension. "fixed" = the old rigid clamp.
-RIM_MODE = "tension"      # "tension" | "fixed"
+RIM_MODE = "fixed"        # "fixed" (this demo: rim fixed, tear the middle) | "tension"
 RIM_ANCHOR_STIFF = 60.0   # soft anchor of each rim node to its rest position
 RIM_TENSION = 45.0        # outward radial force per rim node (the zonular pull)
 
