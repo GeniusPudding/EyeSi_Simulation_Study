@@ -51,7 +51,7 @@ DAMPING = 2.0
 #   BIGGER  -> stiff : the flap stands up straight and holds a gentle, wide curve
 # (This is NOT in-plane softness -- that is PAPER_YOUNG/EDGE_STIFFNESS.)
 # Lowered 600 -> 120 so the flap folds over instead of standing rigid.
-BEND_STIFFNESS = 40.0
+BEND_STIFFNESS = 15.0
 
 # Gravity is deliberately 0. Tested as a way to make the lifted flap flop over: it does
 # NOT work. Weak gravity (-2..-10) cannot bend the flap at all once plasticity has set
@@ -65,7 +65,13 @@ GRAVITY_Z = 0.0
 # ellipsoid repulsion (cheap + robust, no mesh collision needed). SOFA convention
 # (EllipsoidForceField.h): stiffness POSITIVE = repulse OUTWARD, negative = inward.
 # Without this the membrane bends down and passes straight through the lens.
-LENS_REPULSION = 8000.0
+# STABILITY CEILING: this is a PENALTY force, so force = stiffness * penetration depth.
+# 8000 explodes the membrane on a fast mouse yank (a node gets shoved deep inside for
+# one step -> enormous force; measured max|coord| 2402, and bisecting proved this was
+# THE cause, not self-collision/creep/solver). 2000 is stable across BEND 3..600 under
+# a deliberately violent drag, and still sinks in only ~0.15mm in normal use.
+# Do NOT raise this to chase the last 0.1mm of sink-in.
+LENS_REPULSION = 2000.0
 
 # --- adhesion of the membrane to the BALL -----------------------------------
 ADHESION_STIFF = 120.0
@@ -85,13 +91,13 @@ ENABLE_MOUSE = True
 # (Costs some FPS: self-collision is checked every step.)
 SELF_COLLISION = True
 CONTACT_STIFFNESS = 200.0   # penalty contact strength; also silences the SceneCheck warning
-# Self-collision proximity MUST stay well BELOW the mesh edge length (~0.61 here, see
-# generate_cap: 2*pi*A/M). If alarmDistance approaches the edge length, NEIGHBOURING
-# triangles fall inside each other's alarm radius and the membrane starts pushing
-# against itself (jitter / wasted contacts). 0.25 << 0.61 is safe and still catches a
-# fold before it interpenetrates.
-ALARM_DISTANCE = 0.25
-CONTACT_DISTANCE = 0.12
+# Self-collision proximity MUST stay well BELOW the mesh edge length, or NEIGHBOURING
+# triangles fall inside each other's alarm radius and the membrane pushes against itself
+# (jitter + wasted contacts; fixing this once took the scene 184 -> 374 steps/s).
+# DERIVED from the mesh so that changing generate_cap.TARGET_EDGE can never silently
+# break self-collision again.
+ALARM_DISTANCE = 0.40 * G.EDGE_LEN
+CONTACT_DISTANCE = 0.20 * G.EDGE_LEN
 
 # Mouse-pull strength. The GUI's default attach spring is far too weak to beat the
 # adhesion, which is why the membrane felt "拉不動". This spring must be able to lift a
@@ -241,7 +247,12 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull):
                     newrest = np.array(rest, copy=True)
                     newrest[free] += PLASTIC_RATE * (pos[free] - rest[free])
                     self.mo.rest_position.value = newrest
-                    self.springs.reinit()
+                    # Re-bake ONLY the bending rest (so folds become permanent).
+                    # Deliberately NOT springs.reinit(): that would let the EDGE rest
+                    # lengths adopt the stretched positions, i.e. unbounded plastic flow
+                    # with no yield -- the membrane permanently grows and a hard yank
+                    # explodes it (measured max|coord| 2402). Keeping the edge rest
+                    # lengths original also enforces "the paper must not stretch".
                     self.bending.reinit()
 
             if SCRIPTED_PULL and FREEZE_T is not None and not self.frozen and t >= FREEZE_T:
