@@ -60,6 +60,18 @@ MAX_STRETCH = 1.5         # hard edge-length cap (keeps the mesh from crushing/i
 # AFTER a big tear means it cannot auto-tear from the start (the earlier buoyancy problem).
 LIFT_AFTER_CRACKLEN = 75  # start lifting the disc once the crack passes this many vertices
 DISC_LIFT_Z = 14.0        # upward buoyancy applied to the freed disc after that
+# PLASTICITY: the capsule TEARS (irreversible) -- a pulled/folded flap must STAY put, not
+# spring back elastically. Each PLASTIC_EVERY steps, creep the rest shape toward the current
+# shape so the deformation becomes permanent. Rebake the bending rest (folds stick) but NOT
+# the edge-spring rest (so the membrane still cannot stretch -- unbounded edge creep would
+# grow it without limit and explode; the cap_membrane lesson).
+# DEFAULT OFF: tested and it does NOT hold the flap here. Creeping only the FEM/bending rest
+# cannot win against the EDGE SPRINGS, which keep pulling the lifted flap flat; and creeping
+# the edge-spring rest too causes unbounded growth -> explosion. Genuine "the flap stays
+# folded" needs a real plastic-fracture model (INRIA FiberFractureEngine route), not this
+# elastic membrane. The visible "whole piece comes off" here comes from the disc-lift instead.
+PLASTIC_RATE = 0.0        # 0 = purely elastic. >0 creeps rest toward current (does not hold)
+PLASTIC_EVERY = 8         # [steps] between plastic-creep updates
 MAX_SPEED = 25.0
 # Buoyancy was tried (upward body force so a freed flap floats up) but it is the wrong tool:
 # any force big enough to lift the disc also stresses the crack tip past threshold and
@@ -234,7 +246,7 @@ def _geometry():
 
 
 def _make_controller(mo, topo, fem, springs, mass, visual, n_real, seed_v, v_a, v0,
-                     marker, root):
+                     marker, root, bending):
     import Sofa
     import numpy as np
 
@@ -243,11 +255,13 @@ def _make_controller(mo, topo, fem, springs, mass, visual, n_real, seed_v, v_a, 
             Sofa.Core.Controller.__init__(self, *a, **k)
             self.mo, self.topo = mo, topo
             self.fem, self.springs, self.mass = fem, springs, mass
+            self.bending = bending
             self.visual = visual
             self.marker = marker
             self.root = root
             self.last_good_pos = None      # safety net: last finite positions to roll back to
             self.lifting = False           # disc-lift (buoyancy) engaged?
+            self.step = 0
             self.next_spare = n_real
             self.crack = [v_a, seed_v]        # prev, tip -- v0 is opened in on the 1st step
             self.first_fwd = v0
@@ -336,6 +350,7 @@ def _make_controller(mo, topo, fem, springs, mass, visual, n_real, seed_v, v_a, 
                     self.mo.velocity.value = [[0.0, 0.0, 0.0]] * len(self.last_good_pos)
                     print("[Tear] recovered from an unstable step -- drag more gently")
                 return
+            self.step += 1
             if self.stopped:
                 return
             # One-time: open the interior nick. seed_v's fan is a CLOSED ring; splitting it
@@ -561,6 +576,21 @@ def _make_controller(mo, topo, fem, springs, mass, visual, n_real, seed_v, v_a, 
                     P[m] += corr[m] / cnt[m][:, None]
             self.mo.position.value = P.tolist()
 
+            # PLASTICITY: creep the rest shape toward the current shape so a torn/folded flap
+            # STAYS put instead of springing back (a real capsule tears irreversibly). Rebake
+            # the bending rest so folds are permanent; deliberately do NOT rebuild the edge
+            # strain-clamp lengths (self.edges left alone) -- letting the edge rest follow the
+            # deformed shape is unbounded plastic flow that grows and explodes the membrane.
+            if PLASTIC_RATE > 0.0 and self.step % PLASTIC_EVERY == 0:
+                Rr = np.array(self.mo.rest_position.value)
+                if np.isfinite(P).all() and np.isfinite(Rr).all():
+                    Rr += PLASTIC_RATE * (P - Rr)
+                    self.mo.rest_position.value = Rr.tolist()
+                    # Rebake ONLY the bending rest (folds become permanent). NOT fem.reinit()
+                    # -- that reloads the ORIGINAL rest and undoes the creep -- and NOT
+                    # springs.reinit() -- that lets edge rest lengths grow unbounded.
+                    self.bending.reinit()
+
             # Once most of the circle is torn, switch on upward buoyancy so the (now nearly
             # free) central disc peels up and reveals the round hole -- "the whole piece
             # comes off". Safe here: it only fires after a big user-driven tear, so it cannot
@@ -625,7 +655,7 @@ def createScene(root):
                         youngModulus=YOUNG, poissonRatio=POISSON)
     springs = cap.addObject("MeshSpringForceField", name="EdgeSprings",
                             linesStiffness=EDGE_STIFFNESS, linesDamping=1.0)
-    cap.addObject("TriangularBendingSprings", name="Bending", stiffness=BEND_STIFFNESS)
+    bending = cap.addObject("TriangularBendingSprings", name="Bending", stiffness=BEND_STIFFNESS)
     cap.addObject("UniformVelocityDampingForceField", dampingCoefficient=DAMPING)
     cap.addObject("EllipsoidForceField", name="LensObstacle",
                   center=[0.0, 0.0, G.Z0], vradius=[G.A, G.A, G.C],
@@ -671,7 +701,7 @@ def createScene(root):
                           showColor=[1.0, 0.15, 0.1, 1.0])
 
     cap.addObject(_make_controller(mo, topo, fem, springs, mass, oglm, n_real,
-                                   seed_v, seed_a, seed_fwd, marker, root))
+                                   seed_v, seed_a, seed_fwd, marker, root, bending))
 
     print("=" * 68)
     print(" cap_tear.py  |  FREE stress-driven tearing (NO hardcoded circle)")
