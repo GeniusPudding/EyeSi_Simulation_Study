@@ -116,7 +116,8 @@ def _make_controller(mo, topo, springs, mass, visual, cam, n_real, seed_v, v_a, 
             self.adj = None
             self.edges = self.edge_rest = self.tri_arr = self.rest_area = self._rest_r = None
             self.stopped = False
-            self.click_world = None       # pending click target (world xy) to tear toward
+            self.click_world = None       # (kept for the un-project log only)
+            self.burst = 0                # queued vertices to tear on the next steps (per click)
             self.peel = []                # (node, target_z) fresh lips being nudged up
             self.last_good = None
             self.lifting = False
@@ -214,6 +215,33 @@ def _make_controller(mo, topo, springs, mass, visual, cam, n_real, seed_v, v_a, 
             self.peel.append([sp, rz + PEEL_LIFT])
             return True
 
+        def _advance_circ(self):
+            """One CIRCUMFERENTIAL step (along the ring). Robust: does not need the click
+            un-project, so clicking ALWAYS tears further around the circle."""
+            P = np.array(self.mo.position.value)
+            tip, prev = self.crack[-1], self.crack[-2]
+            rad = P[tip, :2]; rn = float(np.linalg.norm(rad))
+            if rn < 1e-6:
+                return False
+            rad = rad / rn; tang = np.array([-rad[1], rad[0], 0.0])
+            if np.dot(tang, P[tip] - P[prev]) < 0:
+                tang = -tang
+            cands = self._annulus_cands(tip)
+            if not cands:
+                return False
+
+            def al(v):
+                w = P[v] - P[tip]; return float(np.dot(w / (np.linalg.norm(w) + 1e-9), tang))
+
+            vnext = max(cands, key=al)
+            if al(vnext) < 0.2:
+                return False
+            sp = self._split_tip(tip, prev, vnext)
+            if sp is None:
+                return False
+            self.pairs.append((tip, sp)); self.crack.append(vnext)
+            return True
+
         def _pretear(self, n):
             if self.adj is None:
                 self._build_adj()
@@ -277,12 +305,10 @@ def _make_controller(mo, topo, springs, mass, visual, cam, n_real, seed_v, v_a, 
         def onMouseEvent(self, event):
             if event.get('State', -1) != 1:               # only LEFT DOWN
                 return
+            self.burst = ADVANCE_PER_CLICK                 # each click tears this much further
             w = self._unproject(float(event.get('mouseX', 0)), float(event.get('mouseY', 0)))
-            if w is None:
-                print("[Tear] click un-project failed (camera matrices not ready?)")
-                return
-            self.click_world = w
-            print(f"[Tear] click -> world ({w[0]:.1f},{w[1]:.1f}); tearing toward it")
+            print(f"[Tear] CLICK -> tearing {ADVANCE_PER_CLICK} more around the ring"
+                  + (f" (click world ~{w[0]:.1f},{w[1]:.1f})" if w else ""))
 
         # ---- per step ----------------------------------------------------
         def onAnimateBeginEvent(self, event):
@@ -300,12 +326,12 @@ def _make_controller(mo, topo, springs, mass, visual, cam, n_real, seed_v, v_a, 
                     if PRE_TEAR_DEG > 0:
                         self._pretear(int(PRE_TEAR_DEG / 360.0 * (2.0 * math.pi * NICK_RADIUS / G.EDGE_LEN)))
                 return
-            # a pending click -> tear a burst toward it
-            if self.click_world is not None and not self.stopped:
-                wx, wy = self.click_world; self.click_world = None
+            # a pending click -> tear a burst further around the ring (robust; no un-project)
+            if self.burst > 0 and not self.stopped:
                 n = 0
-                for _ in range(ADVANCE_PER_CLICK):
-                    if not self._advance_toward(wx, wy):
+                while self.burst > 0:
+                    self.burst -= 1
+                    if not self._advance_circ():
                         break
                     n += 1
                 if n:
