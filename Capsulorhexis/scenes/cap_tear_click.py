@@ -37,7 +37,7 @@ import generate_cap as G
 # --- physics (mass-spring, robust) -------------------------------------------
 EDGE_STIFFNESS = 3000.0
 BEND_STIFFNESS = 8.0
-DAMPING = 3.0
+DAMPING = 1.5
 LENS_REPULSION = 2000.0
 MAX_STRETCH = 1.5
 MAX_SPEED = 25.0
@@ -52,12 +52,15 @@ RIM_FRAC = 0.9
 PRE_TEAR_DEG = 60.0
 
 # --- click-driven tear -------------------------------------------------------
-ADVANCE_PER_CLICK = 8      # how many vertices one click tears toward the target
-CLICK_PLANE_Z = 1.0        # the membrane plane the click ray is intersected with
-PEEL_LIFT = 0.6            # how far (kinematic, clamped) the fresh inner lip is nudged up
-PEEL_STEP = 0.15           # max kinematic move per step (clamped -> cannot explode)
-LIFT_AFTER_CRACKLEN = 90   # after this, buoyancy lifts the freed disc to reveal the hole
-DISC_LIFT_Z = 12.0
+ADVANCE_PER_CLICK = 10     # how many vertices one click tears further along the ring
+CLICK_PLANE_Z = 1.0        # (un-projection is only for a log check; the tear is robust)
+PEEL_LIFT = 0.0            # DISABLED: a kinematic peel (set position, node not fixed) fights
+PEEL_STEP = 0.18           # the springs and blows up. Reveal via buoyancy (a FORCE) instead.
+# Buoyancy (the eye's vitreous) gently lifts the freeing disc so the flap peels up as you
+# tear -- a real body force integrated by the solver, so it is STABLE (unlike the peel).
+# Turned on after a modest tear so the whole cap does not dome up before you start.
+LIFT_AFTER_CRACKLEN = 40
+DISC_LIFT_Z = 22.0
 
 PLUGINS = [
     "Sofa.Component.StateContainer", "Sofa.Component.Topology.Container.Dynamic",
