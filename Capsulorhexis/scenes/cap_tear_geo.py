@@ -80,7 +80,10 @@ PULL_LOG_DT = 0.4
 
 # --- mouse (forceps) ---------------------------------------------------------
 ENABLE_MOUSE = True
-MOUSE_STIFFNESS = 550.0
+MOUSE_STIFFNESS = 120.0    # LOW: force = stiffness x drag distance is UNBOUNDED, so a hard
+                           # far yank at high stiffness diverges the solver to inf mid-step
+                           # (the big-bang). The geometric tear only needs a SMALL pull to
+                           # know the direction, so a gentle spring is all it needs.
 SHOW_TIP_MARKER = False
 ALARM_DISTANCE = 0.40 * G.EDGE_LEN
 CONTACT_DISTANCE = 0.20 * G.EDGE_LEN
@@ -363,6 +366,14 @@ def _make_controller(mo, topo, springs, mass, bending, visual, n_real,
                     break
 
         def onAnimateEndEvent(self, event):
+            # If this step already diverged to inf, restore the last good state NOW (before the
+            # clamps run on garbage -- e.g. MAX_DISP would compute inf*0 = nan). This plus the
+            # begin-of-step rollback means a hard yank recovers instead of scattering.
+            if not np.isfinite(np.array(self.mo.position.value)).all():
+                if self.last_good_pos is not None:
+                    self.mo.position.value = self.last_good_pos
+                    self.mo.velocity.value = [[0.0, 0.0, 0.0]] * len(self.last_good_pos)
+                return
             if MAX_SPEED > 0:
                 Vel = np.array(self.mo.velocity.value)
                 if Vel.size:
@@ -415,7 +426,7 @@ def _make_controller(mo, topo, springs, mass, bending, visual, n_real,
                 R = np.array(self.mo.rest_position.value)
                 d = P - R
                 dn = np.linalg.norm(d, axis=1)
-                far = dn > MAX_DISP
+                far = np.isfinite(dn) & (dn > MAX_DISP)     # isfinite: never divide by inf
                 if far.any():
                     P[far] = R[far] + d[far] * (MAX_DISP / dn[far])[:, None]
             self.mo.position.value = P.tolist()
@@ -461,8 +472,8 @@ def createScene(root):
     lens.addObject("OglModel", name="lensVisual", src="@bloader", color=[0.45, 0.55, 0.75, 0.45])
 
     cap = root.addChild("Cap")
-    cap.addObject("EulerImplicitSolver", rayleighStiffness=0.4, rayleighMass=0.2)
-    cap.addObject("CGLinearSolver", iterations=30, tolerance=1e-8, threshold=1e-8)
+    cap.addObject("EulerImplicitSolver", rayleighStiffness=0.5, rayleighMass=0.2)
+    cap.addObject("CGLinearSolver", iterations=50, tolerance=1e-8, threshold=1e-8)
     topo = cap.addObject("TriangleSetTopologyContainer", name="topo", position=verts, triangles=faces)
     cap.addObject("TriangleSetTopologyModifier")
     cap.addObject("TriangleSetGeometryAlgorithms", template="Vec3d")
