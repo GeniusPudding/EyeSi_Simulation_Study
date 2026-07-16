@@ -53,16 +53,40 @@ LENS_REPULSION = 2000.0   # analytic lens obstacle (do NOT raise -> penalty blow
 MAX_STRETCH = 1.6         # hard edge-length cap (keeps the mesh from crushing)
 
 # --- tear rule --------------------------------------------------------------
-# sigma1 ~= YOUNG * local strain, so 180/1200 ~= 15% stretch at the tip triggers a step.
-STRESS_THRESHOLD = 180.0
+# sigma1 ~= YOUNG * local strain, so 90/1200 ~= 7.5% local stretch at the tip triggers a
+# step. Lowered from 180 so a GENTLE mouse pull can drive the crack (the scripted symmetric
+# lift used to slam sigma1 past 1000, which hid how high 180 really was for hand pulling).
+STRESS_THRESHOLD = 90.0
 TEAR_CHECK_DT = 0.12      # [s] between tip-advance checks
+TEAR_SETTLE_T = 0.8       # [s] no tearing before this -> the mesh settles on load-in first
+                          # (otherwise a startup transient at the pinned seed tears once)
 
-# --- loading (v1: scripted, so the curve shows with no mouse) ---------------
-LIFT_RADIUS = 4.5         # nodes with planar r < this are the central disc that gets lifted
-LIFT_HEIGHT = 6.0         # how high the disc is pulled (+z)
+# --- loading ----------------------------------------------------------------
+# PULL_MODE decides WHERE the load comes from -- and this is the whole point of the user's
+# question "why a fixed radius / circle?": the crack path is ALWAYS just perpendicular-to-
+# sigma1; the SHAPE of the load is what makes the path a circle or not.
+#   "mouse" : no scripted pull -- YOU drag the flap with Shift+left (forceps). The stress
+#             field is whatever your pull makes it, so the crack follows your hand, NOT a
+#             circle. This is the real free-tear mode (default).
+#   "disc"  : symmetric -- rim fixed + whole central disc lifted. Axisymmetric stress ->
+#             sigma1 radial everywhere -> crack runs circumferential at ~constant radius.
+#             The "fixed circle" is a CONSEQUENCE of this symmetry, not a scripted path.
+#   "patch" : a small OFF-CENTRE patch is pulled (a scripted "forceps grip"). Asymmetric
+#             stress -> the crack follows the patch, NOT a circle. Used to prove the point
+#             headlessly (no mouse needed).
+PULL_MODE = "mouse"
+LIFT_RADIUS = 4.5         # "disc" mode: nodes with planar r < this get lifted
+LIFT_HEIGHT = 6.0         # "disc"/"patch" pull height (+z)
 PULL_START_T = 1.0
 PULL_END_T = 12.0
 RIM_FRAC = 0.9            # nodes with r > RIM_FRAC*R are anchored (zonular fibres)
+
+# --- mouse (forceps) --------------------------------------------------------
+ENABLE_MOUSE = True
+MOUSE_STIFFNESS = 1500.0  # Shift+left-drag attach spring; no adhesion here, so this alone
+                          # must load the tip -> a bit stiffer than cap_membrane's 1000.
+ALARM_DISTANCE = 0.40 * G.EDGE_LEN
+CONTACT_DISTANCE = 0.20 * G.EDGE_LEN
 
 PLUGINS = [
     "Sofa.Component.StateContainer", "Sofa.Component.Topology.Container.Dynamic",
@@ -70,6 +94,11 @@ PLUGINS = [
     "Sofa.Component.SolidMechanics.FEM.Elastic", "Sofa.Component.SolidMechanics.Spring",
     "Sofa.Component.Mass", "Sofa.Component.Constraint.Projective",
     "Sofa.Component.MechanicalLoad", "Sofa.Component.Mapping.Linear",
+    "Sofa.Component.Collision.Detection.Algorithm",
+    "Sofa.Component.Collision.Detection.Intersection",
+    "Sofa.Component.Collision.Geometry",
+    "Sofa.Component.Collision.Response.Contact",
+    "Sofa.GUI.Component",             # AttachBodyButtonSetting (mouse-pull strength)
     "Sofa.Component.Visual", "Sofa.Component.AnimationLoop", "Sofa.Component.Setting",
     "Sofa.GL.Component.Rendering3D",
 ]
@@ -233,7 +262,7 @@ def _make_controller(mo, topo, fem, springs, mass, visual, n_real, start_b, star
 
         def onAnimateBeginEvent(self, event):
             t = self.mo.getContext().getTime()
-            if self.stopped or t - self.last_check < TEAR_CHECK_DT:
+            if self.stopped or t < TEAR_SETTLE_T or t - self.last_check < TEAR_CHECK_DT:
                 return
             self.last_check = t
             if self.adj is None:
@@ -335,6 +364,19 @@ def createScene(root):
     root.addObject("BackgroundSetting", color=[0.06, 0.09, 0.12, 1.0])
     root.addObject("InteractiveCamera", position=[10.0, -10.0, 11.0], lookAt=[0, 0, 0])
 
+    if ENABLE_MOUSE:
+        # Shift+left-drag: SOFA rays from the camera through the cursor, grabs the nearest
+        # cap triangle, and attaches a spring of MOUSE_STIFFNESS between it and a virtual
+        # mouse particle you drag in the screen plane. There is NO adhesion here, so this
+        # spring alone loads the crack tip -> pull the flap near the tip and it tears.
+        root.addObject("CollisionPipeline")
+        root.addObject("BruteForceBroadPhase")
+        root.addObject("BVHNarrowPhase")
+        root.addObject("CollisionResponse", response="PenalityContactForceField")
+        root.addObject("MinProximityIntersection", alarmDistance=ALARM_DISTANCE,
+                       contactDistance=CONTACT_DISTANCE)
+        root.addObject("AttachBodyButtonSetting", stiffness=MOUSE_STIFFNESS, arrowSize=0.3)
+
     verts, faces, n_real, rim, disc, sb, stip = _geometry()
 
     # The lens (visual obstacle the flap folds up over).
@@ -361,12 +403,33 @@ def createScene(root):
                   center=[0.0, 0.0, G.Z0], vradius=[G.A, G.A, G.C],
                   stiffness=LENS_REPULSION, damping=1.0)
 
-    # Zonular anchor: the outer rim is held fixed.
+    # Zonular anchor: the outer rim is held fixed (so a pull tensions the membrane instead
+    # of just dragging the whole cap away).
     cap.addObject("FixedProjectiveConstraint", name="RimAnchor", indices=rim, showObject=False)
-    # Scripted central lift: pull the disc up so the membrane is in radial tension.
-    cap.addObject("LinearMovementProjectiveConstraint", name="lift", indices=disc,
-                  keyTimes=[0.0, PULL_START_T, PULL_END_T, 60.0],
-                  movements=[[0, 0, 0], [0, 0, 0], [0, 0, LIFT_HEIGHT], [0, 0, LIFT_HEIGHT]])
+
+    # WHERE the load comes from -- see PULL_MODE. The crack rule never changes; only the
+    # shape of the load does, and THAT is what makes the path a circle ("disc") or free
+    # ("mouse"/"patch").
+    if PULL_MODE == "disc":
+        cap.addObject("LinearMovementProjectiveConstraint", name="lift", indices=disc,
+                      keyTimes=[0.0, PULL_START_T, PULL_END_T, 60.0],
+                      movements=[[0, 0, 0], [0, 0, 0], [0, 0, LIFT_HEIGHT], [0, 0, LIFT_HEIGHT]])
+    elif PULL_MODE == "patch":
+        # ASYMMETRIC disc pull: lift the disc AND drag it sideways (+x). Same disc nodes as
+        # "disc" (so they never overlap the fixed rim -> no constraint conflict), but the
+        # sideways component breaks the axisymmetry, so sigma1 is no longer purely radial
+        # and the crack does NOT hold a constant radius -> proof the path is not a hardcoded
+        # circle, it is just perpendicular-to-sigma1 under whatever load is applied.
+        cap.addObject("LinearMovementProjectiveConstraint", name="grip", indices=disc,
+                      keyTimes=[0.0, PULL_START_T, PULL_END_T, 60.0],
+                      movements=[[0, 0, 0], [0, 0, 0],
+                                 [4.0, 0, LIFT_HEIGHT], [4.0, 0, LIFT_HEIGHT]])
+    # PULL_MODE == "mouse": nothing scripted -- YOU drag it.
+
+    if ENABLE_MOUSE:
+        # The collision model the mouse ray picks (selfCollision off: cheap, and safer with
+        # the runtime topology changes from tearing).
+        cap.addObject("TriangleCollisionModel", selfCollision=False, contactStiffness=200.0)
 
     visu = cap.addChild("Visual")
     oglm = visu.addObject("OglModel", name="visual", color=[0.9, 0.9, 0.82, 1.0], triangles=faces)
