@@ -52,6 +52,8 @@ RIM_FRAC = 0.9
 PRE_TEAR_DEG = 60.0
 
 # --- click-driven tear -------------------------------------------------------
+MOUSE_STIFFNESS_CAP = 30.0 # cap the stiffness of SofaImGui's hidden 'Mouse' attach spring, whose
+                           # UNBOUNDED force (climbed to >1e6 in the diagnostic) is the blow-up.
 DRAG_TRIGGER = 0.30        # if a node gets pulled this far from rest, tear toward it -> you can
                            # DRAG to tear (works with SofaImGui's own mouse pull), not just click
 DIAG = True                # log, every ~0.4s, what YOUR real pull does to the mesh (velocity /
@@ -71,7 +73,7 @@ PLUGINS = [
     "Sofa.Component.ODESolver.Backward", "Sofa.Component.LinearSolver.Iterative",
     "Sofa.Component.SolidMechanics.Spring", "Sofa.Component.Mass",
     "Sofa.Component.Constraint.Projective", "Sofa.Component.MechanicalLoad",
-    "Sofa.Component.Mapping.Linear",
+    "Sofa.Component.Mapping.Linear", "Sofa.GUI.Component",
     "Sofa.Component.Visual", "Sofa.Component.AnimationLoop", "Sofa.Component.Setting",
     "Sofa.GL.Component.Rendering3D",
 ]
@@ -317,6 +319,30 @@ def _make_controller(mo, topo, springs, mass, visual, cam, n_real, seed_v, v_a, 
             print(f"[Tear] CLICK -> tearing {ADVANCE_PER_CLICK} more around the ring"
                   + (f" (click world ~{w[0]:.1f},{w[1]:.1f})" if w else ""))
 
+        def _tame_mouse_spring(self):
+            """SofaImGui creates a hidden 'Mouse' node with a penalty spring when you drag; its
+            force is unbounded (>1e6 measured). Walk that node and cap every spring's stiffness
+            so a hard drag can no longer blow up the mesh. Also logs the structure once."""
+            def walk(node):
+                for o in list(node.objects):
+                    cn = o.getClassName()
+                    for dn in ("stiffness", "forceCoef"):
+                        d = o.findData(dn) if hasattr(o, "findData") else None
+                        if d is not None:
+                            try:
+                                old = d.value
+                                d.value = MOUSE_STIFFNESS_CAP
+                                print(f"[Diag] tamed {cn}.{dn} {old} -> {MOUSE_STIFFNESS_CAP}")
+                            except Exception as e:  # noqa: BLE001
+                                print(f"[Diag] {cn}.{dn} not settable: {e}")
+                    if not any(hasattr(o, a) and o.findData(a) for a in ("stiffness", "forceCoef")):
+                        print(f"[Diag] Mouse node has: {cn}")
+                for sub in list(node.children):
+                    walk(sub)
+            for ch in list(self.root.children):
+                if ch.name.value == "Mouse":
+                    walk(ch)
+
         # ---- per step ----------------------------------------------------
         def onAnimateBeginEvent(self, event):
             Pc = np.array(self.mo.position.value)
@@ -441,6 +467,7 @@ def _make_controller(mo, topo, springs, mass, visual, cam, n_real, seed_v, v_a, 
                     kids = set()
                 if self.prev_kids is not None and kids - self.prev_kids:
                     print(f"[Diag] MOUSE GRAB -- new scene node(s): {kids - self.prev_kids}")
+                    self._tame_mouse_spring()
                 self.prev_kids = kids
                 if t - self.last_diag >= 0.4:
                     self.last_diag = t
@@ -470,6 +497,10 @@ def createScene(root):
     # TOP-DOWN camera: look straight down -z so a click maps cleanly onto the membrane.
     cam = root.addObject("InteractiveCamera", position=[0, 0, 22], lookAt=[0, 0, 0],
                          projectionType=0)
+    # Cap SofaImGui's hidden mouse-attach spring stiffness from the start: its default is huge
+    # (its force hit >1e6 in the diagnostic = the blow-up). A soft spring can still drag/tear
+    # but cannot diverge the solver. The controller also re-caps it at runtime as a backstop.
+    root.addObject("AttachBodyButtonSetting", stiffness=MOUSE_STIFFNESS_CAP, arrowSize=0.3)
 
     verts, faces, n_real, rim, disc, seed_v, seed_a, seed_fwd = _geometry()
 
