@@ -1,0 +1,159 @@
+# Stock-SOFA 撕裂 demo:機制、實測能耐、模型極限 vs EyeSi/INRIA
+
+對應檔案:
+- [`Capsulorhexis/scenes/cap_tear.py`](../../Capsulorhexis/scenes/cap_tear.py) — 主場景(彎曲囊膜 on 水晶體,滑鼠撕裂)
+- [`Capsulorhexis/scenes/tear_stress.py`](../../Capsulorhexis/scenes/tear_stress.py) — 平面驗證台(同機制,先在平片上做對)
+- 啟動:`./Capsulorhexis/scenes/run_cap.ps1`(預設就是 `cap_tear.py`;`-Scene cap_membrane.py` 才是舊的黏著剝離場景)
+
+這份記錄**本 repo 用純 stock SOFA(免自編 dll)做出來的撕裂 demo**:它的機制、實測做得到什麼、
+以及**做不到什麼、為什麼**——並對照 EyeSi(Weber)與 INRIA 兩條論文路線。定位是「實作經驗 +
+模型極限」的收尾;論文機制正本仍在 [`ccc_method/3 Weber2009`](../ccc_method/3_weber2009_physical.md)、
+[`ccc_method/4 INRIA 纖維斷裂`](../ccc_method/4_inria_fiber_fracture.md)、[`reference/8`](../reference/8_inria_implementation_deepread.md),本檔不重述、只指向。
+
+> 慣例:凡「論文怎麼做」一律標 **[推論]**(依 repo 既有整理與記憶,未逐條回原文核對);凡「本 demo 怎麼做」
+> 皆可回上面的程式碼行號查證。撕裂**判據是應力(stress)特徵值、非應變**,與 EyeSi 一致(見 CLAUDE.md 校正紀錄)。
+
+---
+
+## 1. 機制:三件事
+
+一句話:**彈性薄膜 + 沿網格邊的離散裂縫,用主應力門檻觸發、沿 ⊥σ₁ 前進**。
+
+### (a) 力學(純彈性)
+- `TriangularFEMForceField method="large"`(線性共旋膜)+ `MeshSpringForceField`(每條邊一個線彈簧,抗伸長)
+  + `TriangularBendingSprings`(抗彎)+ `DiagonalMass` + `UniformVelocityDampingForceField`。
+- 幾何來自 [`generate_cap.py`](../../Capsulorhexis/scenes/generate_cap.py) 的扁橢球(oblate,A=7、C=1.5),
+  囊膜是貼合其上緣的圓弧片;`EllipsoidForceField` 當水晶體的**解析障礙**(正剛度=向外推),外緣以
+  `FixedProjectiveConstraint` 固定(懸韌帶錨,anatomical zonule)。
+- **關鍵性質:純彈性**——放手就彈回原狀(§5 會說明這是最大的限制根源)。
+
+### (b) 裂縫幾何:runtime 頂點分裂
+裂縫是一條頂點路徑 `self.crack = [..., prev, tip]`,只有 `tip` 還連著。前進 = 把 `tip` 的三角形扇面
+沿兩條裂邊(往 `prev`、往選定的 `next`)剖成兩片唇,一片保留原頂點、另一片改接一個**預留備用頂點**
+(`_split_tip`,`cap_tear.py`)。備用點池在建網格時就配好(park 在網格內,避免撐大 bbox);分裂後
+`fem/springs/mass.reinit()` 讓力學元件吃到新拓樸,並把新三角形清單**推給 OglModel**(否則畫面那層皮
+不會跟著開)。
+
+> 裂縫**只能沿現有網格邊**一格一格走 —— 這是與 INRIA「沿任意路徑重網格」最本質的差別(§5.2)。
+
+### (c) 判據:σ₁ 門檻 + ⊥σ₁ 方向(Rankine)
+每 `TEAR_CHECK_DT` 檢查一次(`onAnimateBeginEvent` / `_advance_once`):
+
+```
+每個三角形:F = Ds·Dm⁻¹              (Dm=靜止邊框, Ds=當前邊框, 逐三角形防呆 2×2 逆)
+           ε = ½(FᵀF − I)          (Green 應變, 平面)
+           σ = C:ε                 (平面應力, C = E/(1−ν²) 的各向同性矩陣)
+           σ₁ = ½(σxx+σyy) + √(((σxx−σyy)/2)² + σxy²)   (主應力)
+裂尖判定:  khot = argmax σ₁ (碰到 tip 的三角形中最燙的那個)
+           若 σ₁(khot)·TIP_STRESS_GAIN < STRESS_THRESHOLD → 不前進(只是繃緊)
+           否則 perp = normalize(n × σ₁方向)             (⊥σ₁, 落在裂尖切平面內)
+                next = 與 perp 最對齊、且在環帶內的鄰居頂點(強制往前)
+                _split_tip(tip, prev, next)
+```
+
+- **σ₁ 由幾何(靜止 vs 當前)算出**,與哪個元件在施力無關 → 判據不綁定特定力學模型。
+- **⊥σ₁ 用裂尖的局部法線 `n`**(非寫死 z 軸),裂縫才會貼著彎曲的膜面走。
+- **路徑不寫死**:同一條規則,平片均勻拉 → 直線;彎膜放射狀拉 → σ₁ 指向半徑 → ⊥σ₁ 是圓周 → **裂縫自然彎成圓**。
+
+---
+
+## 2. 工程細節(得來不易的穩定性與收尾)
+
+這些不是論文機制,是把上面三件事做成「不會崩、看得到」的必要防護,列成表備查(皆在 `cap_tear.py`):
+
+| 機制 | 參數 | 為什麼 |
+|---|---|---|
+| **環帶約束** | `TEAR_R_MIN=3.0`、`TEAR_R_MAX=6.0` | 裂縫若捲進中央**極點**(自適應環收斂的奇異點),分裂會生退化細三角形 → FEM `Null determinant` → inf 爆掉。限制在 r∈[3,6] 環帶內;撕囊本來就是 r≈5 的環,路徑仍在環內自由湧現。 |
+| **面積夾限** | `AREA_MIN_FRAC=0.30` | 三角形被拉到面積<30% 靜止面積(純剪切/翻面,邊長夾限抓不到)→ FEM 除以零。把過小三角形繞質心撐回去。實測:9000 力的暴力猛拉仍維持有限值。 |
+| **回滾安全網** | `last_good_pos` | FEM 內部若仍炸出 inf(在夾限之前),下一步偵測到非有限值就**回滾上一個好狀態、速度歸零**。場景**再也不會永久消失**。 |
+| **速度/應變夾限** | `MAX_SPEED=25`、`MAX_STRETCH=1.5` | 猛拉的大衝量、邊不得超過 1.5× 靜止長。 |
+| **滑鼠力上限** | `MOUSE_STIFFNESS=250`(低) | 附著彈簧力 = 剛度 × 拖曳距離,**無上限**;高剛度把游標拖出畫面 = 巨大衝量 → 塌陷。壓低剛度封住遠拖的力。 |
+| **裂尖應力集中** | `TIP_STRESS_GAIN=2.0` | 真實裂尖有應力奇異點,粗網格會低估 → 乘一個集中係數,手拉才拉得動(§5.3)。 |
+| **起始缺口(穿囊針)** | `PRE_TEAR_DEG=100` | 開場沿圓周幾何預撕約 100°,給一片可抓的瓣(對應臨床:穿囊針先刺切口)。內部種子(非外緣),否則裂尖被固定住、σ₁ 到不了門檻(§5.3)。 |
+| **圓片掀起** | `LIFT_AFTER_CRACKLEN=75`、`DISC_LIFT_Z=14` | 撕過 ~3/4 圈後,開向上浮力(泡在玻璃體中)把已近乎切下的中央圓片掀起、露出圓洞。**只在大撕之後才啟動**,不會一開始自撕。 |
+
+---
+
+## 3. 實測:做得到什麼(皆有數據)
+
+- **裂縫從應力場湧現、彎成圓**:彎膜放射狀加載下,裂尖半徑維持 r≈5.4–6.4,角度單調掃過
+  176°→−31°(約 **207° 圓弧**),裂口開到 ~0.9。沒有任何程式碼畫圓。
+- **同規則、換加載 → 換路徑**:對稱加載裂縫半徑 spread=0.4(圓);不對稱(往側邊拉)spread=3.6(跟著拉走)。
+  證明「固定半徑」是加載對稱性的結果,不是寫死。
+- **一次撕一段**:`MAX_ADVANCE_PER_CHECK=6`,拉力夠時一次前進多格,像「撕」而非一格一格跳。
+- **圓片掀起露洞**:撕過 75 格後浮力把圓片從 z=1.5 掀到 **z=7.5**,呈現「撕囊完成、露出圓洞」。
+- **不會崩**:暴力猛拉(9000 力)全程維持有限值(面積夾限 + 回滾)。
+
+---
+
+## 4. 診斷工具:`[Pull]` log
+
+`onAnimateBeginEvent` 內建拉動診斷,拉的時候印出:裂尖 σ₁(判據實際看的值)、全場最大 σ₁ 在哪、
+你拉的點在哪 + **離裂尖多遠**。這條 log 直接揭示了核心難點(見 §5.3):
+
+```
+[Pull] tipSigma1=10 (x2.0=20 vs thr 10) tip@r5.1,-37d | maxSigma1=137@r4.2,-11d | youPull@r4.1,-17d dist-to-tip=1.9
+```
+你拉的地方 σ₁=137,但傳到 1.9 之外的裂尖只剩 10 —— **判據沒錯,是力傳不到裂尖**。
+
+---
+
+## 5. 做不到什麼、為什麼(這是重點)
+
+反覆調參數**到不了**「像真的撕囊那樣拉起一大片、翻摺、停住」。這**不是調參問題,是模型本質**,四個根本原因:
+
+### 5.1 純彈性,沒有塑性(最大主因)
+真實囊膜撕開**不可逆**——撕過永久分開、瓣維持折起。本 demo 是彈性:兩片唇被周圍完好的膜與**邊彈簧**拉回,
+一放手裂口就縮回。**實測塑性嘗試失敗**:仿 `cap_membrane` 的做法(把靜止形狀 creep 向當前形狀 + 重烤彎曲靜止角)
+不但沒幫忙,反而更差 —— 掀起的瓣放手後只保留 **18%**(塑性)vs **45%**(純彈性)。根因:**邊彈簧一直把瓣拉平**,
+而只 creep FEM/彎曲的靜止態贏不過邊彈簧;若連邊彈簧的靜止長也 creep → **無界成長 → 爆炸**。且 `fem.reinit()`
+會重載**原始**靜止態、把 creep 洗掉。→ 這個彈性 + 邊彈簧的結構天生做不出「形狀停住」。
+
+### 5.2 裂縫被網格邊量化
+裂縫只能沿現有邊、一次一格,做不出平滑大弧,也做不出「一撕一大片」的連續感。INRIA 用**沿路徑重網格**
+就是為擺脫這點([`ccc_method/2`](../ccc_method/2_topological_remesh.md)、[`reference/8`](../reference/8_inria_implementation_deepread.md))。
+
+### 5.3 粗網格的裂尖沒有應力奇異性
+真實裂尖 σ→∞,所以輕輕一拉就裂;線性 FEM 把它抹平,裂尖受力被低估 → 要嘛拉不動、要嘛把門檻壓到很低
+(不自然)。`TIP_STRESS_GAIN` 只是補一個人工集中係數,治標。且力**傳不到遠處的裂尖**(§4 的 `dist-to-tip`),
+所以必須「抓在裂尖旁、隨裂縫重新夾」——正是臨床要重新抓握的原因,但對操作者不直覺。
+
+### 5.4 軟 ↔ 穩定的矛盾
+要裂口張得開就得把膜調軟(YOUNG 500 時 max-gap 開到 ~1.5),但一軟、手一用力,三角形就塌陷/翻面 →
+FEM `Null determinant` 爆掉。只能在中間妥協(現用 YOUNG 900 + 面積夾限)。兩個目標在此模型**天生打架**。
+
+---
+
+## 6. 對照:EyeSi / INRIA / 本 repo 的 JS 解耦 demo
+
+| | 本 SOFA demo(cap_tear.py) | EyeSi(Weber 2006/2009)[推論] | INRIA(Comas/Allard/Courtecuisse/Dequidt)[推論] | 本 repo JS 解耦 demo |
+|---|---|---|---|---|
+| 力學 | 線性共旋膜 FEM,**純彈性** | 為即時觸覺設計的完整物理;斷裂**不可逆** | **纖維各向異性 FEM** + 約束式接觸 | Verlet + PBD 距離約束 + 折皺力 |
+| 撕裂判據 | σ₁ 門檻 + ⊥σ₁(Rankine) | 應力特徵值門檻(與本 demo 同族) | argmax 斷裂判據(Marchal) | 規則層 curr = rotate(drift + pull) |
+| 裂縫路徑 | **綁死網格邊** | — | **沿任意路徑重網格**(擺脫網格) | Layer B 純幾何軌跡,可換膜 |
+| 「瓣停住/翻摺」 | ✗(彈性彈回,§5.1) | ✓(不可逆 + 觸覺硬體) | ✓(重網格 + 適當本構) | ✓(PBD + `Attached` 旗標凍結) |
+| 即時策略 | 只在裂尖局部分裂 | — | **非同步預條件子(Courtecuisse 2010)** | **只算脫離節點**(其餘凍結為錨) |
+| 硬體 | 滑鼠 | **力回饋觸覺** | 紅外光學追蹤(Dequidt 2013,無力回饋) | 滑鼠 |
+
+論文機制細節見正本:[`ccc_method/3`](../ccc_method/3_weber2009_physical.md)(EyeSi)、
+[`ccc_method/4`](../ccc_method/4_inria_fiber_fracture.md)(INRIA)、[`reference/8`](../reference/8_inria_implementation_deepread.md)(INRIA 實作深讀);
+架構決策見 [`implementation/3`](3_tearing_architecture_decision.md);本 repo 的 JS 解耦撕裂見
+[`implementation/2`](2_freetear_demo.md)。
+
+> **值得注意**:本 repo 的 **JS 解耦 demo**([`implementation/2`](2_freetear_demo.md))其實已用
+> 「Layer B 幾何規則 + Layer A 只算脫離節點 + PBD + Delaunay 重網格」**繞過**了 §5 的多數限制
+> ——它能折皺、能凍結瓣的形狀。本 SOFA demo 走的是「物理優先」路線,反而正面撞上這些限制。
+> 這對照本身就是結論:**要真手感,關鍵不在把彈性膜調到多好,而在換成「解耦幾何路徑 + 不可逆凍結 + 路徑重網格」的架構。**
+
+---
+
+## 7. 結論與下一步
+
+- 本 demo 作為**判據示範**是成功的:裂縫確實照 ⊥σ₁ 自動彎成圓、圓片能掀起露洞,且穩定不崩。
+- 作為**手感模擬**已達模型天花板:純彈性 + 網格邊量化 + 無裂尖奇異 + 軟↔穩定矛盾,**調參數改不掉**。
+- 要真正的「抓住拉一整片翻起來」,需換架構:
+  1. **中期**:仿本 repo JS 解耦 demo,把「裂縫路徑(幾何規則)」與「膜物理(只算脫離片 + PBD/塑性凍結)」解耦;沿路徑重網格。
+  2. **完整**:走 INRIA 正本 —— 編 `Capsulorhexis.dll` 的 `FiberFractureEngine`(纖維 FEM + 不可逆斷裂 + 路徑重網格),對齊 Comas 2008 / Allard 2009 / Dequidt 2013。
+
+> 先確認方向,再動工;若走完整路線,第一步是讀 [`ccc_method/4`](../ccc_method/4_inria_fiber_fracture.md) 與
+> [`reference/8`](../reference/8_inria_implementation_deepread.md) 把引擎需要的元件/判據/資料流盤清楚。
