@@ -122,7 +122,14 @@ MOUSE_STIFFNESS = 1000.0
 # False for as long as the grab lasts, then True again. Result: orbit normally, but the
 # view holds still while you pull.
 LOCK_CAMERA = False            # True = never allow orbiting at all
-FREEZE_CAMERA_WHILE_PULLING = True
+# FREEZE_CAMERA_WHILE_PULLING: DISABLED -- it does not work and it broke orbiting.
+# The idea was to spot AttachBodyPerformer's interaction spring appearing in the graph and
+# freeze the camera only for the duration of a grab. Headless it behaves (object count is
+# a stable 56, never misfires), but in the GUI the count sits permanently above the
+# baseline -- SofaGLFW/SofaImGui add their own mouse-interactor objects -- so it decides
+# you are grabbing forever and the camera stays locked. A global object COUNT is simply
+# the wrong signal; it must match the attach spring specifically. Off until that is done.
+FREEZE_CAMERA_WHILE_PULLING = False
 
 # --- stress field (this is what the tear criterion will be built on) ----------
 # We compute the per-triangle principal stress OURSELVES in numpy, because the FEM's own
