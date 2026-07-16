@@ -103,7 +103,11 @@ def _grid():
         for i in range(NX):
             verts.append([float(i) - cx, float(j) - cy, 0.0])
     n_real = len(verts)
-    verts += [[-99.0, -99.0, -99.0]] * (NX * NY)      # generous spare pool
+    # Spare pool for runtime splits. Park them at the ORIGIN (inside the sheet), NOT far
+    # away: the GUI's auto-frame includes every MechanicalObject point in the bounding box,
+    # so spares at e.g. (-99,-99,-99) blow the bbox up and the camera zooms miles out,
+    # making the sheet a speck. A split overwrites the spare's position anyway.
+    verts += [[0.0, 0.0, 0.0]] * (NX * NY)            # generous spare pool
 
     def vid(i, j):
         return j * NX + i
