@@ -194,6 +194,8 @@ STITCH_K = 2500.0        # stiffness holding the slit closed (match EDGE_STIFFNE
 TEAR_T = 3.0             # [s] start tearing the circle
 TEAR_DURATION = 3.0      # [s] to tear all the way around
 LIFT_HEIGHT = 4.5        # how high the freed central disc is lifted
+FIX_OUTER_RIM = True     # hard-anchor the outer ring (zonular fibers) so the
+                         # rim stays put while the central disc tears free
 
 # --- AUTOMATIC plasticity: "拉完就不太彈回", no key press needed --------------
 # A purely elastic membrane snaps back to its rest shape the moment you let go. Real
@@ -778,6 +780,17 @@ def createScene(root):
                            indices2=[int(b) for a, b in _pairs],
                            stiffness=[STITCH_K], damping=[1.0], showArrowSize=0.0)
     central = set(int(i) for i in G.central_indices())
+
+    # Anchor the OUTER rim (anatomically: the capsule is held by the zonular fibers). This
+    # keeps the rim planted while the central disc tears free and lifts -- without it the
+    # rim creeps up (self-collision as the torn edge passes it) -- and it also bounds the
+    # adhesion avalanche. Fix the outermost ring of nodes (planar r near the cap edge R).
+    if FIX_OUTER_RIM and _capV is not None:
+        import math as _m2
+        _outer = [i for i, xyz in enumerate(_capV)
+                  if _m2.hypot(float(xyz[0]), float(xyz[1])) > 0.9 * G.R]
+        if _outer:
+            cap.addObject("FixedProjectiveConstraint", name="RimAnchor", indices=_outer)
 
     # Lift handle: the central pole nodes. After the circle tears, this pulls the freed
     # disc up so you see it come off round.
