@@ -340,6 +340,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.edge_rest = None
             self.base_objs = None      # graph snapshot taken on the first step
             self.grabbing = False
+            self.last_good = None      # last all-finite positions, for the NaN-rollback net
             self.tris = None
             self.sigma1_max = 0.0
             self.paper_done = False
@@ -440,6 +441,19 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 self._report()
 
         def onAnimateEndEvent(self, event):
+            # (0) NaN-rollback net. Once the membrane is FULLY peeled off the lens it is a
+            # completely free stiff FEM sheet; residual momentum + lens repulsion can push a
+            # triangle degenerate -> "Null determinant" -> the solve returns NaN, and NaN is
+            # sticky (the clamps below compute NaN>limit == False and cannot repair it). So if
+            # this step went non-finite, restore the last all-finite positions and kill the
+            # velocity, turning a permanent blow-up into a recoverable hiccup.
+            P0 = np.array(self.mo.position.value)
+            if not np.isfinite(P0).all():
+                if self.last_good is not None:
+                    self.mo.position.value = self.last_good
+                    self.mo.velocity.value = [[0.0, 0.0, 0.0]] * len(self.last_good)
+                return
+
             # (1) Velocity clamp: clip a runaway node's speed before it flies a long way in
             # one step and becomes a giant triangle.
             if MAX_SPEED > 0.0:
@@ -479,6 +493,11 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                         np.add.at(P, e1[over], -0.5 * excess * n)
                     if moved:
                         self.mo.position.value = P.tolist()
+
+            # (3) Cache this finite state as the rollback target for (0).
+            Pn = np.array(self.mo.position.value)
+            if np.isfinite(Pn).all():
+                self.last_good = Pn.tolist()
 
         def onAnimateBeginEvent(self, event):
             t = self.fem.getContext().getTime()
