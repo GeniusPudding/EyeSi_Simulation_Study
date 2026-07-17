@@ -186,6 +186,13 @@ MAX_SPEED = 25.0         # units/s; 0 disables the clamp
 # the sim from exploding.)
 MAX_STRETCH = 1.6        # an edge may not exceed this multiple of its rest length; 0 = off
 STRAIN_ITERS = 3         # relaxation passes per step
+# What actually floods "Null determinant in computeStrainDisplacementLocal" is the ENDGAME: the
+# instant the cap fully peels off the lens it is a free stiff FEM sheet carrying the pull momentum;
+# that momentum drives a triangle collinear (zero area -> singular FEM) every step. A gently
+# released free sheet is stable, so the cure is to remove the momentum, not to patch geometry:
+# on full peel we zero the velocity, ramp damping to settle it, and drop the (now pointless) lens
+# obstacle -- see the full-peel branch in the controller. PEEL_SETTLE_DAMPING is that ramp.
+PEEL_SETTLE_DAMPING = 60.0
 
 # --- RUNG 1 TEARING: break the pre-slit r~5 circle, then lift the central disc --------
 # generate_cap pre-slits the mesh at TEAR_RADIUS: the tear-ring vertices are doubled
@@ -571,6 +578,16 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 if not self.adhered and not self.fully_peeled:
                     print(f"[Peel] t={t:.2f}s  membrane fully peeled off the lens")
                     self.fully_peeled = True
+                    # ENDGAME STABILISER. A fully-free stiff FEM sheet carrying the pull
+                    # momentum drives a triangle collinear -> "Null determinant" flood. A gently
+                    # released free sheet is stable, so remove the momentum rather than patch the
+                    # geometry: arrest the velocity, ramp damping so it settles, and drop the lens
+                    # obstacle it is no longer resting on (it would only fight the free disc now).
+                    self.mo.velocity.value = [[0.0, 0.0, 0.0]] * len(self.mo.position.value)
+                    self.damper.dampingCoefficient.value = PEEL_SETTLE_DAMPING
+                    lens = self.mo.getContext().getObject("LensObstacle")
+                    if lens is not None:
+                        lens.stiffness.value = 0.0
 
             # AUTOMATIC plasticity: the already-peeled part slowly adopts its current
             # shape as its rest shape, so letting go barely springs back. Nodes still
