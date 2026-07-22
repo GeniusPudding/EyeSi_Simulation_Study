@@ -38,11 +38,32 @@ import generate_cap as G   # geometry: A, C, R, Z0, CAP_HEIGHT, rim_indices()
 CAP_OBJ = os.path.join(_HERE, "cap.obj")    # the membrane
 LENS_OBJ = os.path.join(_HERE, "lens.obj")  # the flattened (oblate) base it sticks to
 
+# --- membrane in-plane model: FEM vs mass-spring ----------------------------
+# USE_MASS_SPRING swaps the in-plane physics from the co-rotational triangle FEM to a pure
+# mass-spring membrane (edge springs + bending springs only, NO FEM).
+#
+# WHY this is the real cure for "pull -> it blows up / disappears": the FEM computes each
+# triangle's force by dividing by its area (1/area in the strain-displacement matrix), so a
+# triangle driven collinear or inverted by a hard pull produces an infinite/NaN force that
+# runs away to 1e150 -- the blow-up no clamp can fully catch because it is born INSIDE the
+# solve. A spring's force is just F = k*(length - rest): there is NO area in the denominator,
+# so a squashed/inverted triangle can never divide by zero or self-amplify. The mesh may fold
+# oddly under an extreme yank, but it physically CANNOT explode.
+#
+# What you DON'T lose: the tear criterion reads the principal-stress field computed in numpy
+# from geometry (rest vs current positions) in principal_stress() -- it never touched the FEM
+# -- so it works identically under mass-spring. A triangle with three fixed edge lengths is
+# rigid, so edge springs alone already give full in-plane (stretch+shear) stiffness; bending
+# springs give the out-of-plane fold. Both components already exist below.
+USE_MASS_SPRING = True    # True = drop the FEM, run a pure mass-spring membrane (blow-up-proof)
+
 # --- material presets (same feel as the flat paper) -------------------------
 CLOTH_YOUNG = 120.0
-PAPER_YOUNG = 1200.0      # do NOT use 4000+ (NaN blow-up risk)
+PAPER_YOUNG = 1200.0      # do NOT use 4000+ (NaN blow-up risk) -- FEM path only
 SWITCH_T = 1.0
-EDGE_STIFFNESS = 2500.0   # per-edge -> the membrane does not stretch (in-plane)
+EDGE_STIFFNESS = 2500.0   # per-edge -> the membrane does not stretch (in-plane). In mass-
+                          # spring mode this ALSO carries all the in-plane stiffness the FEM
+                          # used to add, so raise it if the sheet feels too soft.
 DAMPING = 2.0
 
 # THE knob for "does the lifted flap flop over, or stand up stiff in the air?"
@@ -89,7 +110,14 @@ PULL_MOVE = [1.5, 0.0, 3.0]   # lift the +x rim up (+z) and outward (+x) to peel
 ENABLE_MOUSE = True
 # Let the folded flap land ON the membrane below instead of passing through it.
 # (Costs some FPS: self-collision is checked every step.)
-SELF_COLLISION = True
+# TEMPORARILY OFF (2026-07-22): the post-full-peel blow-up to 1e11 coords happens with the
+# membrane FREE and IDLE (no FEM, no mouse) -- the only stiff force left that can pump a
+# folded free sheet is the self-collision PENALTY (two layers pressed close -> deep-
+# penetration penalty -> divergence). Turning it off to confirm it is the source. If the
+# blow-up disappears, we re-enable it with a SOFTER/constraint-based contact instead of the
+# raw penalty. Trade-off while off: a folded flap passes THROUGH the membrane instead of
+# resting on it.
+SELF_COLLISION = False
 CONTACT_STIFFNESS = 200.0   # penalty contact strength; also silences the SceneCheck warning
 # Self-collision proximity MUST stay well BELOW the mesh edge length, or NEIGHBOURING
 # triangles fall inside each other's alarm radius and the membrane pushes against itself
@@ -681,6 +709,11 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             # this step went non-finite, restore the last all-finite positions and kill the
             # velocity, turning a permanent blow-up into a recoverable hiccup.
             P0 = np.array(self.mo.position.value)
+            # Runaway net (whole-mesh rewind on |coord|>MAX_COORD). Kept ON for mass-spring
+            # too: it turns out a mass-spring sheet CAN still blow up -- not from the springs,
+            # but from the self-collision penalty on tight folds -- so this remains the
+            # last-resort catch (its earlier "loop" was it correctly catching that recurring
+            # blow-up; the real cure is removing the source, see SELF_COLLISION).
             runaway = (MAX_COORD > 0.0 and P0.size > 0
                        and np.isfinite(P0).all() and np.abs(P0).max() > MAX_COORD)
             if not np.isfinite(P0).all() or runaway:
@@ -738,8 +771,12 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             # near-collinear triangle; if one is so collapsed it cannot be repaired (its base
             # edge is gone too), roll the whole sheet back to the last HEALTHY state rather
             # than let the FEM choke on it forever.
+            # Anti-collapse + severe-rewind is also FEM-only: a collapsed triangle only
+            # matters because the FEM divides by its area. Mass-spring does not, so the local
+            # apex-pushing and the whole-sheet rewind here are unnecessary and only jitter /
+            # snap-back the sheet -- disable them under mass-spring and let the springs relax.
             degenerate_after = None       # None = not yet known; (3) will check if needed
-            if MIN_AREA_FRAC > 0.0:
+            if MIN_AREA_FRAC > 0.0 and not USE_MASS_SPRING:
                 if self.tri_idx is None:
                     self._build_tri_areas()
                 tris = self.tri_idx
@@ -792,7 +829,9 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 self.last_good_rest = list(self.mo.rest_position.value)
 
         def onAnimateBeginEvent(self, event):
-            t = self.fem.getContext().getTime()
+            # Time from the MechanicalObject's context (works whether or not a FEM exists --
+            # in mass-spring mode self.fem is None).
+            t = self.mo.getContext().getTime()
 
             # Make the GUI's Bending->stiffness field actually WORK. TriangularBendingSprings
             # bakes ks into per-edge data (ei.ks = getKs()), so typing a new value in the
@@ -808,16 +847,20 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 print(f"[Tune] BEND_STIFFNESS -> {ks_now:.1f} (applied)")
 
             if not self.paper_done and t >= SWITCH_T:
-                # FEMOptim takes youngModulus as a SCALAR; the plain version took a vector.
-                # Try scalar first, fall back to the list form so this survives either class.
-                try:
-                    self.fem.youngModulus.value = PAPER_YOUNG
-                except Exception:  # noqa: BLE001
-                    self.fem.youngModulus.value = [PAPER_YOUNG]
-                self.fem.reinit()
+                # Stiffen cloth -> paper. In mass-spring mode (fem is None) the edge springs
+                # carry the stiffness, so only linesStiffness matters; skip the FEM setter.
+                if self.fem is not None:
+                    # FEMOptim takes youngModulus as a SCALAR; the plain version took a vector.
+                    # Try scalar first, fall back to the list form so either class survives.
+                    try:
+                        self.fem.youngModulus.value = PAPER_YOUNG
+                    except Exception:  # noqa: BLE001
+                        self.fem.youngModulus.value = [PAPER_YOUNG]
+                    self.fem.reinit()
                 self.springs.linesStiffness.value = EDGE_STIFFNESS
                 self.paper_done = True
-                print(f"[ClothToPaper] t={t:.2f}s -> paper (young={PAPER_YOUNG})")
+                print(f"[ClothToPaper] t={t:.2f}s -> paper "
+                      f"({'mass-spring' if self.fem is None else f'young={PAPER_YOUNG}'})")
 
             # --- RUNG 1 TEAR: break the pre-slit circle progressively, detach the disc ---
             if SCRIPTED_TEAR and self.stitch is not None and self.n_stitch:
@@ -1077,8 +1120,17 @@ def createScene(root):
     # of mouse movement slides the hit point millimetres across the membrane and it
     # jumps between triangles -> the grab feels like it "runs around". A steeper angle
     # hits the membrane closer to perpendicular and the pick is stable.
-    _camera = root.addObject("InteractiveCamera", position=[10.0, -10.0, 11.0], lookAt=[0, 0, 0],
-                   activated=not LOCK_CAMERA)
+    # computeZClip=False + fixed zNear/zFar: DO NOT auto-derive the near/far clip planes from
+    # the scene bounding box. A single node that blows out (even transiently, before the
+    # rewind catches it) inflates the bbox, which pushes the near plane far from the camera;
+    # then zooming IN puts the real mesh nearer than that near plane and it vanishes ("content
+    # is there but scrolling to zoom makes it disappear"). Pinning zNear/zFar keeps the clip
+    # planes stable no matter what a stray vertex does, so zoom always works. zNear small
+    # enough to zoom right up to the ~7-radius cap; zFar large enough to still show it.
+    # Camera pulled a little closer (was [10,-10,11]) so the disc fills more of the viewport.
+    _camera = root.addObject("InteractiveCamera", position=[8.0, -8.0, 9.0], lookAt=[0, 0, 0],
+                   activated=not LOCK_CAMERA,
+                   computeZClip=False, zNear=0.3, zFar=500.0)
 
     if ENABLE_MOUSE:
         root.addObject("CollisionPipeline")
@@ -1127,8 +1179,13 @@ def createScene(root):
     # physics; the principal-stress field the tear criterion needs is computed in numpy here
     # (principal_stress), independent of the FEM class. On Optim, youngModulus is a SCALAR
     # (not the per-triangle vector the plain version takes) -- see the ClothToPaper setter.
-    fem = cap.addObject("TriangularFEMForceFieldOptim", name="FEM", method="large",
-                        youngModulus=CLOTH_YOUNG, poissonRatio=0.3)
+    # In mass-spring mode the FEM is dropped entirely (fem=None): the edge springs below
+    # carry all the in-plane stiffness (a triangle with fixed edge lengths is rigid), and no
+    # component divides by triangle area, so the sheet cannot explode. See USE_MASS_SPRING.
+    fem = None
+    if not USE_MASS_SPRING:
+        fem = cap.addObject("TriangularFEMForceFieldOptim", name="FEM", method="large",
+                            youngModulus=CLOTH_YOUNG, poissonRatio=0.3)
     springs = cap.addObject("MeshSpringForceField", name="EdgeSprings",
                             linesStiffness=EDGE_STIFFNESS, linesDamping=1.0)
     bending = cap.addObject("TriangularBendingSprings", name="Bending",
