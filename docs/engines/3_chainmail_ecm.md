@@ -82,7 +82,7 @@ while queue not empty:
 ```
 > 與原始版唯一差別:原始用 4 條固定順序清單;ECM 用 **1 條依違反量排序的清單**。
 
-→ 對應虛擬碼:[`../pseudocode/chainmail_ecm.py`](../pseudocode/chainmail_ecm.py)
+→ 對應虛擬碼:[`pseudocode/chainmail_ecm.py`](../../pseudocode/chainmail_ecm.py)
 
 ## 8. 補物理:彈性鬆弛(接回 mass-spring)
 

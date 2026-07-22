@@ -1,3 +1,8 @@
 *.DS_Store
 __pycache__/
 *.pyc
+
+# docs-viewer caches PDF.js per-user in ~/.docs_viewer (not in the repo).
+# Stray in-repo vendor dirs (older layout) stay ignored just in case.
+docs/vendor/
+**/vendor/

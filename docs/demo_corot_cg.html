@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>互動:co-rotational 假應變 + CG 迭代(囊膜 FEM 手算視覺化)</title>
+<style>
+  :root{--bg:#0c111c;--card:#141b2b;--card2:#171f31;--line:#2a3550;--txt:#e6e9ef;--mut:#93a1c0;
+    --y:#ffd479;--g:#2ecc71;--r:#ff6b6b;--b:#6fd3ff;--o:#ffb454;--p:#88aaff;}
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;line-height:1.55}
+  .wrap{max-width:1180px;margin:0 auto;padding:22px 20px 60px}
+  h1{font-size:22px;margin:0 0 4px}
+  .lead{color:var(--mut);font-size:13.5px;margin:0 0 20px;max-width:900px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:900px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:16px 18px}
+  .card h2{font-size:16px;margin:0 0 3px}
+  .card .tag{font-size:12px;color:var(--mut);margin:0 0 12px}
+  canvas{display:block;background:#0e1420;border:1px solid var(--line);border-radius:9px;width:100%}
+  .ctrl{margin:12px 0 4px;font-size:13px}
+  .ctrl label{display:flex;align-items:center;gap:10px;margin:7px 0}
+  .ctrl label span.nm{width:96px;color:var(--mut)}
+  .ctrl input[type=range]{flex:1;accent-color:var(--b)}
+  .ctrl b{color:var(--y);font-family:ui-monospace,Consolas,monospace;min-width:52px;text-align:right}
+  button{padding:7px 14px;border:0;border-radius:8px;cursor:pointer;font-weight:700;color:#fff;font-size:13px;margin:4px 6px 4px 0}
+  .bStep{background:#2f6bb0}.bReset{background:#39456b}
+  .read{font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.75;background:#0e1420;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:10px;white-space:pre-wrap}
+  .read .r{color:var(--r)}.read .g{color:var(--g)}.read .b{color:var(--b)}.read .y{color:var(--y)}.read .mut{color:var(--mut)}
+  .legend{font-size:11.5px;color:var(--mut);margin-top:8px;line-height:1.7}
+  .legend .sw{display:inline-block;width:22px;height:0;border-top:3px solid;vertical-align:middle;margin-right:5px}
+  .foot{color:var(--mut);font-size:12px;margin-top:26px;border-top:1px solid var(--line);padding-top:12px}
+  code{background:#1c2740;padding:1px 6px;border-radius:5px;font-size:12px;color:#cdd6ea}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>互動視覺化:co-rotational 假應變 &amp; CG 迭代</h1>
+  <p class="lead">把 <code>engines/7_fem_deep_dive.md</code> §G(囊膜三角形轉 90°)與 §F(CG 2×2)變成可玩的動畫。<b style="color:var(--txt)">左</b>:轉動/拉伸一個囊膜三角形,即時看「線性應變的假應變」vs「co-rotational / Green 修正」。<b style="color:var(--txt)">右</b>:CG 在碗形等高線上一步步走到解。純 canvas、離線可用。</p>
+
+  <div class="grid">
+    <!-- 左:co-rotational -->
+    <div class="card">
+      <h2>① co-rotational:旋轉為何被誤當拉伸</h2>
+      <p class="tag">靜止三角形 X₁=(0,0) X₂=(1,0) X₃=(0,1),施加 旋轉 θ + x 向拉伸 s</p>
+      <canvas id="cvTri" width="520" height="360"></canvas>
+      <div class="legend">
+        <div><span class="sw" style="border-color:#7a869c"></span>靜止(rest) &nbsp; <span class="sw" style="border-color:#6fd3ff"></span>當前(旋轉+拉伸) &nbsp; <span class="sw" style="border-color:#ff6b6b;border-top-style:dashed"></span>線性應變「以為」的形狀 (I+ε)·rest &nbsp; <span class="sw" style="border-color:#2ecc71;border-top-style:dashed"></span>co-rot 轉回(Rᵀ·當前)</div>
+      </div>
+      <div class="ctrl">
+        <label><span class="nm">旋轉 θ</span><input id="sTheta" type="range" min="0" max="180" step="1" value="90"><b id="vTheta">90°</b></label>
+        <label><span class="nm">x 拉伸 s</span><input id="sStretch" type="range" min="1" max="1.5" step="0.01" value="1.00"><b id="vStretch">1.00</b></label>
+      </div>
+      <div class="read" id="readTri"></div>
+    </div>
+
+    <!-- 右:CG -->
+    <div class="card">
+      <h2>② CG:碗形等高線上兩步收斂</h2>
+      <p class="tag">解 A·x=b,A=[[4,1],[1,3]], b=[1,2](迷你囊膜 M/Δt²+K,x=Δu)</p>
+      <canvas id="cvCG" width="520" height="360"></canvas>
+      <div class="legend">
+        <div><span class="sw" style="border-color:#88aaff"></span>等高線(碗) &nbsp; ● 真解 &nbsp; <span class="sw" style="border-color:#ffd479"></span>CG 路徑 &nbsp; 每步只算 1 次 A·p(matrix-free)</div>
+      </div>
+      <div class="ctrl" style="margin-top:10px">
+        <button class="bStep" id="btnStep">▶ 下一步迭代</button>
+        <button class="bReset" id="btnReset">↺ 重置</button>
+      </div>
+      <div class="read" id="readCG"></div>
+    </div>
+  </div>
+
+  <p class="foot">數學正本與手算過程:<code>docs/engines/7_fem_deep_dive.md</code> §C(嚴格證明)、§F(CG)、§G(三角形轉 90°)。相關:<code>engines/6_realtime_fem_pillars.md</code>、<code>reference/8_inria_implementation_deepread.md</code>。此頁為教學視覺化,非論文原文。</p>
+</div>
+
+<script>
+// ---------- 2x2 線代小工具 ----------
+const mul=(A,B)=>[[A[0][0]*B[0][0]+A[0][1]*B[1][0], A[0][0]*B[0][1]+A[0][1]*B[1][1]],
+                  [A[1][0]*B[0][0]+A[1][1]*B[1][0], A[1][0]*B[0][1]+A[1][1]*B[1][1]]];
+const mv=(A,v)=>[A[0][0]*v[0]+A[0][1]*v[1], A[1][0]*v[0]+A[1][1]*v[1]];
+const T=(A)=>[[A[0][0],A[1][0]],[A[0][1],A[1][1]]];
+const sub=(A,B)=>[[A[0][0]-B[0][0],A[0][1]-B[0][1]],[A[1][0]-B[1][0],A[1][1]-B[1][1]]];
+const add=(A,B)=>[[A[0][0]+B[0][0],A[0][1]+B[0][1]],[A[1][0]+B[1][0],A[1][1]+B[1][1]]];
+const scl=(A,k)=>[[A[0][0]*k,A[0][1]*k],[A[1][0]*k,A[1][1]*k]];
+const I2=[[1,0],[0,1]];
+const dot=(a,b)=>a[0]*b[0]+a[1]*b[1];
+const f2=(x)=>(x>=0?' ':'')+x.toFixed(2);
+
+// ---------- ① co-rotational demo ----------
+const cvT=document.getElementById('cvTri'), ctxT=cvT.getContext('2d');
+const restTri=[[0,0],[1,0],[0,1]];
+function worldToScreenT(p){ const s=120, ox=180, oy=250; return [ox+p[0]*s, oy-p[1]*s]; }
+function drawTri(pts, color, dashed, lw){
+  ctxT.beginPath(); ctxT.setLineDash(dashed?[5,4]:[]);
+  for(let i=0;i<3;i++){ const q=worldToScreenT(pts[i]); if(i===0)ctxT.moveTo(q[0],q[1]); else ctxT.lineTo(q[0],q[1]); }
+  ctxT.closePath(); ctxT.strokeStyle=color; ctxT.lineWidth=lw||2; ctxT.stroke(); ctxT.setLineDash([]);
+}
+function drawTriDemo(){
+  const th=(+document.getElementById('sTheta').value)*Math.PI/180;
+  const s=+document.getElementById('sStretch').value;
+  const c=Math.cos(th), sn=Math.sin(th);
+  const R=[[c,-sn],[sn,c]];
+  const S=[[s,0],[0,1]];
+  const M=mul(R,S);              // F = R·S  (先拉伸再旋轉)
+  const cur=restTri.map(p=>mv(M,p));
+  // 線性應變 ε = ½(M+Mᵀ) − I
+  const eps=sub(scl(add(M,T(M)),0.5), I2);
+  // Green E = ½(MᵀM − I)
+  const E=scl(sub(mul(T(M),M), I2),0.5);
+  // co-rot: 抽 R(此處 = R(θ)),轉回 F' = Rᵀ·M = S,ε' = ½(F'+F'ᵀ)−I
+  const Fp=mul(T(R),M);
+  const epsC=sub(scl(add(Fp,T(Fp)),0.5), I2);
+  const corot=cur.map(p=>mv(T(R),p));      // Rᵀ·當前 → 轉回靜止方位
+  // 線性「以為」的形狀 = (I+ε)·rest
+  const IE=add(I2,eps);
+  const perceived=restTri.map(p=>mv(IE,p));
+
+  ctxT.clearRect(0,0,cvT.width,cvT.height);
+  // 軸
+  ctxT.strokeStyle='#223'; ctxT.lineWidth=1;
+  ctxT.beginPath(); const o=worldToScreenT([0,0]); ctxT.moveTo(40,o[1]); ctxT.lineTo(500,o[1]); ctxT.moveTo(o[0],40); ctxT.lineTo(o[0],340); ctxT.stroke();
+  drawTri(restTri,'#7a869c',false,1.5);
+  drawTri(perceived,'#ff6b6b',true,2);
+  drawTri(corot,'#2ecc71',true,2);
+  drawTri(cur,'#6fd3ff',false,2.5);
+  // 節點點
+  cur.forEach(p=>{const q=worldToScreenT(p); ctxT.fillStyle='#6fd3ff'; ctxT.beginPath(); ctxT.arc(q[0],q[1],3.5,0,7); ctxT.fill();});
+
+  document.getElementById('vTheta').textContent=(+document.getElementById('sTheta').value)+'°';
+  document.getElementById('vStretch').textContent=s.toFixed(2);
+  const epsMag=Math.hypot(eps[0][0],eps[1][1],eps[0][1]*Math.SQRT2);
+  const pureRot=(Math.abs(s-1)<1e-6);
+  document.getElementById('readTri').innerHTML=
+`F = [${f2(M[0][0])} ${f2(M[0][1])} ; ${f2(M[1][0])} ${f2(M[1][1])}]
+<span class="r">線性應變 ε</span> = [${f2(eps[0][0])} ${f2(eps[0][1])} ; ${f2(eps[1][0])} ${f2(eps[1][1])}]   |ε|=<span class="r">${epsMag.toFixed(3)}</span>
+<span class="g">Green 應變 E</span> = [${f2(E[0][0])} ${f2(E[0][1])} ; ${f2(E[1][0])} ${f2(E[1][1])}]
+<span class="g">co-rot 應變 ε'</span>= [${f2(epsC[0][0])} ${f2(epsC[0][1])} ; ${f2(epsC[1][0])} ${f2(epsC[1][1])}]
+<span class="mut">──</span>
+<span class="r">紅三角</span> = 把線性 ε 這個數字「畫成形狀」(= ε 以為材料變成的樣子)。ε 盲目地只從「點移了多少」算,把旋轉也當成拉伸 → 紅三角被壓歪、離灰(靜止)與藍(當前)都遠 = <span class="r">ε 讀錯了</span>。<span class="g">綠三角</span> = co-rot 扣掉旋轉後看到的真變形(對的)。紅↔綠的差 = 誤差 = <span class="r">假力</span>的來源。
+<span class="mut">──</span>
+${pureRot
+  ? `<span class="mut">純旋轉(s=1):</span>線性 ε<span class="r">≠0(假應變 ${f2(eps[0][0])})→ 假力!</span>  但 E 與 ε' <span class="g">=0</span>(正確,零力)。`
+  : `<span class="mut">有真拉伸(s=${s.toFixed(2)}):</span>ε' 抓到真應變 <span class="g">${f2(epsC[0][0])}</span>=s−1;E=<span class="g">${f2(E[0][0])}</span>=½(s²−1)。co-rot 只扣旋轉、不吃真拉伸。`}`;
+}
+document.getElementById('sTheta').addEventListener('input',drawTriDemo);
+document.getElementById('sStretch').addEventListener('input',drawTriDemo);
+
+// ---------- ② CG demo ----------
+const cvC=document.getElementById('cvCG'), ctxC=cvC.getContext('2d');
+const A=[[4,1],[1,3]], b=[1,2];
+const xstar=[1/11,7/11];
+// view: x1 in [-0.3,1.2], x2 in [-0.2,1.0]
+function w2s(p){ const xmin=-0.3,xmax=1.2,ymin=-0.2,ymax=1.0; const W=520,H=360,pad=30;
+  const sx=(W-2*pad)/(xmax-xmin), sy=(H-2*pad)/(ymax-ymin);
+  return [pad+(p[0]-xmin)*sx, H-pad-(p[1]-ymin)*sy]; }
+// 對稱 2x2 特徵分解 → A^{-1/2}
+function eigSym(M){ const a=M[0][0],bb=M[0][1],d=M[1][1];
+  const tr=(a+d)/2, disc=Math.hypot((a-d)/2,bb);
+  const l1=tr+disc, l2=tr-disc;
+  let v1=[bb, l1-a]; if(Math.hypot(...v1)<1e-9)v1=[l1-d,bb]; const n1=Math.hypot(...v1); v1=[v1[0]/n1,v1[1]/n1];
+  const v2=[-v1[1],v1[0]];
+  return {l1,l2,v1,v2};
+}
+const eg=eigSym(A);
+// A^{-1/2} = Q diag(1/√l) Qᵀ
+function Ainvhalf(){ const {l1,l2,v1,v2}=eg; const s1=1/Math.sqrt(l1), s2=1/Math.sqrt(l2);
+  // Q=[v1 v2] (columns), M = Q diag(s1,s2) Qᵀ
+  const Q=[[v1[0],v2[0]],[v1[1],v2[1]]]; const D=[[s1,0],[0,s2]];
+  return mul(mul(Q,D),T(Q)); }
+const Aih=Ainvhalf();
+// CG state
+let cg;
+function cgReset(){ cg={x:[0,0], r:[b[0],b[1]], p:[b[0],b[1]], rsold:dot(b,b), it:0, done:false, log:[]}; drawCG(); }
+function cgStep(){ if(cg.done)return; const Ap=mv(A,cg.p);
+  const alpha=cg.rsold/dot(cg.p,Ap);
+  const xnew=[cg.x[0]+alpha*cg.p[0], cg.x[1]+alpha*cg.p[1]];
+  const rnew=[cg.r[0]-alpha*Ap[0], cg.r[1]-alpha*Ap[1]];
+  const rsnew=dot(rnew,rnew);
+  cg.it++;
+  cg.log.push({it:cg.it, Ap, alpha, x:xnew, r:rnew, rsnew});
+  cg.pathPrev=cg.x; cg.x=xnew; cg.r=rnew;
+  if(Math.sqrt(rsnew)<1e-6){ cg.done=true; }
+  else { const beta=rsnew/cg.rsold; cg.p=[rnew[0]+beta*cg.p[0], rnew[1]+beta*cg.p[1]]; cg.beta=beta; }
+  cg.rsold=rsnew; drawCG();
+}
+function drawCG(){
+  ctxC.clearRect(0,0,cvC.width,cvC.height);
+  // 等高線橢圓:x* + ρ·A^{-1/2}·[cos t, sin t]
+  ctxC.strokeStyle='rgba(136,170,255,.35)'; ctxC.lineWidth=1;
+  [0.15,0.3,0.45,0.6,0.75,0.9].forEach(rho=>{
+    ctxC.beginPath();
+    for(let k=0;k<=60;k++){ const t=k/60*2*Math.PI; const dv=mv(Aih,[Math.cos(t),Math.sin(t)]);
+      const q=w2s([xstar[0]+rho*dv[0], xstar[1]+rho*dv[1]]); if(k===0)ctxC.moveTo(q[0],q[1]); else ctxC.lineTo(q[0],q[1]); }
+    ctxC.closePath(); ctxC.stroke();
+  });
+  // 軸
+  ctxC.strokeStyle='#223'; ctxC.lineWidth=1; ctxC.beginPath();
+  let ax=w2s([-0.3,0]),bx=w2s([1.2,0]),ay=w2s([0,-0.2]),by=w2s([0,1.0]);
+  ctxC.moveTo(ax[0],ax[1]);ctxC.lineTo(bx[0],bx[1]);ctxC.moveTo(ay[0],ay[1]);ctxC.lineTo(by[0],by[1]);ctxC.stroke();
+  // 真解
+  const sstar=w2s(xstar); ctxC.fillStyle='#e6e9ef'; ctxC.beginPath(); ctxC.arc(sstar[0],sstar[1],5,0,7); ctxC.fill();
+  ctxC.font='11px monospace'; ctxC.fillStyle='#9aa6c0'; ctxC.fillText('真解 ('+xstar[0].toFixed(3)+', '+xstar[1].toFixed(3)+')', sstar[0]+8, sstar[1]-6);
+  // CG 路徑
+  const pts=[[0,0],...cg.log.map(l=>l.x)];
+  ctxC.strokeStyle='#ffd479'; ctxC.lineWidth=2.5; ctxC.beginPath();
+  pts.forEach((p,i)=>{const q=w2s(p); if(i===0)ctxC.moveTo(q[0],q[1]); else ctxC.lineTo(q[0],q[1]);}); ctxC.stroke();
+  pts.forEach((p,i)=>{const q=w2s(p); ctxC.fillStyle=i===pts.length-1?'#ffd479':'#c9a24a'; ctxC.beginPath(); ctxC.arc(q[0],q[1],4,0,7); ctxC.fill();
+    ctxC.fillStyle='#ffd479'; ctxC.font='11px monospace'; ctxC.fillText('x'+i, q[0]+7, q[1]+4);});
+
+  let s=`x${cg.it} = [${cg.x[0].toFixed(4)}, ${cg.x[1].toFixed(4)}]   殘差 |r|=<span class="${cg.done?'g':'y'}">${Math.hypot(...cg.r).toFixed(4)}</span>\n`;
+  if(cg.log.length){ const L=cg.log[cg.log.length-1];
+    s+=`<span class="mut">上一步:</span> Ap=[${L.Ap[0].toFixed(3)},${L.Ap[1].toFixed(3)}]  α=${L.alpha.toFixed(4)}`+(cg.beta!==undefined&&!cg.done?`  β=${cg.beta.toFixed(4)}`:''); }
+  else s+=`<span class="mut">按「下一步」開始。x₀=[0,0], r₀=b=[1,2]</span>`;
+  if(cg.done) s+=`\n<span class="g">✔ 收斂!2×2 系統 CG 剛好 2 步到精確解(理論:N×N ≤ N 步)。</span>`;
+  document.getElementById('readCG').innerHTML=s;
+}
+document.getElementById('btnStep').addEventListener('click',cgStep);
+document.getElementById('btnReset').addEventListener('click',cgReset);
+
+// init
+drawTriDemo(); cgReset();
+</script>
+</body>
+</html>

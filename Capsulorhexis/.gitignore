@@ -1,0 +1,6 @@
+# build output
+build/
+# third-party tools fetched by scripts/setup.ps1 (too large / reproducible)
+tools/
+# logs
+*.log

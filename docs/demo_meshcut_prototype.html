@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>原型:沿裂縫真切割(node doubling / verdoppeln)→ 乾淨脫離、零沾連</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0c111c;color:#e6e9ef;
+    font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;user-select:none}
+  #c{display:block;cursor:crosshair}
+  #panel{position:absolute;top:12px;left:12px;width:360px;background:rgba(18,24,38,.94);
+    border:1px solid #2a3550;border-radius:10px;padding:13px 15px;font-size:13px;line-height:1.5}
+  #panel h1{font-size:14.5px;margin:0 0 4px}
+  #panel .sub{font-size:11.5px;color:#8fa0c4;margin:0 0 8px}
+  .hint{background:#1c2740;border:1px solid #34507a;border-radius:7px;padding:8px 10px;margin:8px 0}
+  .hint b{color:#ffd479}
+  .row{display:flex;gap:8px;margin:9px 0}
+  button{flex:1;padding:8px;border:0;border-radius:7px;cursor:pointer;font-weight:600;color:#fff;font-size:13px}
+  .bGo{background:#1f9d57}.bRst{background:#39456b}
+  .cnt{font-family:monospace;font-size:12.5px;margin-top:6px;line-height:1.7}.cnt b{color:#ffd479}
+  .legend span{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:6px;vertical-align:middle}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="panel">
+  <h1>原型:沿裂縫「真切割」(node doubling)</h1>
+  <p class="sub">對照現有 demo 的「旗標式」撕裂:這裡沿裂縫把共用節點<b>複製成兩份(verdoppeln)</b>,兩側三角形改引用各自那份 → 網格<b>真的切成兩片</b>。「是否脫離」改由<b>連通分量</b>決定(閉合成圈才整片分離),不再有橋接沾連。</p>
+  <div class="hint"><b>手動撕</b>:在膜上<b>按住左鍵畫一圈</b>(任意形狀)→ 放開,就沿你畫的線<b>乾淨切開</b>,圈內整片脫離。<br><b>拖曳</b>:按住左鍵抓「已脫離的整片」可拉走(證明是獨立一片)。<br>或按 <b>自動撕一圈</b> 一鍵示範。橋接三角形應始終 = <b>0</b>。</div>
+  <div class="row">
+    <button class="bGo" onclick="autoTearCircle()">▶ 自動撕一圈(測試)</button>
+    <button class="bRst" onclick="reset()">↺ 重置</button>
+  </div>
+  <div class="legend">
+    <div><span style="background:#56627a"></span>貼合(含外圈錨定) <span style="background:#6fd3ff"></span>脫離的整片 <span style="background:#ffd479"></span>裂縫尖端</div>
+    <div><span style="background:#ff6b6b"></span>裂縫縫線(兩排加倍節點)</div>
+  </div>
+  <div class="cnt" id="cnt"></div>
+</div>
+<script>
+const cv=document.getElementById('c'), ctx=cv.getContext('2d');
+let W,H,CX,CY,Rdisk,Rguide,SP=30;
+let nodes,tris,tip,prevN,gripping=false,mouse={x:0,y:0},grab=-1,drawing=false,drawPath=[];
+let comp,flapSet,attachedComp;
+
+function resize(){W=cv.width=innerWidth;H=cv.height=innerHeight;CX=W*0.58;CY=H*0.5;Rdisk=Math.min(W,H)*0.42;Rguide=Rdisk*0.62;}
+addEventListener('resize',resize);resize();
+
+const dist2=(ax,ay,bx,by)=>Math.hypot(ax-bx,ay-by);
+function reset(){
+  nodes=[];const map={};let j=0;
+  for(let y=CY-Rdisk;y<=CY+Rdisk;y+=SP,j++){let i=0;
+    for(let x=CX-Rdisk;x<=CX+Rdisk;x+=SP,i++){
+      if(Math.hypot(x-CX,y-CY)<=Rdisk){map[i+'_'+j]=nodes.length;
+        const fix=Math.hypot(x-CX,y-CY)>Rdisk-SP*0.6;   // 外圈固定=錨(虹膜後緣)
+        nodes.push({x,y,px:x,py:y,rx:x,ry:y,fix});}}}
+  tris=[];j=0;
+  for(let y=CY-Rdisk;y<=CY+Rdisk;y+=SP,j++){let i=0;
+    for(let x=CX-Rdisk;x<=CX+Rdisk;x+=SP,i++){
+      const a=map[i+'_'+j],b=map[(i+1)+'_'+j],c=map[i+'_'+(j+1)],d=map[(i+1)+'_'+(j+1)];
+      if(a!=null&&b!=null&&d!=null)tris.push([a,b,d]);if(a!=null&&d!=null&&c!=null)tris.push([a,d,c]);}}
+  tip=-1;prevN=-1;grab=-1;gripping=false;
+  computeComponents();
+}
+function nearestNode(x,y,freeOnly){let bi=-1,bd=1e9;for(let i=0;i<nodes.length;i++){const n=nodes[i];if(!n)continue;
+  if(freeOnly&&!flapSet.has(i))continue;const d=dist2(n.x,n.y,x,y);if(d<bd){bd=d;bi=i;}}return bi;}
+
+// ── 鄰接:節點→其所在三角形、節點→鄰接節點(每次用時從 tris 建)──
+function buildAdj(){const n2t=new Map(),nbr=new Map();
+  for(let ti=0;ti<tris.length;ti++){const t=tris[ti];if(!t)continue;
+    for(const k of t){if(!n2t.has(k))n2t.set(k,[]);n2t.get(k).push(ti);
+      if(!nbr.has(k))nbr.set(k,new Set());}
+    nbr.get(t[0]).add(t[1]);nbr.get(t[0]).add(t[2]);
+    nbr.get(t[1]).add(t[0]);nbr.get(t[1]).add(t[2]);
+    nbr.get(t[2]).add(t[0]);nbr.get(t[2]).add(t[1]);}
+  return{n2t,nbr};}
+function dupNode(i){const s=nodes[i];nodes.push({x:s.x,y:s.y,px:s.x,py:s.y,rx:s.rx,ry:s.ry,fix:s.fix});return nodes.length-1;}
+
+// ── 核心:裂縫從 from 前進到 to → 把 from 加倍,一側三角形改引用複製節點 ──
+function advanceTear(from,to){
+  const {n2t}=buildAdj();
+  const inc=(n2t.get(from)||[]).slice();
+  const dx=nodes[to].x-nodes[from].x, dy=nodes[to].y-nodes[from].y;   // 裂縫在 from 的前進方向
+  const dup=dupNode(from);let moved=0;
+  for(const ti of inc){const t=tris[ti];if(!t)continue;
+    const cx=(nodes[t[0]].x+nodes[t[1]].x+nodes[t[2]].x)/3 - nodes[from].x;
+    const cy=(nodes[t[0]].y+nodes[t[1]].y+nodes[t[2]].y)/3 - nodes[from].y;
+    const side=dx*cy - dy*cx;                                        // cross(前進方向, 重心-from)
+    if(side<0){tris[ti]=t.map(k=>k===from?dup:k);moved++;}           // 右側 → 改用複製節點
+  }
+  if(moved===0){nodes.pop();}                                        // 沒有右側三角形 → 撤銷複製(在邊界)
+}
+
+// ── 連通分量:誰跟「外圈錨」連通=貼合;其餘連通塊=脫離的整片 ──
+function computeComponents(){
+  const N=nodes.length;const uf=new Array(N);for(let i=0;i<N;i++)uf[i]=i;
+  const find=x=>{while(uf[x]!==x){uf[x]=uf[uf[x]];x=uf[x];}return x;};
+  const uni=(a,b)=>{a=find(a);b=find(b);if(a!==b)uf[a]=b;};
+  const used=new Set();
+  for(const t of tris){if(!t)continue;uni(t[0],t[1]);uni(t[1],t[2]);t.forEach(k=>used.add(k));}
+  // 外圈固定節點所在的分量 = 貼合
+  let rootAtt=-1;for(let i=0;i<N;i++)if(nodes[i]&&nodes[i].fix&&used.has(i)){rootAtt=find(i);break;}
+  comp=new Array(N);flapSet=new Set();attachedComp=rootAtt;
+  for(let i=0;i<N;i++){if(!used.has(i))continue;comp[i]=find(i);
+    if(comp[i]!==rootAtt)flapSet.add(i);}
+}
+
+function inPoly(P,px,py){let c=false;for(let i=0,j=P.length-1;i<P.length;j=i++){const xi=P[i].x,yi=P[i].y,xj=P[j].x,yj=P[j].y;
+  if(((yi>py)!==(yj>py))&&(px<(xj-xi)*(py-yi)/((yj-yi)||1e-9)+xi))c=!c;}return c;}
+
+// ── 一般化的穩健切割:沿「任意多邊形 poly」把網格切成兩片 ──
+//    1. 每個三角形按重心在 poly 內/外分類;2. 找出「邊界節點」(同時屬圈內與圈外三角形);
+//    3. 把邊界節點加倍,圈內三角形改用複製節點 → 兩側不再共用節點 → 乾淨分離。手動/自動皆用它。
+function cutByPolygon(poly){
+  if(!poly||poly.length<3)return;
+  const inside=new Array(tris.length).fill(false);
+  for(let ti=0;ti<tris.length;ti++){const t=tris[ti];if(!t)continue;
+    const cx=(nodes[t[0]].x+nodes[t[1]].x+nodes[t[2]].x)/3, cy=(nodes[t[0]].y+nodes[t[1]].y+nodes[t[2]].y)/3;
+    inside[ti]=inPoly(poly,cx,cy);}
+  const inSet=new Set(),outSet=new Set();
+  for(let ti=0;ti<tris.length;ti++){const t=tris[ti];if(!t)continue;const S=inside[ti]?inSet:outSet;for(const k of t)S.add(k);}
+  const dupOf={};
+  for(const k of inSet)if(outSet.has(k))dupOf[k]=dupNode(k);          // 邊界節點 → 加倍
+  for(let ti=0;ti<tris.length;ti++){const t=tris[ti];if(!t||!inside[ti])continue;
+    tris[ti]=t.map(k=>dupOf[k]!==undefined?dupOf[k]:k);}              // 圈內三角形改引用複製節點
+  computeComponents();cleanupBridges();
+}
+
+function autoTearCircle(){
+  reset();
+  const start=nearestNode(CX, CY-Rguide,false);
+  let cur=start,prev=-1;const loop=[start];
+  for(let s=0;s<500;s++){                                             // 沿導引圓切線一路挑鄰點,找出一圈的節點路徑(此時還沒切)
+    const {nbr}=buildAdj();
+    const rx=nodes[cur].x-CX, ry=nodes[cur].y-CY;const tang={x:-ry,y:rx};const tl=Math.hypot(tang.x,tang.y)||1;
+    let best=-1,bd=-2,backToStart=false;
+    for(const nb of (nbr.get(cur)||[])){if(nb===prev)continue;
+      if(loop.length>4 && nb===start){backToStart=true;break;}
+      const dx=nodes[nb].x-nodes[cur].x, dy=nodes[nb].y-nodes[cur].y, l=Math.hypot(dx,dy)||1;
+      const dot=(dx*tang.x+dy*tang.y)/(l*tl);
+      const rr=Math.abs(Math.hypot(nodes[nb].x-CX,nodes[nb].y-CY)-Rguide)/Rguide;
+      const score=dot-rr*0.9;
+      if(score>bd){bd=score;best=nb;}}
+    if(backToStart)break;                                             // 回到起點 = 閉合
+    if(best<0)break;
+    loop.push(best);prev=cur;cur=best;
+  }
+  if(loop.length>4)cutByPolygon(loop.map(i=>({x:nodes[i].x,y:nodes[i].y})));   // 用切線路徑當多邊形去切
+}
+// 節點加倍切不乾淨的極少數 straddle 三角形(同時含圈內+圈外頂點)→ 直接移除(沿裂縫留一格空隙=切口)
+function cleanupBridges(){let removed=0;
+  for(let ti=0;ti<tris.length;ti++){const t=tris[ti];if(!t)continue;
+    const f0=flapSet.has(t[0]),f1=flapSet.has(t[1]),f2=flapSet.has(t[2]);
+    if((f0||f1||f2)&&!(f0&&f1&&f2)){tris[ti]=null;removed++;}}
+  if(removed)computeComponents();return removed;}
+
+// ── 極簡物理:脫離的整片可被拖曳;貼合/外圈不動 ──
+function physics(){
+  const {nbr}=buildAdj();
+  for(const i of flapSet){const n=nodes[i];if(!n||n.fix)continue;const vx=(n.x-n.px)*0.85,vy=(n.y-n.py)*0.85;n.px=n.x;n.py=n.y;n.x+=vx;n.y+=vy;}
+  if(gripping&&grab>=0&&flapSet.has(grab)){for(const i of flapSet){const n=nodes[i];if(n.fix)continue;n.x+=(mouse.x-n.x)*0.03;n.y+=(mouse.y-n.y)*0.03;}}
+  for(let it=0;it<4;it++){
+    if(gripping&&grab>=0){nodes[grab].x=mouse.x;nodes[grab].y=mouse.y;}
+    for(let ti=0;ti<tris.length;ti++){const t=tris[ti];if(!t)continue;
+      for(const[a,b]of[[t[0],t[1]],[t[1],t[2]],[t[2],t[0]]]){
+        const fa=flapSet.has(a)&&!nodes[a].fix&&a!==grab, fb=flapSet.has(b)&&!nodes[b].fix&&b!==grab;
+        if(!fa&&!fb)continue;let dx=nodes[b].x-nodes[a].x,dy=nodes[b].y-nodes[a].y;const d=Math.hypot(dx,dy)||1;
+        const rl=Math.hypot(nodes[a].rx-nodes[b].rx,nodes[a].ry-nodes[b].ry);const diff=(d-rl)/d,cx=dx*diff,cy=dy*diff;
+        if(fa&&fb){nodes[a].x+=cx*0.5;nodes[a].y+=cy*0.5;nodes[b].x-=cx*0.5;nodes[b].y-=cy*0.5;}
+        else if(fa){nodes[a].x+=cx;nodes[a].y+=cy;}else{nodes[b].x-=cx;nodes[b].y-=cy;}}}
+  }
+  if(gripping&&grab>=0){nodes[grab].x=mouse.x;nodes[grab].y=mouse.y;}
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  ctx.strokeStyle='#243049';ctx.lineWidth=2;ctx.beginPath();ctx.arc(CX,CY,Rdisk,0,7);ctx.stroke();
+  ctx.setLineDash([5,5]);ctx.strokeStyle='rgba(136,147,168,.3)';ctx.lineWidth=1;ctx.beginPath();ctx.arc(CX,CY,Rguide,0,7);ctx.stroke();ctx.setLineDash([]);
+  // 三角面
+  for(const t of tris){if(!t)continue;
+    const isFlap=flapSet.has(t[0])||flapSet.has(t[1])||flapSet.has(t[2]);
+    ctx.fillStyle=isFlap?'rgba(111,211,255,.22)':'rgba(86,98,122,.12)';
+    ctx.beginPath();ctx.moveTo(nodes[t[0]].x,nodes[t[0]].y);ctx.lineTo(nodes[t[1]].x,nodes[t[1]].y);ctx.lineTo(nodes[t[2]].x,nodes[t[2]].y);ctx.closePath();ctx.fill();
+    ctx.strokeStyle=isFlap?'rgba(111,211,255,.55)':'rgba(86,98,122,.35)';ctx.lineWidth=1;ctx.stroke();}
+  // 節點
+  for(let i=0;i<nodes.length;i++){const n=nodes[i];if(!n)continue;
+    ctx.fillStyle=n.fix?'#3f4a63':(flapSet.has(i)?'#6fd3ff':'#56627a');ctx.beginPath();ctx.arc(n.x,n.y,flapSet.has(i)?2.6:1.8,0,7);ctx.fill();}
+  if(drawing&&drawPath.length>1){ctx.strokeStyle='#ff6b6b';ctx.lineWidth=2.5;ctx.beginPath();   // 手動畫的裂縫線
+    ctx.moveTo(drawPath[0].x,drawPath[0].y);for(let i=1;i<drawPath.length;i++)ctx.lineTo(drawPath[i].x,drawPath[i].y);ctx.stroke();}
+}
+function loop(){physics();draw();
+  const flapNodes=flapSet.size;
+  // 檢查有沒有「橋接三角形」(同時含貼合與脫離節點)= 沾連
+  let bridges=0,comps=new Set();
+  for(const t of tris){if(!t)continue;const f=t.map(k=>flapSet.has(k));if((f[0]||f[1]||f[2])&&!(f[0]&&f[1]&&f[2]))bridges++;}
+  for(const i of flapSet)comps.add(comp[i]);
+  document.getElementById('cnt').innerHTML=
+    `節點 <b>${nodes.length}</b>　脫離節點 <b>${flapNodes}</b>　脫離分量數 <b>${comps.size}</b><br>`+
+    `橋接三角形(沾連) <b style="color:${bridges?'#ff6b6b':'#7CFC00'}">${bridges}</b> ← 0 才是乾淨切開`;
+  requestAnimationFrame(loop);}
+
+cv.addEventListener('mousemove',e=>{mouse={x:e.clientX,y:e.clientY};
+  if(drawing){const last=drawPath[drawPath.length-1];if(!last||Math.hypot(mouse.x-last.x,mouse.y-last.y)>6)drawPath.push({x:mouse.x,y:mouse.y});}});
+cv.addEventListener('mousedown',e=>{if(e.button!==0)return;mouse={x:e.clientX,y:e.clientY};
+  const g=nearestNode(mouse.x,mouse.y,true);
+  if(g>=0&&Math.hypot(nodes[g].x-mouse.x,nodes[g].y-mouse.y)<SP*1.2){gripping=true;grab=g;}   // 抓脫離片 → 拖曳
+  else{drawing=true;drawPath=[{x:mouse.x,y:mouse.y}];}                                        // 否則 → 畫裂縫
+});
+addEventListener('mouseup',()=>{
+  if(drawing&&drawPath.length>=3)cutByPolygon(drawPath);                                      // 放開 → 沿你畫的線切開
+  drawing=false;drawPath=[];gripping=false;grab=-1;});
+reset();loop();
+</script>
+</body>
+</html>

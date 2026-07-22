@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SofaCUDA GPU FEM 引擎 + argmax c 撕裂準則圖解</title>
+<style>
+  :root {
+    --bg:#ffffff; --bg-alt:#f6f7f9; --bg-side:#f0f2f5; --fg:#1c2128;
+    --fg-dim:#57606a; --border:#d0d7de; --accent:#0969da; --accent-soft:#ddf4ff;
+    --code-bg:#f6f8fa; --code-fg:#24292f; --hl:#fff3cd;
+    --danger:#cf222e; --ok:#1a7f37; --warn:#9a6700;
+    --fiber:#8250df; --weak:#cf222e; --strong:#1a7f37;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#0d1117; --bg-alt:#161b22; --bg-side:#10151c; --fg:#e6edf3;
+      --fg-dim:#8b949e; --border:#30363d; --accent:#58a6ff; --accent-soft:#163356;
+      --code-bg:#161b22; --code-fg:#e6edf3; --hl:#4a3c00;
+      --danger:#f85149; --ok:#3fb950; --warn:#d29922;
+      --fiber:#bc8cff; --weak:#f85149; --strong:#3fb950;
+    }
+  }
+  :root[data-theme="light"]{--bg:#ffffff;--bg-alt:#f6f7f9;--bg-side:#f0f2f5;--fg:#1c2128;--fg-dim:#57606a;--border:#d0d7de;--accent:#0969da;--accent-soft:#ddf4ff;--code-bg:#f6f8fa;--code-fg:#24292f;--hl:#fff3cd;--danger:#cf222e;--ok:#1a7f37;--warn:#9a6700;--fiber:#8250df;--weak:#cf222e;--strong:#1a7f37;}
+  :root[data-theme="dark"]{--bg:#0d1117;--bg-alt:#161b22;--bg-side:#10151c;--fg:#e6edf3;--fg-dim:#8b949e;--border:#30363d;--accent:#58a6ff;--accent-soft:#163356;--code-bg:#161b22;--code-fg:#e6edf3;--hl:#4a3c00;--danger:#f85149;--ok:#3fb950;--warn:#d29922;--fiber:#bc8cff;--weak:#f85149;--strong:#3fb950;}
+  *{box-sizing:border-box;}
+  html,body{margin:0;}
+  body{
+    font-family:-apple-system,"Segoe UI","Microsoft JhengHei","PingFang TC",Roboto,Helvetica,Arial,sans-serif;
+    color:var(--fg);background:var(--bg);line-height:1.7;-webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:940px;margin:0 auto;padding:24px 20px 80px;}
+  header.top{display:flex;align-items:center;gap:12px;margin-bottom:8px;flex-wrap:wrap;}
+  h1{font-size:24px;margin:.2em 0;}
+  h2{font-size:19px;margin:1.8em 0 .5em;padding-bottom:.3em;border-bottom:2px solid var(--border);}
+  h3{font-size:16px;margin:1.4em 0 .4em;color:var(--accent);}
+  p{margin:.6em 0;}
+  code,.mono{font-family:"Cascadia Code",Consolas,"SF Mono",Menlo,monospace;}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;font-size:.9em;}
+  pre{background:var(--code-bg);color:var(--code-fg);padding:12px 14px;border-radius:8px;overflow-x:auto;border:1px solid var(--border);font-size:13px;line-height:1.5;}
+  .lead{color:var(--fg-dim);font-size:15px;}
+  .card{background:var(--bg-alt);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin:14px 0;}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+  @media(max-width:720px){.grid2{grid-template-columns:1fr;}}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:14px;}
+  th,td{border:1px solid var(--border);padding:7px 10px;text-align:left;vertical-align:top;}
+  th{background:var(--bg-side);}
+  .fig{background:var(--bg-alt);border:1px solid var(--border);border-radius:10px;padding:14px;margin:16px 0;}
+  .fig svg{display:block;width:100%;height:auto;}
+  .cap{font-size:13px;color:var(--fg-dim);margin-top:8px;}
+  .big{font-size:34px;font-weight:800;line-height:1;}
+  .kpi{display:flex;gap:18px;flex-wrap:wrap;}
+  .kpi .box{flex:1;min-width:150px;background:var(--bg-side);border:1px solid var(--border);border-radius:10px;padding:14px 16px;text-align:center;}
+  .kpi .box small{display:block;color:var(--fg-dim);font-size:12px;margin-top:6px;}
+  .tag{display:inline-block;font-size:12px;padding:1px 8px;border-radius:20px;border:1px solid var(--border);background:var(--bg-side);}
+  .weak{color:var(--weak);font-weight:600;} .strong{color:var(--strong);font-weight:600;}
+  .danger{color:var(--danger);font-weight:600;} .ok{color:var(--ok);font-weight:600;}
+  .u{white-space:nowrap;} /* unit chunks */
+  button.theme{margin-left:auto;padding:5px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg-alt);color:var(--fg);cursor:pointer;font-size:13px;}
+  .note{border-left:3px solid var(--accent);background:var(--accent-soft);padding:8px 12px;border-radius:0 8px 8px 0;margin:12px 0;font-size:14px;}
+  .warnbox{border-left:3px solid var(--warn);background:color-mix(in srgb,var(--warn) 12%,transparent);padding:8px 12px;border-radius:0 8px 8px 0;margin:12px 0;font-size:14px;}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:13px;margin:6px 0;}
+  .legend span{display:inline-flex;align-items:center;gap:6px;}
+  .sw{width:14px;height:14px;border-radius:3px;display:inline-block;}
+  a{color:var(--accent);}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="top">
+  <h1>SofaCUDA GPU 引擎 &amp; argmax c 撕裂準則 — 圖解</h1>
+  <button class="theme" onclick="toggleTheme()">🌓 主題</button>
+</header>
+<p class="lead">回答三件事:(1) raptor CPU vs GPU 實測差多少、怎麼自己跑;(2) Comas 的 scatter→gather 兩段 kernel 到底在解什麼問題;(3) argmax c 準則裡每個符號的物理意義、單位、θ_P 從哪來、什麼是回折。所有數學用 Unicode 直寫,無 LaTeX。</p>
+
+<!-- ============ PART 1 : BENCHMARK ============ -->
+<h2>1 · raptor CPU vs GPU:實測 ~28×</h2>
+<p>同一個 raptor 網格(19,409 四面體、co-rotational FEM、隱式 Euler + CG 25 迭代),<b>唯一差別是 <code>template="Vec3d"</code> 換成 <code>template="CudaVec3f"</code></b>。物理、求解器、迭代次數全一樣,任何 FPS 差距都是純 CPU vs GPU 計算。</p>
+
+<div class="kpi">
+  <div class="box"><span class="big" style="color:var(--fg-dim)">4.4</span><small>CPU (Vec3d)<br>500 步 · FPS</small></div>
+  <div class="box"><span class="big" style="color:var(--ok)">124.9</span><small>GPU (CudaVec3f)<br>500 步 · FPS</small></div>
+  <div class="box"><span class="big" style="color:var(--accent)">≈28×</span><small>穩態加速比<br>RTX 3070</small></div>
+</div>
+
+<div class="note">步數少時加速比較低(25 步僅 ~14×):變形還小、CG 工作量少,而 GPU 有固定啟動開銷被放大。<b>跑滿 500 步的穩態值 ~28× 才是代表數字。</b>Comas 2008 論文當年報 16×,現代 GPU 相對 CPU 差距更大。</div>
+
+<h3>自己跑</h3>
+<p>我做了一個腳本 <code>scripts/compare_raptor.ps1</code>,兩種模式:</p>
+<pre># 兩個視窗並排跑,動畫自動開始 — 眼睛直接看 CPU 卡頓、GPU 流暢
+./scripts/compare_raptor.ps1
+
+# 無視窗 benchmark,印出 FPS 對照表 + 加速比
+./scripts/compare_raptor.ps1 -Mode bench -Steps 500</pre>
+<p class="cap">GUI 模式用 <code>-a</code> 讓動畫自動開始(不用手按播放);bench 模式跑完印出表格。腳本會自動找 SOFA 安裝路徑,找不到可用 <code>-SofaRoot</code> 指定。</p>
+
+<!-- ============ PART 2 : SCATTER / GATHER ============ -->
+<h2>2 · Comas 在解什麼:scatter → gather</h2>
+<p>FEM 的每一步要算「每個<b>節點</b>受多少力」。而一個節點的力 = <b>所有碰到它的元素</b>各自貢獻的總和。問題出在:<b>一個節點被很多元素共用</b>。下圖中,中央節點 N 同時屬於三角形 A、B、C、D。</p>
+
+<div class="fig">
+<svg viewBox="0 0 820 300" role="img" aria-label="race condition diagram">
+  <defs>
+    <marker id="arrRed" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="var(--danger)"/></marker>
+    <marker id="arrDim" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="var(--fg-dim)"/></marker>
+  </defs>
+  <!-- title -->
+  <text x="20" y="24" fill="var(--danger)" font-size="15" font-weight="700">✗ 天真做法:每個元素一條 thread,直接加到共用節點</text>
+  <!-- fan of 4 triangles sharing node N at (230,180) -->
+  <g stroke="var(--border)" stroke-width="1.5" fill="none">
+    <polygon points="230,180 120,110 250,80" fill="color-mix(in srgb,var(--accent) 8%,transparent)"/>
+    <polygon points="230,180 250,80 360,120" fill="color-mix(in srgb,var(--accent) 8%,transparent)"/>
+    <polygon points="230,180 360,120 350,240" fill="color-mix(in srgb,var(--accent) 8%,transparent)"/>
+    <polygon points="230,180 350,240 200,260" fill="color-mix(in srgb,var(--accent) 8%,transparent)"/>
+  </g>
+  <text x="180" y="120" fill="var(--fg-dim)" font-size="13">A</text>
+  <text x="290" y="105" fill="var(--fg-dim)" font-size="13">B</text>
+  <text x="320" y="185" fill="var(--fg-dim)" font-size="13">C</text>
+  <text x="250" y="235" fill="var(--fg-dim)" font-size="13">D</text>
+  <!-- shared node N -->
+  <circle cx="230" cy="180" r="9" fill="var(--danger)"/>
+  <text x="212" y="205" fill="var(--danger)" font-size="14" font-weight="700">N</text>
+  <!-- 4 threads writing simultaneously -->
+  <g font-size="12" fill="var(--fg)">
+    <rect x="520" y="60" width="120" height="26" rx="5" fill="var(--bg-side)" stroke="var(--border)"/><text x="530" y="78">thread A: N += f_A</text>
+    <rect x="520" y="96" width="120" height="26" rx="5" fill="var(--bg-side)" stroke="var(--border)"/><text x="530" y="114">thread B: N += f_B</text>
+    <rect x="520" y="132" width="120" height="26" rx="5" fill="var(--bg-side)" stroke="var(--border)"/><text x="530" y="150">thread C: N += f_C</text>
+    <rect x="520" y="168" width="120" height="26" rx="5" fill="var(--bg-side)" stroke="var(--border)"/><text x="530" y="186">thread D: N += f_D</text>
+  </g>
+  <!-- arrows all pointing to a single force cell -->
+  <line x1="520" y1="73" x2="470" y2="120" stroke="var(--danger)" stroke-width="1.6" marker-end="url(#arrRed)"/>
+  <line x1="520" y1="109" x2="470" y2="122" stroke="var(--danger)" stroke-width="1.6" marker-end="url(#arrRed)"/>
+  <line x1="520" y1="145" x2="470" y2="126" stroke="var(--danger)" stroke-width="1.6" marker-end="url(#arrRed)"/>
+  <line x1="520" y1="181" x2="470" y2="130" stroke="var(--danger)" stroke-width="1.6" marker-end="url(#arrRed)"/>
+  <rect x="405" y="108" width="60" height="40" rx="6" fill="color-mix(in srgb,var(--danger) 18%,transparent)" stroke="var(--danger)"/>
+  <text x="417" y="132" fill="var(--danger)" font-size="13" font-weight="700">force[N]</text>
+  <text x="405" y="175" fill="var(--danger)" font-size="20">💥</text>
+  <text x="430" y="178" fill="var(--danger)" font-size="13" font-weight="700">race:同時讀寫 → 丟失更新</text>
+  <text x="405" y="270" fill="var(--fg-dim)" font-size="12.5">GPU 上數千條 thread 真的同時跑,兩條同時 <tspan font-family="monospace">read-add-write</tspan> force[N],後寫的蓋掉前寫的 → 算錯。</text>
+</svg>
+<div class="cap">圖 A — 為什麼不能天真平行:共用節點 N 被多個元素 thread 同時累加,產生 race condition。</div>
+</div>
+
+<p>Comas 的解法是拆成<b>兩段 kernel</b>,中間插一個「每個元素有自己專屬格子」的緩衝,讓任何時刻<b>沒有兩條 thread 寫同一個位置</b>:</p>
+
+<div class="fig">
+<svg viewBox="0 0 820 340" role="img" aria-label="scatter gather diagram">
+  <defs>
+    <marker id="arrOk" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="var(--ok)"/></marker>
+    <marker id="arrAcc" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="var(--accent)"/></marker>
+  </defs>
+  <!-- Kernel 1 : scatter -->
+  <text x="20" y="26" fill="var(--ok)" font-size="15" font-weight="700">① Scatter kernel — 每 thread = 一個元素,寫「自己的」格子</text>
+  <g font-size="12">
+    <rect x="30" y="44" width="90" height="24" rx="5" fill="var(--bg-side)" stroke="var(--border)"/><text x="42" y="61" fill="var(--fg)">元素 A</text>
+    <rect x="30" y="76" width="90" height="24" rx="5" fill="var(--bg-side)" stroke="var(--border)"/><text x="42" y="93" fill="var(--fg)">元素 B</text>
+    <rect x="30" y="108" width="90" height="24" rx="5" fill="var(--bg-side)" stroke="var(--border)"/><text x="42" y="125" fill="var(--fg)">元素 C</text>
+    <rect x="30" y="140" width="90" height="24" rx="5" fill="var(--bg-side)" stroke="var(--border)"/><text x="42" y="157" fill="var(--fg)">元素 D</text>
+  </g>
+  <!-- private slots -->
+  <g font-size="11.5">
+    <rect x="230" y="44" width="150" height="24" rx="5" fill="color-mix(in srgb,var(--ok) 14%,transparent)" stroke="var(--ok)"/><text x="240" y="61" fill="var(--fg)">slot[A] = f_A→(各節點)</text>
+    <rect x="230" y="76" width="150" height="24" rx="5" fill="color-mix(in srgb,var(--ok) 14%,transparent)" stroke="var(--ok)"/><text x="240" y="93" fill="var(--fg)">slot[B] = f_B→(各節點)</text>
+    <rect x="230" y="108" width="150" height="24" rx="5" fill="color-mix(in srgb,var(--ok) 14%,transparent)" stroke="var(--ok)"/><text x="240" y="125" fill="var(--fg)">slot[C] = f_C→(各節點)</text>
+    <rect x="230" y="140" width="150" height="24" rx="5" fill="color-mix(in srgb,var(--ok) 14%,transparent)" stroke="var(--ok)"/><text x="240" y="157" fill="var(--fg)">slot[D] = f_D→(各節點)</text>
+  </g>
+  <line x1="120" y1="56" x2="228" y2="56" stroke="var(--ok)" stroke-width="1.5" marker-end="url(#arrOk)"/>
+  <line x1="120" y1="88" x2="228" y2="88" stroke="var(--ok)" stroke-width="1.5" marker-end="url(#arrOk)"/>
+  <line x1="120" y1="120" x2="228" y2="120" stroke="var(--ok)" stroke-width="1.5" marker-end="url(#arrOk)"/>
+  <line x1="120" y1="152" x2="228" y2="152" stroke="var(--ok)" stroke-width="1.5" marker-end="url(#arrOk)"/>
+  <text x="400" y="106" fill="var(--ok)" font-size="12.5">一對一 · 無衝突</text>
+
+  <!-- divider -->
+  <line x1="20" y1="190" x2="800" y2="190" stroke="var(--border)" stroke-dasharray="4 4"/>
+
+  <!-- Kernel 2 : gather -->
+  <text x="20" y="216" fill="var(--accent)" font-size="15" font-weight="700">② Gather kernel — 每 thread = 一個節點,收集碰到它的元素貢獻</text>
+  <g font-size="11.5">
+    <rect x="30" y="236" width="150" height="24" rx="5" fill="color-mix(in srgb,var(--ok) 14%,transparent)" stroke="var(--ok)"/><text x="40" y="253" fill="var(--fg)">slot[A],slot[B],</text>
+    <rect x="30" y="268" width="150" height="24" rx="5" fill="color-mix(in srgb,var(--ok) 14%,transparent)" stroke="var(--ok)"/><text x="40" y="285" fill="var(--fg)">slot[C],slot[D] …</text>
+  </g>
+  <text x="30" y="312" fill="var(--fg-dim)" font-size="11.5">(預先建好的「節點→鄰接元素」表)</text>
+  <line x1="180" y1="262" x2="300" y2="262" stroke="var(--accent)" stroke-width="1.6" marker-end="url(#arrAcc)"/>
+  <rect x="305" y="244" width="180" height="36" rx="6" fill="var(--bg-side)" stroke="var(--accent)"/>
+  <text x="318" y="267" fill="var(--accent)" font-size="12.5" font-weight="700">node N 的 thread:加總</text>
+  <line x1="485" y1="262" x2="560" y2="262" stroke="var(--accent)" stroke-width="1.6" marker-end="url(#arrAcc)"/>
+  <rect x="565" y="244" width="120" height="36" rx="6" fill="color-mix(in srgb,var(--accent) 16%,transparent)" stroke="var(--accent)"/>
+  <text x="582" y="267" fill="var(--accent)" font-size="13" font-weight="700">force[N] ✓</text>
+  <text x="565" y="312" fill="var(--ok)" font-size="12">只有 N 的 thread 寫 force[N] → 唯一寫者,無衝突</text>
+</svg>
+<div class="cap">圖 B — 兩段 kernel:先 scatter(元素各寫自己的格子),再 gather(每個節點收自己那一份)。任何時刻「一個位置只有一條 thread 寫」。</div>
+</div>
+
+<div class="card">
+<b>一個生活比喻。</b> 4 個人(元素)各自要付錢給幾位共用的朋友(節點)。<br>
+<span class="danger">天真做法</span>:大家同時把錢塞進<b>同一個共用撲滿</b> → 手撞手、數字算錯(race)。<br>
+<span class="ok">scatter/gather</span>:每個人先把錢裝進<b>自己貼了標籤的信封</b>(scatter,各寫各的);然後每位朋友<b>去收寄給自己的那些信封</b>再加總(gather)。全程沒有兩隻手伸進同一個罐子。
+</div>
+
+<p>代價是多用一點顯存(每元素的私有格子)+ 一張「節點→鄰接元素」連接表。因為 TLED 的 Total-Lagrangian 把連接關係<b>預算一次、之後不變</b>,這張表幾乎免費 —— 這也是為什麼這招在 GPU 上這麼划算。</p>
+
+<h3>順帶:co-rotational 與 TLED 是兩條不同引擎</h3>
+<table>
+<tr><th></th><th>co-rotational + 隱式</th><th>TLED + 顯式</th></tr>
+<tr><td>每步解線性系統?</td><td>要(CG)</td><td class="ok">不用</td></tr>
+<tr><td>材料</td><td>線性彈性</td><td>非線性超彈性</td></tr>
+<tr><td>時間步 Δt</td><td>可較大</td><td>必須很小(CFL)</td></tr>
+<tr><td>平行度</td><td>中(CG 有相依)</td><td class="ok">極高(節點全獨立)</td></tr>
+<tr><td>你跑的範例</td><td><b>liver / raptor</b></td><td>Comas 研究用,非預設範例</td></tr>
+</table>
+<p class="cap">兩者都跑在 GPU 上,scatter/gather 這招在兩者算「力」時都用得到。你剛 benchmark 的 raptor 是 co-rotational + 隱式的 GPU 版。</p>
+
+<!-- ============ PART 3 : CRITERION ============ -->
+<h2>3 · argmax c 撕裂準則,逐符號拆解</h2>
+<p>公式(你 <code>ccc_method/4</code> 第 22 行):</p>
+<pre>c(d) = ( σ_d⊥ / σ̄_d⊥ ) · H( d·p − cos θ_P )      對每個候選方向 d 算一次
+撕裂:若 max_d c(d) > 1 → 沿 argmax_d c(d) 那個方向撕</pre>
+
+<div class="fig">
+<svg viewBox="0 0 820 430" role="img" aria-label="fiber crack criterion diagram">
+  <defs>
+    <marker id="aFib" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--fiber)"/></marker>
+    <marker id="aWeak" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="var(--weak)"/></marker>
+    <marker id="aStr" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="var(--strong)"/></marker>
+    <marker id="aP" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="var(--fg-dim)"/></marker>
+    <marker id="aSel" markerWidth="10" markerHeight="10" refX="7" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"/></marker>
+  </defs>
+  <!-- concentric fibers -->
+  <g fill="none" stroke="var(--fiber)" stroke-width="1.3" opacity="0.55">
+    <circle cx="250" cy="215" r="40"/><circle cx="250" cy="215" r="80"/>
+    <circle cx="250" cy="215" r="120"/><circle cx="250" cy="215" r="160"/>
+  </g>
+  <circle cx="250" cy="215" r="4" fill="var(--fiber)"/>
+  <text x="256" y="230" fill="var(--fiber)" font-size="12">C(圓心=水晶體軸)</text>
+  <text x="20" y="24" fill="var(--fiber)" font-size="14" font-weight="700">囊膜纖維 = 同心圓(圓周強、徑向弱)</text>
+
+  <!-- point P on outer region, radial + circumferential -->
+  <!-- P at angle... place tip T where a crack has arrived from the rim -->
+  <!-- crack came from right rim toward tip T -->
+  <path d="M410,215 L370,213 L335,210 L305,206" fill="none" stroke="var(--fg)" stroke-width="3.5"/>
+  <text x="360" y="240" fill="var(--fg)" font-size="12">已裂縫</text>
+  <circle cx="305" cy="206" r="5" fill="var(--fg)"/>
+  <text x="300" y="196" fill="var(--fg)" font-size="12" font-weight="700">T 裂尖</text>
+
+  <!-- previous direction p (pointing from old crack toward tip, i.e. leftward/inward) -->
+  <line x1="345" y1="211" x2="300" y2="205" stroke="var(--fg-dim)" stroke-width="2" stroke-dasharray="5 3" marker-end="url(#aP)"/>
+  <text x="315" y="176" fill="var(--fg-dim)" font-size="12">p 上一步方向</text>
+
+  <!-- radial r (weak) at T: from C through T outward -->
+  <!-- direction C->T ~ (305-250,206-215)=(55,-9) normalize -> mostly +x slightly up. radial outward -->
+  <line x1="250" y1="215" x2="470" y2="180" stroke="var(--weak)" stroke-width="1.6" opacity="0.5" stroke-dasharray="2 3"/>
+  <line x1="305" y1="206" x2="360" y2="197" stroke="var(--weak)" stroke-width="2.4" marker-end="url(#aWeak)"/>
+  <text x="360" y="188" fill="var(--weak)" font-size="12" font-weight="700">r 徑向(弱 σ̄ 小)</text>
+
+  <!-- circumferential f (strong): perpendicular to r at T -->
+  <line x1="305" y1="206" x2="292" y2="150" stroke="var(--strong)" stroke-width="2.4" marker-end="url(#aStr)"/>
+  <text x="235" y="140" fill="var(--strong)" font-size="12" font-weight="700">f 圓周(強 σ̄ 大)</text>
+
+  <!-- theta_P cone around p (allowed directions) -->
+  <path d="M305,206 L250,150 A72,72 0 0,1 250,262 Z" fill="color-mix(in srgb,var(--accent) 12%,transparent)" stroke="none"/>
+  <text x="205" y="215" fill="var(--accent)" font-size="12">θ_P 允許扇形</text>
+
+  <!-- candidate directions d (fan) -->
+  <line x1="305" y1="206" x2="250" y2="150" stroke="var(--accent)" stroke-width="1.4" opacity="0.6"/>
+  <line x1="305" y1="206" x2="245" y2="206" stroke="var(--accent)" stroke-width="1.4" opacity="0.6"/>
+  <line x1="305" y1="206" x2="250" y2="262" stroke="var(--accent)" stroke-width="1.4" opacity="0.6"/>
+  <!-- selected argmax d : along radial (weakest) within cone -->
+  <line x1="305" y1="206" x2="243" y2="196" stroke="var(--accent)" stroke-width="3" marker-end="url(#aSel)"/>
+  <text x="150" y="188" fill="var(--accent)" font-size="12" font-weight="700">argmax c 選這個 d</text>
+
+  <!-- opening stress arrows perpendicular to d (pulling crack open) -->
+  <text x="470" y="250" fill="var(--fg)" font-size="12.5">撐開裂縫的是</text>
+  <text x="470" y="268" fill="var(--fg)" font-size="12.5"><tspan fill="var(--weak)" font-weight="700">垂直於 d</tspan> 的張力 σ_d⊥:</text>
+  <g stroke="var(--weak)" stroke-width="2">
+    <line x1="600" y1="300" x2="600" y2="270" marker-end="url(#aWeak)"/>
+    <line x1="600" y1="330" x2="600" y2="360" marker-end="url(#aWeak)"/>
+  </g>
+  <line x1="560" y1="315" x2="640" y2="315" stroke="var(--accent)" stroke-width="3"/>
+  <text x="645" y="319" fill="var(--accent)" font-size="12">d(前進方向)</text>
+  <text x="470" y="315" fill="var(--fg-dim)" font-size="12">σ_d⊥ ↕</text>
+
+  <!-- backfold example -->
+  <text x="470" y="392" fill="var(--danger)" font-size="12.5" font-weight="700">✗ 回折(往回折/急轉)被 H 擋掉:</text>
+  <path d="M600,405 q30,-25 55,0 q-40,-8 -30,25" fill="none" stroke="var(--danger)" stroke-width="2.4"/>
+  <text x="662" y="412" fill="var(--danger)" font-size="16">✗</text>
+</svg>
+<div class="cap">圖 C — 裂尖 T 處:同心圓纖維讓徑向 r 弱、圓周 f 強;候選方向 d 在 θ_P 扇形內才有效;真正撐開裂縫的是<b>垂直於 d</b> 的張力 σ_d⊥;argmax c 選「負載/強度」最大者(通常沿最弱的徑向)。回折方向被 H 閘門歸零。</div>
+</div>
+
+<h3>逐塊解釋你問的每一點</h3>
+
+<p><b>Q:為何 σ_d⊥ 是「應力」、σ̄_d⊥ 是「材料強度」?單位合理嗎?</b></p>
+<table>
+<tr><th>符號</th><th>是什麼</th><th>單位</th></tr>
+<tr><td class="mono">σ_d⊥</td><td>裂尖處<b>垂直於 d 方向</b>實際承受的張應力(外加負載造成)</td><td class="u">Pa = N/m²</td></tr>
+<tr><td class="mono">σ̄_d⊥</td><td>材料在<b>同一方向</b>能承受的<b>強度上限</b>(材料屬性,纖維方向不同而異)</td><td class="u">Pa = N/m²</td></tr>
+<tr><td class="mono">c = σ_d⊥ / σ̄_d⊥</td><td><b>負載 ÷ 強度</b> = 用掉幾成的容許量</td><td class="ok">無單位(Pa/Pa)</td></tr>
+</table>
+<div class="note"><b>兩個都是應力(Pa),相除得到無因次的純數 —— 這正是為什麼門檻是乾淨的「1」。</b> 這在工程上就是<b>安全係數的倒數 / 利用率(utilization ratio)</b>:c=0.5 表示只用了一半強度,c=1 剛好用滿,c&gt;1 表示負載超過強度 → 裂。單位完全一致、合理。</div>
+
+<div class="fig">
+<svg viewBox="0 0 820 120" role="img" aria-label="utilization gauge">
+  <text x="20" y="24" fill="var(--fg)" font-size="14" font-weight="700">c = σ_d⊥ / σ̄_d⊥ 就是一支「利用率儀表」</text>
+  <rect x="20" y="44" width="600" height="30" rx="6" fill="var(--bg-side)" stroke="var(--border)"/>
+  <rect x="20" y="44" width="400" height="30" rx="6" fill="color-mix(in srgb,var(--ok) 30%,transparent)"/>
+  <line x1="420" y1="36" x2="420" y2="82" stroke="var(--danger)" stroke-width="2.5"/>
+  <text x="405" y="100" fill="var(--danger)" font-size="13" font-weight="700">c = 1(裂)</text>
+  <text x="24" y="64" fill="var(--fg)" font-size="12">0 — 安全</text>
+  <text x="470" y="64" fill="var(--danger)" font-size="12">c &gt; 1 — 超載,材料在此方向失效</text>
+  <text x="640" y="64" fill="var(--fg-dim)" font-size="12">→ argmax 選最右邊那個 d</text>
+</svg>
+</div>
+
+<p><b>Q:H(d·p − cos θ_P) 的物理定義?θ_P 從哪來?</b></p>
+<ul>
+<li><b>H 是 Heaviside 階梯函數</b>:H(x)=1 若 x≥0,否則 0。是一個<b>開/關閘門</b>,只輸出 0 或 1,乘上前面的比值 = 「這個方向到底算不算數」。</li>
+<li><b>d·p = cos(d 與 p 的夾角)</b>(兩者都是單位向量)。所以 <span class="mono">d·p ≥ cos θ_P ⟺ 夾角(d,p) ≤ θ_P</span>。也就是:<b>只有跟上一步方向 p 夾角不超過 θ_P 的候選 d,閘門才開(H=1)</b>;偏太多的 d 被歸零。</li>
+<li><b>θ_P 是一個建模參數 —— 不是從第一原理算出來的</b>,是「每一步裂縫最多能轉多少角度」的上限,由建模者設定 / 依材料行為校調。它把「真實裂縫走得平滑、不會突然急轉」這個物理事實編碼進準則。</li>
+</ul>
+
+<p><b>Q:什麼是「回折」?</b></p>
+<div class="grid2">
+<div class="card"><b class="ok">✓ 平滑前進(H=1,允許)</b><br>新方向 d 跟上一步 p 幾乎同向,夾角小 → 裂縫像一條連續的線慢慢彎。真實材料就是這樣裂的。</div>
+<div class="card"><b class="danger">✗ 回折 / backfold(H=0,擋掉)</b><br>某個方向的應力剛好很高,但它指向<b>後方或急轉</b>(跟 p 夾角 &gt; θ_P)。若不擋,裂縫會鋸齒亂折、甚至往回走 —— 物理上不可能。H 閘門把這種候選歸零。</div>
+</div>
+<p class="cap">「回折」= 裂縫路徑突然反折、急轉、甚至 U-turn。H 閘門的唯一任務就是禁止它,保證撕痕平滑連續。</p>
+
+<p><b>Q:算出來的 c 是什麼單位?</b> → <b class="ok">無因次純數</b>。(Pa/Pa)×(0 或 1)= 純數。所以能直接和「1」比大小。</p>
+
+<p><b>Q:為什麼這個公式是「對」的?</b> 四個理由疊起來:</p>
+<ol>
+<li><b>看對了力</b>:撐開裂縫的是<b>垂直於前進方向</b>的張力(裂縫面法線 = d⊥),不是 d 方向的力。σ_d⊥ 抓的正是這個。</li>
+<li><b>比對了強度</b>:除以<b>同方向</b>的材料強度 σ̄_d⊥。各向異性從這裡進來 —— 徑向強度小 → 徑向的 c 容易 &gt; 1 → 撕往周邊(囊膜真實現象自己湧現)。</li>
+<li><b>選對了方向</b>:argmax 選「負載/強度」最大者 = 材料在<b>最脆弱/最超載</b>的方向先裂。H 閘門再排除不物理的回折。</li>
+<li><b>退化成公認定律</b>:關掉纖維(σ̄ 各方向相同、不防回折),argmax c <b>數學上等於「最大主應力準則(Rankine)」</b>—— 固體力學公認的脆性斷裂判據。</li>
+</ol>
+<div class="note">🔑 第 4 點是關鍵:它不是憑空 heuristic,而是<b>「最大主應力準則」的各向異性升級版</b>。等向 = 已驗證的經典定律;加纖維 = 描述囊膜。<b>能退化成公認正確的定律,邏輯上就可信</b> —— 這是 Weber 手調 DriftDir 沒有的理論母體。</div>
+<div class="warnbox">⚠️ 一個坑(你 <code>reference/7_han2021</code> 標註過):<code>argmax c → Rankine</code> 是講 <b>INRIA / Allard</b> 這條;Han 2021 是<b>另一套</b>(Von Mises 畸變能 + cohesive law),兩者是不同的斷裂框架,不可混同。</div>
+
+<h2>檔案</h2>
+<ul>
+<li><code>scripts/compare_raptor.ps1</code> — CPU/GPU 對照(gui 並排跑 / bench 印 FPS 表)</li>
+<li>本頁 — <code>docs/demo_gpu_fem_and_criterion.html</code></li>
+<li>相關:<code>ccc_method/4_inria_fiber_fracture.md</code>(準則三層邏輯)、<code>reference/3_inria_fem_lineage.md</code>(引擎演進)、<code>reference/7_han2021_fem_tearing.md</code>(斷裂框架對照)</li>
+</ul>
+
+</div>
+<script>
+function toggleTheme(){
+  var r=document.documentElement;
+  var cur=r.getAttribute('data-theme');
+  var next = cur==='dark' ? 'light' : (cur==='light' ? 'dark' : (matchMedia('(prefers-color-scheme: dark)').matches?'light':'dark'));
+  r.setAttribute('data-theme',next);
+}
+</script>
+</body>
+</html>

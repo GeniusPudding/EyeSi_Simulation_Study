@@ -12,7 +12,7 @@
 - **四個標註任務**:
   | 任務 | 規模 | baseline(SOTA) |
   |---|---|---|
-  | 階段辨識(13 階段) | 150 支 | MViT-B 85.7% / Swin-T 85.5% |
+  | 階段辨識(11 階段) | 150 支 | MViT-B 85.7% / Swin-T 85.5% |
   | 實例分割(器械, COCO+YOLO) | 6,094 幀 | YOLOv11 73.9 mAP > Mask R-CNN 53.7 |
   | 物件追蹤(撕囊 clip) | 170 支 / 469,118 幀 | ID+mask+bbox+keypoint |
   | 技能評估(ICO-OSCAR) | 170 支 | TimeSformer 82.5% |

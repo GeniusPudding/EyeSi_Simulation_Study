@@ -8,10 +8,10 @@
 
 ```
 ┌──────────────────────────────────────────────┐
-│ Layer B:撕裂傳播 = Indicator 描述式(docs 06)   │  決定撕痕往哪走
-│   + 拓樸改變 remeshing(docs 07)                │
+│ Layer B:撕裂傳播 = Indicator 描述式(ccc_method/1)   │  決定撕痕往哪走
+│   + 拓樸改變 remeshing(ccc_method/2)                │
 ├──────────────────────────────────────────────┤
-│ Layer A:囊膜變形 = mass-spring(docs 02)        │  掀起的膜瓣怎麼飄
+│ Layer A:囊膜變形 = mass-spring(engines/2)        │  掀起的膜瓣怎麼飄
 │   (只跑 Attached==False 的節點)                 │
 └──────────────────────────────────────────────┘
        共用同一份節點(Node)
@@ -67,8 +67,8 @@ Schill 發現 mass-spring、FEM、ChainMail、甚至 OpenGL 繪圖,底層都是*
 ```
 用 SOFA 搭場景圖
  ├─ MechanicalObject(節點) ← 囊膜網格
- ├─ MassSpringForceField     ← Layer A(docs 02)
- ├─ 自訂 TearComponent       ← Layer B Indicator(docs 06)
- ├─ 自訂 Remeshing           ← 拓樸改變(docs 07)
+ ├─ MassSpringForceField     ← Layer A(engines/2)
+ ├─ 自訂 TearComponent       ← Layer B Indicator(ccc_method/1)
+ ├─ 自訂 Remeshing           ← 拓樸改變(ccc_method/2)
  └─ OglModel(繪圖)+ 立體 + 陰影(深度線索)
 ```

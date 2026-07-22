@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CCC 撕囊 — Weber 2009 物理版:應變場驅動裂向(strain-field-driven tear)</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0c111c;color:#e6e9ef;
+    font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;user-select:none}
+  #c{display:block;cursor:crosshair}
+  #panel{position:absolute;top:12px;left:12px;width:372px;background:rgba(18,24,38,.94);
+    border:1px solid #2a3550;border-radius:10px;padding:13px 15px;font-size:13px;line-height:1.5}
+  #panel h1{font-size:14.5px;margin:0 0 2px}
+  #panel .sub{font-size:11.5px;color:#8fa0c4;margin:0 0 8px}
+  .hint{background:#1c2740;border:1px solid #34507a;border-radius:7px;padding:8px 10px;margin:8px 0}
+  .hint b{color:#ffd479}
+  .row{display:flex;gap:8px;margin:9px 0}
+  button{flex:1;padding:8px;border:0;border-radius:7px;cursor:pointer;font-weight:600;color:#fff;font-size:13px}
+  .bRst{background:#39456b}
+  .tool{background:#2b3550;border:1px solid #3a4a6b}
+  .tool.on{background:#1f9d57}
+  .ind{font-size:13.5px;font-weight:800;text-align:center;padding:7px;border-radius:8px;margin:6px 0}
+  .legend span{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:6px;vertical-align:middle}
+  .muted{color:#9aa6c0;font-size:11.5px}
+  .cnt{font-family:monospace;font-size:12.5px;margin-top:6px;line-height:1.7}.cnt b{color:#ffd479}
+  label.ck{display:inline-block;margin-top:6px;margin-right:12px;font-size:12px;color:#c4ccdd}
+  .params{background:#141b2b;border:1px solid #2a3550;border-radius:8px;padding:4px 10px 8px}
+  .params summary{cursor:pointer;font-size:12px;color:#9fb0d0;padding:4px 0;user-select:none}
+  .params label{display:block;font-size:11.5px;color:#c4ccdd;margin:7px 0 4px}
+  .params label b{color:#ffd479;font-family:monospace}
+  .params label small{color:#7f8aa3;font-size:10px;margin-left:6px}
+  .params input[type=range]{display:block;width:100%;accent-color:#6fd3ff;height:15px;margin:2px 0 0}
+  .bar{height:9px;border-radius:5px;margin:4px 0 2px;
+    background:linear-gradient(90deg,hsl(215,80%,52%),hsl(150,75%,48%),hsl(55,85%,55%),hsl(0,80%,55%))}
+  .barlbl{display:flex;justify-content:space-between;font-size:10.5px;color:#8fa0c4}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="panel">
+  <h1>Weber 2009 物理版:應變場驅動裂向</h1>
+  <p class="sub">底層 mass-spring;鑷子拉 → <b>整片瓣膜掀起</b>,且<b>只有持續往外拉更遠才裂一步、停手就停</b>(自限,近似 2009 斷裂準則);裂向 = <b>與你拉的方向垂直</b>(= 應變最小方向 = Rankine)。</p>
+  <div class="hint"><b>兩種器械分工</b>:<br>• <b style="color:#2ecc71">鑷子(F)</b>:移到某條裂痕的瓣膜上按住往外拉 → <b>整片掀起</b>;要裂縫前進就<b>持續往外拉更遠</b>,停手/不再拉更遠就<b>停</b>(只影響那一片)。<br>• <b style="color:#ffb454">針(N)</b>:圈圈<b>就是尖端</b>,方向鍵/游標<b>直接帶著切</b>,切到哪裂到哪(方向受應變場微彎);可在不同位置各切一條。<br>打開<b>應變場熱圖</b>:被拉扯處<b style="color:#ff8080">紅</b>、鬆弛處<b style="color:#7fb8ff">藍</b>。<br><b style="color:#7de6a6">鍵盤</b>:<b>方向鍵</b>移動(+Shift)/ <b>空白鍵</b>操作 / <b>T</b> 開切口 / <b style="color:#ffd479">C 沿裂痕乾淨切開(整片脫離、零遺留)</b> / <b>F/N</b> 器械 / <b>R</b> 重置 / <b>S/V</b> 開關。</div>
+  <div class="row">
+    <button class="tool on" id="tF" onclick="setTool('forceps')">鑷子 <span style="opacity:.6">(F)</span></button>
+    <button class="tool" id="tN" onclick="setTool('needle')">針 <span style="opacity:.6">(N)</span></button>
+  </div>
+  <div class="ind" id="ind">模式:—</div>
+  <div class="row"><button class="bRst" onclick="reset()">↺ 重置 <span style="opacity:.6">(R)</span></button></div>
+  <label class="ck"><input type="checkbox" id="strain" checked> 應變場熱圖</label>
+  <label class="ck"><input type="checkbox" id="vec" checked> 顯示向量</label>
+  <div style="margin-top:6px">
+    <div class="bar"></div>
+    <div class="barlbl"><span>鬆弛 / 壓縮(裂向偏好 →)</span><span>高拉伸</span></div>
+  </div>
+  <details class="params" style="margin-top:8px">
+    <summary>⚙ 參數調整(即時)</summary>
+    <label>拉力門檻 <b id="vref">46</b><input type="range" id="pref" min="20" max="100" value="46"><small>越大越要用力拉才開始撕</small></label>
+    <label>掀起力度 <b id="vfold">0.05</b><input type="range" id="pfold" min="1" max="15" value="5"><small>整片瓣膜跟器械走的強度(低=硬挺留原地、高=跟手掀起)</small></label>
+    <label>轉彎上限 <b id="vturn">0.16</b><input type="range" id="pturn" min="3" max="45" value="16"><small>裂縫每步最多轉多少 → 越小越平滑/越難急轉</small></label>
+    <label>自限黏度 <b id="vrise">0.015</b><input type="range" id="prise" min="0" max="60" value="15"><small>要「拉更遠」多少才前進 → 越大越黏</small></label>
+    <label>撕速上限 <b id="vstep">3.0</b><input type="range" id="pstep" min="10" max="55" value="30"><small>單步撕裂最長幾 px</small></label>
+    <label>剛度 k <b id="vstiff">0.50</b><input type="range" id="pstiff" min="1" max="100" value="50"><small>PBD 迭代強度:越高瓣膜越硬/越像剛體、越不會過度拉伸</small></label>
+  </details>
+  <div class="legend" style="margin-top:8px">
+    <div><b>Layer A</b> <span style="background:#56627a"></span>Attached(貼合晶體) <span style="background:#6fd3ff"></span>脫離瓣膜</div>
+    <div><b>Layer B</b> <span style="background:#ff5d5d"></span>拉力方向 <span style="background:#88aaff"></span>裂向</div>
+    <div><b>remesh</b> <span style="background:#ffd479"></span>flip <span style="background:#7CFC00"></span>split <span style="background:#ff9f43"></span>collapse</div>
+  </div>
+  <div class="cnt" id="cnt"></div>
+</div>
+
+<script>
+const cv=document.getElementById('c'), ctx=cv.getContext('2d');
+let W,H,CX,CY,Rdisk,Rguide,SP=26;
+let nodes,tris,severed,mode;
+let tears=[],activeTear=0;   // 多裂痕並存:每條 = {tip,prevTip,start,path,curr}
+function mkTear(x,y){return{tip:{x,y},prevTip:{x,y},start:{x,y},path:[{x,y}],curr:{x:1,y:0},lastTension:0,closed:false};}
+let gripping=false,mouseDown=false,prevGrip=false,mouse={x:0,y:0},lastMouse=null,tool='forceps';
+const keys=new Set();   // 目前按住的方向鍵/空白鍵(用於鍵盤操控器械)
+let flips=0,splits=0,collapses=0,flash=[];
+let curStretch=0,maxStretchDir={x:1,y:0},grabNode=-1;
+// ── 可調參數(頁面滑桿即時調整)──
+let P={ref:46, fold:0.05, turn:0.16, rising:0.015, stepMax:3.0, stiff:0.5};   // 掀起友善預設(fold=0.05 會掀起 + 中等剛度)
+//  ref=拉力門檻(要拉多遠才開始撕);fold=掀起力度(整片跟器械走);
+//  turn=裂縫每步轉角上限(越小越平滑/越難急轉);rising=自限黏度(要「拉更遠」多少才前進);stepMax=單步撕裂長度上限
+
+function resize(){W=cv.width=innerWidth;H=cv.height=innerHeight;CX=W*0.57;CY=H*0.52;Rdisk=Math.min(W,H)*0.42;Rguide=Rdisk*0.6;}
+addEventListener('resize',resize);resize();
+
+const key=(a,b)=>a<b?a+'_'+b:b+'_'+a;
+const orient=(a,b,c)=>(nodes[b].x-nodes[a].x)*(nodes[c].y-nodes[a].y)-(nodes[b].y-nodes[a].y)*(nodes[c].x-nodes[a].x);
+function inCircle(a,b,c,d){const ax=nodes[a].x-nodes[d].x,ay=nodes[a].y-nodes[d].y,bx=nodes[b].x-nodes[d].x,by=nodes[b].y-nodes[d].y,cx=nodes[c].x-nodes[d].x,cy=nodes[c].y-nodes[d].y;
+  const ab=ax*by-bx*ay,bc=bx*cy-cx*by,ca=cx*ay-ax*cy,al=ax*ax+ay*ay,bl=bx*bx+by*by,cl=cx*cx+cy*cy;return al*bc+bl*ca+cl*ab;}
+const dist=(a,b)=>Math.hypot(nodes[a].x-nodes[b].x,nodes[a].y-nodes[b].y);
+const restLen=(a,b)=>Math.hypot(nodes[a].rx-nodes[b].rx,nodes[a].ry-nodes[b].ry);
+const det=n=>n.det, freed=n=>n.det&&!n.dead;
+const vlen=v=>Math.hypot(v.x,v.y),vnorm=v=>{const l=vlen(v)||1;return{x:v.x/l,y:v.y/l};};
+function segCross(p1,p2,q1,q2){const s=(a,b,c)=>(b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x);
+  const d1=s(q1,q2,p1),d2=s(q1,q2,p2),d3=s(p1,p2,q1),d4=s(p1,p2,q2);
+  return((d1>0&&d2<0)||(d1<0&&d2>0))&&((d3>0&&d4<0)||(d3<0&&d4>0));}
+const signedAngle=(a,b)=>Math.atan2(a.x*b.y-a.y*b.x,a.x*b.x+a.y*b.y);
+const clampMag=(x,m)=>Math.max(-m,Math.min(m,x));
+function rotate(v,ang){const co=Math.cos(ang),si=Math.sin(ang);return{x:v.x*co-v.y*si,y:v.x*si+v.y*co};}
+function inPolyT(T,px,py){let c=false;const P=[T.start,...T.path,T.tip];
+  for(let i=0,j=P.length-1;i<P.length;j=i++){const xi=P[i].x,yi=P[i].y,xj=P[j].x,yj=P[j].y;
+    if(((yi>py)!==(yj>py))&&(px<(xj-xi)*(py-yi)/((yj-yi)||1e-9)+xi))c=!c;}return c;}
+function inAnyPoly(px,py){for(const T of tears)if(inPolyT(T,px,py))return true;return false;}
+// ── 整合原型的「真切割」:撕痕閉合成圈時,沿多邊形把網格節點加倍(verdoppeln)→ 中央乾淨脫離、零遺留 ──
+function ptInPoly(Pg,px,py){let c=false;for(let i=0,j=Pg.length-1;i<Pg.length;j=i++){const xi=Pg[i].x,yi=Pg[i].y,xj=Pg[j].x,yj=Pg[j].y;
+  if(((yi>py)!==(yj>py))&&(px<(xj-xi)*(py-yi)/((yj-yi)||1e-9)+xi))c=!c;}return c;}
+function dupNodeMain(i){const s=nodes[i];nodes.push({x:s.x,y:s.y,px:s.x,py:s.y,rx:s.rx,ry:s.ry,vx:0,vy:0,det:false,dead:false,tear:-1});return nodes.length-1;}
+function cutByPolygon(poly,idx){
+  if(!poly||poly.length<3)return;
+  for(const n of nodes){if(n.tear===idx&&!n.dead){n.det=false;n.tear=-1;}}          // 先清掉這條裂痕原本的脫離標記,改由多邊形重判
+  const inside=new Array(tris.length).fill(false);
+  for(let ti=0;ti<tris.length;ti++){const t=tris[ti];if(!t)continue;
+    const cx=(nodes[t[0]].x+nodes[t[1]].x+nodes[t[2]].x)/3,cy=(nodes[t[0]].y+nodes[t[1]].y+nodes[t[2]].y)/3;
+    inside[ti]=ptInPoly(poly,cx,cy);}
+  const inSet=new Set(),outSet=new Set();
+  for(let ti=0;ti<tris.length;ti++){const t=tris[ti];if(!t)continue;const S=inside[ti]?inSet:outSet;for(const k of t)S.add(k);}
+  const dupOf={};
+  for(const k of inSet)if(outSet.has(k))dupOf[k]=dupNodeMain(k);                     // 邊界節點加倍
+  for(let ti=0;ti<tris.length;ti++){const t=tris[ti];if(!t||!inside[ti])continue;tris[ti]=t.map(k=>dupOf[k]!==undefined?dupOf[k]:k);}  // 圈內三角形改用複製節點
+  for(let ti=0;ti<tris.length;ti++){if(!inside[ti])continue;const t=tris[ti];if(!t)continue;
+    for(const k of t){nodes[k].det=true;nodes[k].tear=idx;nodes[k].px=nodes[k].x;nodes[k].py=nodes[k].y;nodes[k].vx=0;nodes[k].vy=0;}}  // 圈內=脫離的整片
+  for(let ti=0;ti<tris.length;ti++){const t=tris[ti];if(!t)continue;const f0=freed(nodes[t[0]]),f1=freed(nodes[t[1]]),f2=freed(nodes[t[2]]);
+    if((f0||f1||f2)&&!(f0&&f1&&f2))tris[ti]=null;}                                   // 移除極少數殘留橋接三角形 → 零遺留
+  severed=new Set();                                                                 // 真切割完成 → 清掉舊的邊標記
+}
+
+function reset(){
+  flips=splits=collapses=0;flash=[];gripping=false;severed=new Set();mode='—';curStretch=0;
+  nodes=[];const map={};let j=0;
+  for(let y=CY-Rdisk;y<=CY+Rdisk;y+=SP,j++){let i=0;
+    for(let x=CX-Rdisk;x<=CX+Rdisk;x+=SP,i++){
+      if(Math.hypot(x-CX,y-CY)<=Rdisk){map[i+'_'+j]=nodes.length;
+        nodes.push({x,y,px:x,py:y,rx:x,ry:y,vx:0,vy:0,det:false,dead:false,tear:-1});}}}
+  tris=[];j=0;
+  for(let y=CY-Rdisk;y<=CY+Rdisk;y+=SP,j++){let i=0;
+    for(let x=CX-Rdisk;x<=CX+Rdisk;x+=SP,i++){
+      const a=map[i+'_'+j],b=map[(i+1)+'_'+j],c=map[i+'_'+(j+1)],d=map[(i+1)+'_'+(j+1)];
+      if(a!=null&&b!=null&&d!=null)tris.push([a,b,d]);if(a!=null&&d!=null&&c!=null)tris.push([a,d,c]);}}
+  tears=[mkTear(CX,CY-Rguide)];activeTear=0;seedFlap(CX,CY-Rguide);
+  mouse={x:CX+40,y:CY-Rguide};
+}
+// 在種子處戳出一小片初始瓣膜(像 cystotome 先開個小口)→ 之後才有東西可夾、可讀應變
+function seedFlap(x,y){for(const n of nodes){if(!n.dead&&Math.hypot(n.x-x,n.y-y)<SP*1.7){n.det=true;n.tear=activeTear;n.vx=0;n.vy=0;n.px=n.x;n.py=n.y;}}}
+function setTool(t){tool=t;document.getElementById('tF').classList.toggle('on',t==='forceps');
+  document.getElementById('tN').classList.toggle('on',t==='needle');}
+
+function edgeSevered(a,b){return severed.has(key(a,b));}
+function triActive(t){if(!t)return false;for(const k of t)if(nodes[k].dead)return false;
+  return !(edgeSevered(t[0],t[1])||edgeSevered(t[1],t[2])||edgeSevered(t[2],t[0]));}
+function third(t,a,b){for(const k of t)if(k!==a&&k!==b)return k;return -1;}
+function buildEdges(){const em=new Map();
+  for(let ti=0;ti<tris.length;ti++){if(!triActive(tris[ti]))continue;const t=tris[ti];
+    for(const[u,vv]of[[t[0],t[1]],[t[1],t[2]],[t[2],t[0]]]){const k=key(u,vv);
+      let e=em.get(k);if(!e){e={a:Math.min(u,vv),b:Math.max(u,vv),t:[]};em.set(k,e);}e.t.push(ti);}}return em;}
+function flipPass(em){const touched=new Set();
+  for(const e of em.values()){if(e.t.length!==2)continue;const[t1,t2]=e.t;if(touched.has(t1)||touched.has(t2))continue;
+    const a=e.a,b=e.b,c=third(tris[t1],a,b),d=third(tris[t2],a,b);if(c<0||d<0)continue;
+    if(edgeSevered(a,c)||edgeSevered(c,b)||edgeSevered(b,d)||edgeSevered(d,a))continue;
+    const oc=orient(a,b,c),od=orient(a,b,d);if(oc===0||od===0)continue;if((oc>0)===(od>0))continue;
+    let inc=inCircle(a,b,c,d);if(oc<0)inc=-inc;
+    if(inc>1e-6){tris[t1]=[a,c,d];tris[t2]=[b,c,d];touched.add(t1);touched.add(t2);flash.push({a:c,b:d,col:'#ffd479',life:14});flips++;}}}
+function splitPass(em){if(nodes.length>2400)return;let done=0;for(const e of em.values()){if(done>=1)break;const a=e.a,b=e.b;if(restLen(a,b)<1)continue;
+  if(dist(a,b)>2.1*restLen(a,b)){const m=nodes.length;const mx=(nodes[a].x+nodes[b].x)/2,my=(nodes[a].y+nodes[b].y)/2;
+    nodes.push({x:mx,y:my,px:mx,py:my,rx:(nodes[a].rx+nodes[b].rx)/2,ry:(nodes[a].ry+nodes[b].ry)/2,vx:0,vy:0,det:det(nodes[a])&&det(nodes[b]),dead:false,tear:nodes[a].tear>=0?nodes[a].tear:nodes[b].tear});
+    for(const ti of e.t.slice()){const t=tris[ti];if(!t)continue;const x=third(t,a,b);if(x<0)continue;tris[ti]=[a,m,x];tris.push([m,b,x]);}
+    flash.push({a,b:m,col:'#7CFC00',life:16});splits++;done++;}}}
+function collapsePass(em){let done=0;for(const e of em.values()){if(done>=1)break;if(e.t.length!==2)continue;const a=e.a,b=e.b;
+  if(!freed(nodes[a])||!freed(nodes[b]))continue;if(restLen(a,b)<1)continue;
+  if(dist(a,b)<0.35*restLen(a,b)){nodes[b].dead=true;
+    for(let ti=0;ti<tris.length;ti++){const t=tris[ti];if(!t)continue;if(t.includes(b)){const nt=t.map(k=>k===b?a:k);
+      if(nt[0]===nt[1]||nt[1]===nt[2]||nt[2]===nt[0])tris[ti]=null;else tris[ti]=nt;}}
+    flash.push({a,b,col:'#ff9f43',life:16});collapses++;done++;}}}
+
+// ── Weber 2009 §5.4.2:從 mass-spring 應變場抽出裂向 ──
+// 尖端鄰域組應變張量 S = Σ (l/l₀−1)·(ê⊗ê);最大主方向=最被拉伸方向,
+// 裂縫沿其「垂直方向」擴展(=應變最小方向;Rankine 準則的離散近似)。
+// 起始尚無脫離瓣膜可讀時回傳 dir=null → 由呼叫端退回「跟隨拉力方向」啟裂。
+function strainDirNearTip(T){
+  let Sxx=0,Sxy=0,Syy=0,cnt=0,maxS=0;const R=SP*2.2;   // maxS=尖端附近「峰值應變」→ 斷裂門檻用(平均會稀釋掉橋接彈簧)
+  const em=buildEdges();
+  for(const e of em.values()){const a=e.a,b=e.b;if(nodes[a].dead||nodes[b].dead)continue;
+    if(!freed(nodes[a])&&!freed(nodes[b]))continue;                 // 只讀脫離瓣膜(被拉扯的那片)
+    const mx=(nodes[a].x+nodes[b].x)/2,my=(nodes[a].y+nodes[b].y)/2;
+    if(Math.hypot(mx-T.tip.x,my-T.tip.y)>R)continue;
+    const rl=restLen(a,b);if(rl<1)continue;const dl=dist(a,b);if(dl<1e-3)continue;
+    const s=Math.max(-0.6,Math.min(1.5,dl/rl-1));   // clamp:單一爆走彈簧不得主導方向/顯示
+    if(s>maxS)maxS=s;
+    const ex=(nodes[b].x-nodes[a].x)/dl,ey=(nodes[b].y-nodes[a].y)/dl;
+    Sxx+=s*ex*ex;Sxy+=s*ex*ey;Syy+=s*ey*ey;cnt++;}
+  if(cnt<2)return{dir:null,stretch:0,stress:0,pdir:null};
+  Sxx/=cnt;Sxy/=cnt;Syy/=cnt;                            // 方向用平均張量(否則量級隨彈簧數放大)
+  const theta=0.5*Math.atan2(2*Sxy,Sxx-Syy);
+  const avg=(Sxx+Syy)/2,diff=Math.sqrt(((Sxx-Syy)/2)**2+Sxy*Sxy);
+  const lmax=avg+diff;
+  const pdir={x:Math.cos(theta),y:Math.sin(theta)};
+  if(lmax<0.002)return{dir:null,stretch:Math.max(0,lmax),stress:maxS,pdir};
+  const t1={x:-pdir.y,y:pdir.x},t2={x:pdir.y,y:-pdir.x};
+  const dir=(t1.x*T.curr.x+t1.y*T.curr.y)>=(t2.x*T.curr.x+t2.y*T.curr.y)?t1:t2;   // ⊥最大拉伸,取向前者
+  return{dir,stretch:Math.max(0,lmax),stress:maxS,pdir};
+}
+
+function physics(){
+  const em=buildEdges();
+  // 鑷子夾持點:每幀重選「離游標最近的作用中瓣膜節點」→ 你拖到哪就抓那附近的膜,才能持續帶動
+  grabNode=-1;
+  if(gripping&&tool==='forceps'&&tears[activeTear]){let gg=1e9;
+    for(let i=0;i<nodes.length;i++){if(!freed(nodes[i])||nodes[i].tear!==activeTear)continue;const d=Math.hypot(nodes[i].x-mouse.x,nodes[i].y-mouse.y);if(d<gg){gg=d;grabNode=i;}}
+    if(gg>SP*6)grabNode=-1;}
+  // ── Layer B:針=直控尖端;鑷子=拉扯驅動,但「只有持續拉更用力(張力上升)才裂一步、停手就停」(自限,近似 2009)──
+  if(gripping&&tears[activeTear]){
+    const T=tears[activeTear];
+    const advance=(dir,step,maxTurn)=>{
+      T.curr=rotate(T.curr,clampMag(signedAngle(T.curr,dir),maxTurn));   // 限制每步轉角 → 裂痕不亂彎
+      let nx=T.tip.x+T.curr.x*step,ny=T.tip.y+T.curr.y*step;
+      if(Math.hypot(nx-CX,ny-CY)<Rdisk-2){T.prevTip={x:T.tip.x,y:T.tip.y};T.tip={x:nx,y:ny};}
+      if(Math.hypot(T.tip.x-T.path[T.path.length-1].x,T.tip.y-T.path[T.path.length-1].y)>7)T.path.push({x:T.tip.x,y:T.tip.y});
+      const em0=buildEdges();
+      for(const e of em0.values()){if(segCross(T.prevTip,T.tip,nodes[e.a],nodes[e.b]))severed.add(key(e.a,e.b));}   // 沿裂痕開視覺切口
+      for(const n of nodes){if(!n.det&&!n.dead&&inAnyPoly(n.x,n.y)){n.det=true;n.tear=activeTear;n.px=n.x;n.py=n.y;}}   // 漸進脫離 → 邊撕邊掀起(按 C/閉合時再由 cutByPolygon 重判並乾淨切開)
+      if(!T.closed && T.path.length>10 && Math.hypot(T.tip.x-T.start.x,T.tip.y-T.start.y)<SP*1.8){   // 撕痕回到起點=閉合 → 真切割
+        cutByPolygon([...T.path,{x:T.tip.x,y:T.tip.y}], activeTear); T.closed=true;
+      }
+    };
+    if(tool==='needle'){
+      // 針:圈圈=尖端,直接帶著切(方向受應變場微彎);不需門檻,你到哪切到哪
+      const sd=strainDirNearTip(T);curStretch=sd.stress;if(sd.pdir)maxStretchDir=sd.pdir;
+      const toC={x:mouse.x-T.tip.x,y:mouse.y-T.tip.y};const d=vlen(toC);
+      if(d>2){
+        const cur=vnorm(toC);let dir=cur;
+        if(sd.dir){const s2={x:-sd.dir.x,y:-sd.dir.y};const sBest=(sd.dir.x*cur.x+sd.dir.y*cur.y)>=(s2.x*cur.x+s2.y*cur.y)?sd.dir:s2;dir=vnorm({x:cur.x*0.72+sBest.x*0.28,y:cur.y*0.72+sBest.y*0.28});mode='physical';}else mode='initiating';
+        if(!T.closed)advance(dir,Math.min(d,4),0.45);
+      } else mode='hold';
+    } else {
+      // 鑷子:裂縫「順著你拉/帶的方向」走(shearing:你往哪帶,裂縫往哪長),加轉角限制防急彎;自限:停手就停
+      const pull={x:mouse.x-T.tip.x,y:mouse.y-T.tip.y};const tension=vlen(pull)/P.ref;
+      const pd=vnorm(pull);maxStretchDir={x:-pd.y,y:pd.x};curStretch=Math.max(0,Math.min(1,tension-1));
+      const rising=tension>(T.lastTension||0)+P.rising;T.lastTension=tension;
+      if(tension>1.0&&!T.closed){
+        advance(pd,Math.min((tension-1)*4,P.stepMax),P.turn);mode='physical';   // 拉力>1 就撕(強撕、會掀起);裂向朝你拉的方向
+      } else mode=T.closed?'physical':'hold';   // 閉合後停止延伸,可拉整片
+    }
+  }
+
+  // ── Layer A:PBD(Verlet + 器械施力 + 彈簧鬆弛),施力只作用「作用中裂痕」的瓣膜 → 拉一片其他不動 ──
+  const damp=gripping?0.9:0.72;
+  for(const n of nodes){if(n.dead||!freed(n))continue;const vx=(n.x-n.px)*damp,vy=(n.y-n.py)*damp;n.px=n.x;n.py=n.y;n.x+=vx;n.y+=vy;}
+  if(gripping){
+    if(tool==='forceps'&&grabNode>=0){for(const n of nodes){if(!freed(n)||n.tear!==activeTear)continue;n.x+=(mouse.x-n.x)*P.fold;n.y+=(mouse.y-n.y)*P.fold;}}   // 只在真抓住那片時掀起 → 遠處的片不會被吸
+    else{for(const n of nodes){if(!freed(n)||n.tear!==activeTear)continue;const dx=n.x-mouse.x,dy=n.y-mouse.y,d=Math.hypot(dx,dy)||1;if(d<SP*2.8){const f=(1-d/(SP*2.8))*3.4;n.x+=dx/d*f;n.y+=dy/d*f;}}}
+  }
+  const gi=(gripping&&tool==='forceps'&&grabNode>=0&&!nodes[grabNode].dead)?grabNode:-1;
+  for(let it=0,IT=Math.max(1,Math.round(1+P.stiff*23));it<IT;it++){   // 迭代次數 = 剛度 k;越多越硬(越接近剛體)
+    if(gi>=0){nodes[gi].x=mouse.x;nodes[gi].y=mouse.y;}
+    for(const e of em.values()){const a=e.a,b=e.b;const fa=freed(nodes[a])&&a!==gi,fb=freed(nodes[b])&&b!==gi;if(!fa&&!fb)continue;
+      let dx=nodes[b].x-nodes[a].x,dy=nodes[b].y-nodes[a].y;const d=Math.hypot(dx,dy)||1;const diff=(d-restLen(a,b))/d;const cx=dx*diff,cy=dy*diff;
+      if(fa&&fb){nodes[a].x+=cx*0.5;nodes[a].y+=cy*0.5;nodes[b].x-=cx*0.5;nodes[b].y-=cy*0.5;}else if(fa){nodes[a].x+=cx;nodes[a].y+=cy;}else{nodes[b].x-=cx;nodes[b].y-=cy;}}
+  }
+  if(gi>=0){nodes[gi].x=mouse.x;nodes[gi].y=mouse.y;}
+  for(const n of nodes){if(freed(n)&&(!isFinite(n.x)||!isFinite(n.y))){n.x=n.rx;n.y=n.ry;n.px=n.x;n.py=n.y;}}
+  const emF=buildEdges();flipPass(emF);const em2=buildEdges();splitPass(em2);collapsePass(em2);
+  for(const f of flash)f.life--;flash=flash.filter(f=>f.life>0);
+}
+
+function strainCol(s,alpha){let t=(s+0.03)/0.42;t=Math.max(0,Math.min(1,t));const hue=215-215*t;return`hsla(${hue},${(72+18*t)|0}%,${(52+3*t)|0}%,${alpha})`;}
+function triStrain(t){let sum=0,n=0;for(const[a,b]of[[t[0],t[1]],[t[1],t[2]],[t[2],t[0]]]){const rl=restLen(a,b);if(rl<1)continue;sum+=dist(a,b)/rl-1;n++;}return n?sum/n:0;}
+
+function arrow(o,d,L,col,txt){const e={x:o.x+d.x*L,y:o.y+d.y*L};
+  ctx.strokeStyle=col;ctx.fillStyle=col;ctx.lineWidth=2.5;ctx.beginPath();ctx.moveTo(o.x,o.y);ctx.lineTo(e.x,e.y);ctx.stroke();
+  const a=Math.atan2(d.y,d.x);ctx.beginPath();ctx.moveTo(e.x,e.y);ctx.lineTo(e.x-9*Math.cos(a-0.4),e.y-9*Math.sin(a-0.4));ctx.lineTo(e.x-9*Math.cos(a+0.4),e.y-9*Math.sin(a+0.4));ctx.closePath();ctx.fill();
+  if(txt){ctx.font='11px sans-serif';ctx.fillText(txt,e.x+5,e.y-3);}}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  ctx.strokeStyle='#243049';ctx.lineWidth=2;ctx.beginPath();ctx.arc(CX,CY,Rdisk,0,7);ctx.stroke();
+  ctx.fillStyle='#7f8aa3';ctx.font='12px sans-serif';ctx.fillText('囊膜(mass-spring 三角網)',CX-70,CY-Rdisk-8);
+  ctx.setLineDash([5,5]);ctx.strokeStyle='rgba(136,147,168,.35)';ctx.lineWidth=1;ctx.beginPath();ctx.arc(CX,CY,Rguide,0,7);ctx.stroke();ctx.setLineDash([]);
+  ctx.fillStyle='#5b6478';ctx.beginPath();ctx.arc(CX,CY,3,0,7);ctx.fill();
+  const showStrain=document.getElementById('strain').checked;
+  // 面:應變場熱圖(2009 核心 — 你「看得到」演算法讀的東西;只有被拉的瓣膜會亮)
+  for(let ti=0;ti<tris.length;ti++){const t=tris[ti];if(!triActive(t))continue;
+    const isFlap=freed(nodes[t[0]])||freed(nodes[t[1]])||freed(nodes[t[2]]);
+    if(showStrain&&isFlap){const s=triStrain(t);ctx.fillStyle=strainCol(s,0.5);
+      ctx.beginPath();ctx.moveTo(nodes[t[0]].x,nodes[t[0]].y);ctx.lineTo(nodes[t[1]].x,nodes[t[1]].y);ctx.lineTo(nodes[t[2]].x,nodes[t[2]].y);ctx.closePath();ctx.fill();}
+    else if(!showStrain&&freed(nodes[t[0]])&&freed(nodes[t[1]])&&freed(nodes[t[2]])){ctx.fillStyle='rgba(111,211,255,.14)';
+      ctx.beginPath();ctx.moveTo(nodes[t[0]].x,nodes[t[0]].y);ctx.lineTo(nodes[t[1]].x,nodes[t[1]].y);ctx.lineTo(nodes[t[2]].x,nodes[t[2]].y);ctx.closePath();ctx.fill();}}
+  // 線
+  for(let ti=0;ti<tris.length;ti++){const t=tris[ti];if(!triActive(t))continue;
+    const fr=freed(nodes[t[0]])||freed(nodes[t[1]])||freed(nodes[t[2]]);
+    ctx.strokeStyle=fr?'rgba(230,236,245,.30)':'rgba(86,98,122,.4)';ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(nodes[t[0]].x,nodes[t[0]].y);ctx.lineTo(nodes[t[1]].x,nodes[t[1]].y);ctx.lineTo(nodes[t[2]].x,nodes[t[2]].y);ctx.closePath();ctx.stroke();}
+  for(const f of flash){if(nodes[f.a].dead||nodes[f.b].dead)continue;ctx.strokeStyle=f.col;ctx.lineWidth=3;ctx.globalAlpha=f.life/16;
+    ctx.beginPath();ctx.moveTo(nodes[f.a].x,nodes[f.a].y);ctx.lineTo(nodes[f.b].x,nodes[f.b].y);ctx.stroke();ctx.globalAlpha=1;}
+  for(const T of tears){ctx.strokeStyle='#ff6b6b';ctx.lineWidth=2.5;ctx.beginPath();ctx.moveTo(T.path[0].x,T.path[0].y);for(let i=1;i<T.path.length;i++)ctx.lineTo(T.path[i].x,T.path[i].y);ctx.lineTo(T.tip.x,T.tip.y);ctx.stroke();}
+  for(const n of nodes){if(n.dead)continue;ctx.fillStyle=freed(n)?'#6fd3ff':'#56627a';ctx.beginPath();ctx.arc(n.x,n.y,freed(n)?2.4:1.7,0,7);ctx.fill();}
+  const AT=tears[activeTear]||tears[0];
+  // 器械 ↔「夾持點」(器械抓住的瓣膜節點),不是連到尖端 → 清楚區分「施力點」與「裂縫前緣」
+  if(grabNode>=0&&!nodes[grabNode].dead&&tool==='forceps'){
+    ctx.strokeStyle='rgba(46,204,113,.6)';ctx.lineWidth=1.5;ctx.setLineDash([4,3]);
+    ctx.beginPath();ctx.moveTo(mouse.x,mouse.y);ctx.lineTo(nodes[grabNode].x,nodes[grabNode].y);ctx.stroke();ctx.setLineDash([]);
+    ctx.fillStyle='#2ecc71';ctx.beginPath();ctx.arc(nodes[grabNode].x,nodes[grabNode].y,4,0,7);ctx.fill();
+    ctx.fillStyle='#7de6a6';ctx.font='11px sans-serif';ctx.fillText('夾持點(施力)',nodes[grabNode].x+7,nodes[grabNode].y-6);
+  }
+  if(tool==='forceps'){ctx.strokeStyle=gripping?'#2ecc71':'#fff';ctx.lineWidth=2.5;ctx.beginPath();ctx.arc(mouse.x,mouse.y,9,0,7);ctx.stroke();
+    ctx.fillStyle=gripping?'#2ecc71':'#fff';ctx.fillText('鑷子',mouse.x+13,mouse.y-7);}
+  else{  // 針:畫在「作用中尖端」處(圈圈=尖端合一);虛線指向你要帶去的游標方向
+    if(Math.hypot(mouse.x-AT.tip.x,mouse.y-AT.tip.y)>8){ctx.strokeStyle='rgba(255,180,84,.35)';ctx.setLineDash([3,3]);ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(AT.tip.x,AT.tip.y);ctx.lineTo(mouse.x,mouse.y);ctx.stroke();ctx.setLineDash([]);
+      ctx.fillStyle='rgba(255,180,84,.5)';ctx.beginPath();ctx.arc(mouse.x,mouse.y,2.5,0,7);ctx.fill();}
+    ctx.strokeStyle=gripping?'#ffb454':'#fff';ctx.lineWidth=2.5;ctx.beginPath();ctx.moveTo(AT.tip.x-8,AT.tip.y-11);ctx.lineTo(AT.tip.x,AT.tip.y);ctx.lineTo(AT.tip.x+8,AT.tip.y-11);ctx.stroke();}
+  // 所有裂痕尖端:作用中的較亮較大,其餘較暗(讓你看到多條裂痕並存)
+  for(let i=0;i<tears.length;i++){const T=tears[i];const act=i===activeTear;
+    ctx.fillStyle=act?'#ffd479':'#9c7b30';ctx.beginPath();ctx.arc(T.tip.x,T.tip.y,act?5:3.5,0,7);ctx.fill();}
+  // 向量(只畫作用中裂痕):最大拉伸方向(紅,雙向) vs 裂向(藍,⊥最大拉伸)
+  if(document.getElementById('vec').checked&&AT){
+    if(curStretch>0.02){arrow(AT.tip,maxStretchDir,42,'#ff5d5d','最大拉伸');arrow(AT.tip,{x:-maxStretchDir.x,y:-maxStretchDir.y},42,'#ff5d5d','');}
+    arrow(AT.tip,AT.curr,52,'#88aaff','裂向');
+  }
+  if(AT){ctx.fillStyle='#ffd479';ctx.font='12px sans-serif';ctx.fillText('尖端 Risskeim',AT.tip.x+8,AT.tip.y+16);}
+}
+
+function loop(){
+  // 鍵盤操控器械:方向鍵移動、空白鍵按住=夾/拉
+  const spd=keys.has('shift')?12:6;let mvx=0,mvy=0;
+  if(keys.has('arrowleft'))mvx-=spd;if(keys.has('arrowright'))mvx+=spd;
+  if(keys.has('arrowup'))mvy-=spd;if(keys.has('arrowdown'))mvy+=spd;
+  if(mvx||mvy){lastMouse={x:mouse.x,y:mouse.y};mouse={x:Math.max(0,Math.min(W,mouse.x+mvx)),y:Math.max(0,Math.min(H,mouse.y+mvy))};}
+  gripping=mouseDown||keys.has('space');            // 滑鼠鍵 或 空白鍵 皆可夾
+  if(gripping&&!prevGrip){
+    if(tool==='needle'){newTearAt(mouse.x,mouse.y);}  // 針:點一下 = 在游標處開一個切口(裂痕種子 + 小瓣膜)
+    else{                                             // 鑷子:優先操作「游標下的那片瓣膜」;否則選最近的「未閉合」裂痕(繼續撕)
+      let gi=-1,gd=1e9;
+      for(let i=0;i<nodes.length;i++){if(!freed(nodes[i]))continue;const d=Math.hypot(nodes[i].x-mouse.x,nodes[i].y-mouse.y);if(d<gd){gd=d;gi=i;}}
+      if(gi>=0&&gd<SP*3.5&&nodes[gi].tear>=0){activeTear=nodes[gi].tear;}          // 抓到某片瓣膜 → 操作它那條(可能是已切下的片,用來拖走)
+      else{let bi=-1,bd=1e9;for(let i=0;i<tears.length;i++){if(tears[i].closed)continue;const d=Math.hypot(tears[i].tip.x-mouse.x,tears[i].tip.y-mouse.y);if(d<bd){bd=d;bi=i;}}
+        if(bi>=0)activeTear=bi;}                                                    // 附近沒瓣膜 → 最近「未閉合」裂痕;全閉合就維持現值(不誤選遠處舊片)
+      const T=tears[activeTear];if(T){T.prevTip={x:T.tip.x,y:T.tip.y};T.lastTension=0;}
+    }
+  }
+  prevGrip=gripping;
+  physics();draw();
+  const el=document.getElementById('ind');
+  const M={physical:[tool==='needle'?'針:尖端沿你帶的方向切,應變場讓它微彎':'鑷子:持續拉更遠 → 裂縫受控前進(沿應變最小方向)','#1f9d57'],
+           drift:['DRIFT fallback:尖端應力過高 → 描述式往周邊漂','#d9822b'],
+           initiating:['起始 — 繼續移動(針)/ 往外拉(鑷子)','#3a6fb0'],
+           hold:[tool==='needle'?'針:移動器械,帶著尖端切':'鑷子:膜被拉起中 — 要裂就「持續往外拉更遠」,停手就停','#3a6fb0'],
+           '—':['模式:—(方向鍵移動 / 空白鍵操作 / T 開切口)','#39456b']};
+  const m=M[mode]||M['—'];el.textContent=m[0];el.style.background=m[1];
+  let att=0,free=0;for(const n of nodes){if(n.dead)continue;freed(n)?free++:att++;}
+  document.getElementById('cnt').innerHTML=
+    `器械 <b>${tool==='forceps'?'鑷子(pull)':'針(push)'}</b>　尖端最大拉伸 <b>${(curStretch*100).toFixed(0)}%</b><br>`+
+    `Attached <b>${att}</b>　脫離 <b>${free}</b>　裂痕 <b>${tears.length}</b>(作用中 #${activeTear+1})　切斷邊 <b>${severed.size}</b><br>flip <b>${flips}</b>　split <b>${splits}</b>　collapse <b>${collapses}</b>`;
+  requestAnimationFrame(loop);
+}
+cv.addEventListener('mousemove',e=>{lastMouse={x:mouse.x,y:mouse.y};mouse={x:e.clientX,y:e.clientY};});
+cv.addEventListener('mousedown',e=>{if(e.button===0){mouseDown=true;mouse={x:e.clientX,y:e.clientY};lastMouse={x:mouse.x,y:mouse.y};}});
+function newTearAt(x,y){tears.push(mkTear(x,y));activeTear=tears.length-1;seedFlap(x,y);lastMouse={x,y};}   // 丟一個新裂痕種子 + 初始小瓣膜(可多個並存)
+cv.addEventListener('dblclick',e=>newTearAt(e.clientX,e.clientY));
+addEventListener('mouseup',()=>{mouseDown=false;});
+cv.addEventListener('mouseleave',()=>{mouseDown=false;});
+// 鍵盤:方向鍵移動器械、空白鍵夾/拉、其餘切換不必移開游標 → 操作中可無縫控制
+addEventListener('keydown',e=>{
+  const k=e.key.toLowerCase();
+  if(k===' '||k==='arrowup'||k==='arrowdown'||k==='arrowleft'||k==='arrowright'||k==='shift'){
+    keys.add(k===' '?'space':k);e.preventDefault();return;}
+  if(e.repeat)return;
+  if(k==='f'||k==='1')setTool('forceps');
+  else if(k==='n'||k==='2')setTool('needle');
+  else if(k==='r')reset();
+  else if(k==='s'){const c=document.getElementById('strain');c.checked=!c.checked;}
+  else if(k==='v'){const c=document.getElementById('vec');c.checked=!c.checked;}
+  else if(k==='t')newTearAt(mouse.x,mouse.y);
+  else if(k==='c'){const T=tears[activeTear];if(T&&T.path.length>=3){cutByPolygon([...T.path,{x:T.tip.x,y:T.tip.y}],activeTear);T.closed=true;}}  // C=沿當前裂痕路徑「乾淨切開」
+});
+addEventListener('keyup',e=>{const k=e.key.toLowerCase();keys.delete(k===' '?'space':k);});
+// 參數滑桿 → 即時更新 P
+function wireP(id,vid,key,scale,dec){const el=document.getElementById(id),lb=document.getElementById(vid);
+  el.addEventListener('input',()=>{P[key]=el.value*scale;lb.textContent=dec?P[key].toFixed(dec):P[key];});}
+wireP('pref','vref','ref',1,0);wireP('pfold','vfold','fold',0.01,2);wireP('pturn','vturn','turn',0.01,2);
+wireP('prise','vrise','rising',0.001,3);wireP('pstep','vstep','stepMax',0.1,1);wireP('pstiff','vstiff','stiff',0.01,2);
+reset();loop();
+</script>
+</body>
+</html>

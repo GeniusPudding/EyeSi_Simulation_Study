@@ -68,12 +68,26 @@
 - **物理理解端**:2006 為即時「放棄物理、改描述式」;2009–2021 的 FEM 斷裂研究則「不求即時、回頭把斷裂力學算清楚」——
   目的不同(訓練 vs 力學理解),且 2021 FEM 結論(剪/拉力主導、特定方向撕裂力最小)反過來**驗證了 2006 shearing/ripping 的直覺**。
 
+### 切割對策三方定位(即時 FEM 遇拓樸改變的三種答案)
+
+撕痕/切口前進 = 拓樸改變。即時 FEM 有三種工程答案:
+
+```
+  重網格(conforming)      免重網格(non-conforming)   增量修預條件子
+  Weber06 / Dequidt13      XFEM / CutFEM               Courtecuisse14
+  實際切開貼合裂縫          網格不動、裂縫穿元素        重網格但不重分解
+  ccc_method/2             ccc_method/5                reference/8 §1.6
+        └───────── 都在解「切了怎麼維持即時 + 隱式穩定」─────────┘
+```
+
+> Weber 的 **Delaunay 重網格** ↔ **XFEM/CutFEM 免重網格** ↔ Courtecuisse 的 **Sherman-Morrison 增量分解**,是同一問題三種答案。技術機制見 [`ccc_method/5 免重網格切割`](../ccc_method/5_meshfree_cutting.md)。
+
 ---
 
 ## 4. 這條線的一句話總結
 
 > **Schill (引擎) → Webster (CCC 概念) → Weber 2006 (解耦+描述式+Delaunay 三件套的成熟藍圖) → McCannel (臨床買單)**;
 > 之後即時端長出 **PBD**、裂縫端長出 **XFEM**、離線端長出 **FEM 斷裂力學**。
-> 本 repo 聚焦 2001–2006 的可即時實作藍圖(docs 01–08),本頁提供其上下游全景。
+> 本 repo 聚焦 2001–2006 的可即時實作藍圖(engines/ 與 ccc_method/ 主幹),本頁提供其上下游全景。
 
 → 相關:[`overview`](../overview.md)(脈絡)、[`engines/comparison`](../engines/5_comparison.md)(引擎對照)、[`ccc/tearing`](../ccc_method/1_tearing_descriptive.md)(撕裂)、[`ccc/remesh`](../ccc_method/2_topological_remesh.md)(remeshing)

@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cataract-1K vs Cataract-LMM — 兩個白內障手術影片資料集(一頁對照)</title>
+<style>
+  :root{--bg:#0c111c;--card:#141b2b;--card2:#171f31;--line:#2a3550;--txt:#e6e9ef;--mut:#93a1c0;
+    --y:#ffd479;--g:#2ecc71;--r:#ff6b6b;--b:#6fd3ff;--o:#ffb454;--p:#88aaff;}
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;line-height:1.6}
+  .wrap{max-width:1180px;margin:0 auto;padding:26px 22px 60px}
+  h1{font-size:26px;margin:0 0 4px}
+  h1 .yr{color:var(--y)}
+  .lead{color:var(--mut);font-size:14px;margin:0 0 22px;max-width:960px}
+  .lead b{color:var(--txt)}
+  .badge{display:inline-block;font-size:12px;padding:2px 9px;border-radius:20px;margin-left:8px;vertical-align:middle;font-weight:700}
+  .b1k{background:rgba(111,211,255,.16);color:#9fdcff;border:1px solid #35607a}
+  .bLmm{background:rgba(255,180,84,.16);color:#ffc98a;border:1px solid #7a5a2f}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:18px 20px}
+  .card h2{font-size:17px;margin:0 0 3px}
+  .card .tag{font-size:12px;color:var(--mut);margin:0 0 12px}
+  .card .tag b{color:var(--txt)}
+  .card .stat{display:flex;flex-wrap:wrap;gap:8px 18px;margin:10px 0 4px}
+  .card .stat div{font-size:12.5px;color:var(--mut)}
+  .card .stat b{display:block;font-size:19px;line-height:1.2}
+  .s1k b{color:#9fdcff}.sLmm b{color:#ffc98a}
+  .arrowrow{display:flex;align-items:center;justify-content:center;gap:14px;margin:26px 0 22px}
+  .arrowrow .big{font-size:30px;color:var(--y)}
+  .arrowrow .lbl{font-size:13px;color:var(--mut);max-width:320px}
+  section{margin-top:34px}
+  section > h3{font-size:16px;margin:0 0 12px;padding-left:10px;border-left:3px solid var(--y)}
+  section > .sub{font-size:13px;color:var(--mut);margin:-6px 0 14px}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;overflow:hidden;border-radius:11px;border:1px solid var(--line)}
+  th,td{padding:9px 13px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#1a2338;font-size:12.5px;letter-spacing:.3px}
+  th.c1k{color:#9fdcff}th.cLmm{color:#ffc98a}
+  tr:last-child td{border-bottom:0}
+  td:first-child{color:var(--mut);width:150px;white-space:nowrap}
+  td.v1k{color:#c2e4f5}td.vLmm{color:#f2ddba}
+  tbody tr:nth-child(even){background:rgba(255,255,255,.017)}
+  .win{font-weight:700}.win1k{color:#9fdcff}.winLmm{color:#ffc98a}.wintie{color:var(--g)}
+  .pill{display:inline-block;font-size:11px;padding:1px 8px;border-radius:20px;font-weight:700;margin-left:6px}
+  .pSame{background:rgba(46,204,113,.18);color:#7de6a6}
+  .pChg{background:rgba(255,212,121,.2);color:var(--y)}
+  .p1k{background:rgba(111,211,255,.18);color:#9fdcff}
+  .pLmm{background:rgba(255,180,84,.2);color:#ffc98a}
+  .insight{background:linear-gradient(135deg,rgba(111,211,255,.1),rgba(255,180,84,.08));border:1px solid #35607a;border-radius:12px;padding:16px 20px}
+  .insight h3{border:0;margin:0 0 8px;padding:0;color:var(--b)}
+  .insight p{margin:6px 0;font-size:14px}
+  .insight b{color:var(--y)}
+  .crit{background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:16px 20px}
+  .crit p{font-size:13.5px}
+  .crit .h{color:var(--b);font-weight:700;margin:0 0 6px}
+  .links{display:flex;gap:12px;flex-wrap:wrap;margin-top:14px}
+  .links a{flex:1;min-width:230px;text-decoration:none;background:var(--card);border:1px solid var(--line);border-radius:11px;padding:14px 16px;color:var(--txt);transition:.15s}
+  .links a:hover{border-color:#3f6fb0;background:#18213a}
+  .links a .t{font-weight:700;font-size:14px}
+  .links a .d{font-size:12px;color:var(--mut);margin-top:3px}
+  .links a .ar{color:var(--y)}
+  .foot{color:var(--mut);font-size:12px;margin-top:30px;border-top:1px solid var(--line);padding-top:12px}
+  code{background:#1c2740;padding:1px 6px;border-radius:5px;font-size:12px;color:#cdd6ea}
+  .note{font-size:12px;color:var(--mut);margin-top:8px}
+  @media(max-width:760px){.grid2{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>兩個白內障手術影片資料集:<span class="yr">Cataract-1K vs Cataract-LMM</span></h1>
+  <p class="lead">同一個領域(白內障手術影片 AI 分析),<b>兩個各自獨立收案的資料集</b>——不是衍生關係。<b>Cataract-1K</b>(奧地利、單中心、2024)小而全,獨有「術後異常偵測」;<b>Cataract-LMM</b>(德黑蘭、多中心、2026)大規模,獨有「物件追蹤 + 技能評估 + 跨中心 domain shift」。論文原文裡 LMM 把 1K 當比較基準引用。這頁把<b>資料集差異</b>、<b>可正面對照的共通模型</b>、以及<b>各自獨有的演算法</b>整理清楚。</p>
+
+  <!-- 兩張並排卡 -->
+  <div class="grid2">
+    <div class="card">
+      <h2>Cataract-1K <span class="badge b1k">單中心 · 小而全</span></h2>
+      <p class="tag">Ghamsarian, El-Shabrawi, Nasirihaghighi et al. · <b>Scientific Data 11:373 (2024)</b></p>
+      <div class="stat s1k">
+        <div><b>1,000</b>支影片</div>
+        <div><b>1</b>中心(奧地利 Klagenfurt)</div>
+        <div><b>2,256</b>幀分割 / 30 支</div>
+      </div>
+      <p class="tag" style="margin-top:12px">三支柱:<b style="color:#9fdcff">場景分割 · 階段辨識 · 異常偵測</b>。獨有「術後異常」(瞳孔反應、IOL 旋轉)。授權 <b style="color:#9fdcff">CC BY(可商用)</b> / Synapse。1920×1080 @25fps,2021–2023。</p>
+    </div>
+
+    <div class="card">
+      <h2>Cataract-LMM <span class="badge bLmm">多中心 · 大規模</span></h2>
+      <p class="tag">Ahmadi (M.J.) et al. · <b>Scientific Data (2026)</b> · "Large-scale Multi-source Multi-task"</p>
+      <div class="stat sLmm">
+        <div><b>3,000</b>支影片</div>
+        <div><b>2</b>中心(德黑蘭 Farabi+Noor)</div>
+        <div><b>1,134</b>小時 / 772 GB</div>
+      </div>
+      <p class="tag" style="margin-top:12px">四任務:<b style="color:#ffc98a">階段辨識 · 器械實例分割 · 物件追蹤 · 技能評估</b>。獨有追蹤(469K 幀)+ ICO-OSCAR 技能 + <b style="color:#ffc98a">跨中心 domain shift</b>。授權 <b style="color:#ffc98a">CC BY-NC-ND(非商用禁改作)</b> / HF <code>mjahmadi/Cataract-LMM</code>。</p>
+    </div>
+  </div>
+
+  <div class="arrowrow">
+    <div class="lbl" style="text-align:right">單中心 · 涵蓋「異常偵測」<br><span style="color:#9fdcff">「一家醫院,做深、做全」</span></div>
+    <div class="big">⟷</div>
+    <div class="lbl">多中心 · 涵蓋「追蹤 + 技能 + 泛化」<br><span style="color:#ffc98a">「多家醫院,做大、測泛化」</span></div>
+  </div>
+
+  <!-- 資料集規格 -->
+  <section>
+    <h3>一、資料集規格差異(論文原文對照)</h3>
+    <table>
+      <thead><tr><th>面向</th><th class="c1k">Cataract-1K(2024)</th><th class="cLmm">Cataract-LMM(2026)</th></tr></thead>
+      <tbody>
+        <tr><td>第一作者 / 團隊</td><td class="v1k">Ghamsarian et al.(Klagenfurt)</td><td class="vLmm">M. J. Ahmadi et al.(Tehran)</td></tr>
+        <tr><td>發表 / 識別碼</td><td class="v1k">Sci Data 11:373 · arXiv 2312.06295 · DOI 10.1038/s41597-024-03193-4</td><td class="vLmm">Sci Data 2026 · arXiv 2510.16371 · DOI 10.1038/s41597-026-07464-0</td></tr>
+        <tr><td>收案中心</td><td class="v1k"><b>單中心</b>(奧地利 Klinikum Klagenfurt 眼科)</td><td class="vLmm"><b>多中心</b>(Farabi 2,930 + Noor 70)</td></tr>
+        <tr><td>影片規模</td><td class="v1k">1,000 支(標題 "1K")</td><td class="vLmm">3,000 支 / 1,134 小時 / 772 GB</td></tr>
+        <tr><td>階段辨識標註</td><td class="v1k">有(phase recognition)</td><td class="vLmm">11 階段 / 150 支</td></tr>
+        <tr><td>分割標註</td><td class="v1k">2,256 幀 / 30 支 · <b>語意分割</b>(場景/解剖)</td><td class="vLmm">6,094 幀 / 150 支 · <b>器械實例分割</b>(12 類,COCO+YOLO)</td></tr>
+        <tr><td>獨有任務</td><td class="v1k"><b style="color:#9fdcff">術後異常偵測</b>(瞳孔反應、IOL 旋轉)</td><td class="vLmm"><b style="color:#ffc98a">物件追蹤</b>(170 支/469K 幀)+ <b style="color:#ffc98a">技能評估</b>(ICO-OSCAR)</td></tr>
+        <tr><td>關鍵發現</td><td class="v1k">首個支援場景分割+階段+異常的大型資料集</td><td class="vLmm"><b style="color:#ffc98a">跨中心追蹤/分割明顯掉分 = domain shift</b></td></tr>
+        <tr><td>授權 / 託管</td><td class="v1k"><b>CC BY</b>(可商用)· Synapse · <code>Negin-Ghamsarian/Cataract-1K</code></td><td class="vLmm"><b>CC BY-NC-ND 4.0</b>(非商用禁改作)· HF <code>mjahmadi/Cataract-LMM</code></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 共通可比較模型 -->
+  <section>
+    <h3>二、可正面對照的共通模型 / 演算法</h3>
+    <p class="sub">兩篇都做「階段辨識」與「分割」,所以這兩條線可以 head-to-head。真正 apples-to-apples 的是 <b style="color:var(--y)">CNN + 遞迴層(ResNet-50 骨幹)做階段辨識</b>——兩篇都跑了同一族。</p>
+
+    <div class="grid2" style="margin-bottom:16px">
+      <div class="card">
+        <h2 style="font-size:15px">① 階段辨識:CNN + Recurrent(共通基線)<span class="pill pSame">兩篇都有</span></h2>
+        <p class="tag" style="margin-top:8px"><b style="color:#9fdcff">1K</b>:VGG16 / ResNet50 骨幹 + {LSTM, GRU, BiLSTM, BiGRU}。發現:<b>雙向遞迴一致提升</b> acc/F1;ResNet50 略勝 VGG16。</p>
+        <p class="tag"><b style="color:#ffc98a">LMM</b>:同族 CNN+GRU / CNN+LSTM(ResNet-50 與 EfficientNet-B5 骨幹)。CNN+GRU(ResNet-50)≈ <b>69.7% F1</b>(in-domain)/ 42.8%(out-of-domain)。</p>
+        <p class="note">→ 同一演算法家族在兩個資料集上都被基準化,是唯一能真正對比「難度/泛化」的公分母。</p>
+      </div>
+      <div class="card">
+        <h2 style="font-size:15px">② 分割:ResNet-50 骨幹<span class="pill pChg">同骨幹,不同任務式</span></h2>
+        <p class="tag" style="margin-top:8px"><b style="color:#9fdcff">1K</b>:<b>語意分割</b>(逐像素分類)。12 種架構,DeepPyramid(VGG16)最佳;含 DeepLabV3+ / UPerNet(ResNet-50)、UNet++、CE-Net、CPFNet…。指標 Dice / IoU。</p>
+        <p class="tag"><b style="color:#ffc98a">LMM</b>:<b>實例分割</b>(逐物件遮罩)。YOLOv11-L 73.9 mAP 最佳 > YOLOv8-L 73.8 > SAM 56.0(zero-shot)> Mask R-CNN(R50)53.7。指標 mAP。</p>
+        <p class="note">→ 共通點是 <b>ResNet-50 骨幹 + Mask R-CNN/DeepLab 家族</b>;但 1K 是語意分割、LMM 是實例分割,<b style="color:var(--o)">指標(Dice vs mAP)不可直接對比</b>。</p>
+      </div>
+    </div>
+
+    <p class="sub" style="margin-top:0">③ 共通評估慣例:兩篇階段辨識都用 <b>Accuracy / F1</b>;分割則因任務式不同而指標不同(語意=Dice/IoU、實例=mAP)。</p>
+  </section>
+
+  <!-- 各自獨有 -->
+  <section>
+    <h3>三、各自獨有的模型 / 演算法(差異所在)</h3>
+    <p class="sub">LMM 比 1K 多了整批「現代影片模型 + 基礎模型 + 追蹤 + 技能」,而且是唯一做<b style="color:var(--o)">跨中心(in-domain vs out-of-domain)</b>評估的——這是最大的方法學差異。</p>
+    <table>
+      <thead><tr><th style="width:170px">模型 / 演算法類別</th><th class="c1k">Cataract-1K</th><th class="cLmm">Cataract-LMM</th></tr></thead>
+      <tbody>
+        <tr><td>影片 Transformer(clip)</td><td class="v1k">無</td><td class="vLmm"><b>MViT-B</b>(85.7% acc / 77.1 F1)、Swin-T、SlowFast-R50、X3D、R3D-18、MC3-18、R(2+1)D-18 <span class="pill pLmm">獨有</span></td></tr>
+        <tr><td>影片級時序分割</td><td class="v1k">無</td><td class="vLmm"><b>ASFormer(DINO)79.98 F1</b>(最佳)、MS-TCN / TeCNO(DINO/CLIP/ResNet50 特徵) <span class="pill pLmm">獨有</span></td></tr>
+        <tr><td>基礎模型(foundation)</td><td class="v1k">無</td><td class="vLmm"><b>SAM / SAM2</b>(zero-shot 分割)、DINO / CLIP(特徵抽取) <span class="pill pLmm">獨有</span></td></tr>
+        <tr><td>實例分割 / 偵測</td><td class="v1k">無(僅語意分割)</td><td class="vLmm">YOLOv8-L / YOLOv11-L、Mask R-CNN <span class="pill pLmm">獨有</span></td></tr>
+        <tr><td>物件追蹤</td><td class="v1k">無</td><td class="vLmm">ByteTrack / MOTR / CoTracker;管線 HOTA 90.2 / AssA 98.4 / DetA 82.7 <span class="pill pLmm">獨有</span></td></tr>
+        <tr><td>技能評估</td><td class="v1k">無</td><td class="vLmm"><b>TimeSformer 83.9 F1</b>、R3D-18 83.6、SlowFast 81.8、X3D-M 81.3(ICO-OSCAR 二分類) <span class="pill pLmm">獨有</span></td></tr>
+        <tr><td>術後異常偵測</td><td class="v1k"><b>有</b>(瞳孔反應、IOL 旋轉;分析式,未基準化深度模型) <span class="pill p1k">獨有</span></td><td class="vLmm">無</td></tr>
+        <tr><td>跨中心 / 泛化評估</td><td class="v1k">無(單中心無法測)</td><td class="vLmm"><b style="color:var(--o)">in-domain vs out-of-domain 全面對照</b>(如 MViT-B F1 77.1→57.6) <span class="pill pLmm">獨有</span></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- LMM 內部最佳成績 -->
+  <section>
+    <h3>四、LMM 各任務最佳基線(供選型參考)</h3>
+    <table>
+      <thead><tr><th style="width:180px">任務</th><th class="cLmm">最佳模型</th><th>成績(in-domain)</th><th>跨中心(out-of-domain)</th></tr></thead>
+      <tbody>
+        <tr><td>階段辨識(clip)</td><td class="vLmm">MViT-B</td><td>85.7% acc / 77.1 F1</td><td>57.6 F1(<span style="color:var(--r)">−19.5</span>)</td></tr>
+        <tr><td>階段辨識(video 級)</td><td class="vLmm">ASFormer(DINO 特徵)</td><td>79.98 F1</td><td>67.87 F1(<span style="color:var(--g)">最抗掉分</span>)</td></tr>
+        <tr><td>器械實例分割</td><td class="vLmm">YOLOv11-L</td><td>73.9 mAP(12 類)</td><td>跨中心明顯掉分(domain shift)</td></tr>
+        <tr><td>技能評估</td><td class="vLmm">TimeSformer</td><td>83.9 F1</td><td>—</td></tr>
+      </tbody>
+    </table>
+    <p class="note">觀察:<b>video 級時序模型(ASFormer)最抗跨中心掉分</b>——clip 級的 MViT/Swin in-domain 漂亮,但換醫院掉最兇。這正是 1K(單中心)量不到的訊號,也是 LMM 對 AI 落地最有價值的貢獻。</p>
+  </section>
+
+  <!-- 核心洞見 -->
+  <section>
+    <div class="insight">
+      <h3>核心洞見:互補,不是取代</h3>
+      <p>· <b style="color:#9fdcff">要做「術後異常」(瞳孔反應/IOL 旋轉)、或需要可商用授權</b> → 用 <b>Cataract-1K</b>(CC BY,獨有 irregularity)。</p>
+      <p>· <b style="color:#ffc98a">要做撕痕追蹤、技能評估、或驗證跨中心泛化</b> → 用 <b>Cataract-LMM</b>(多中心,獨有 tracking/skill/OOD)。</p>
+      <p>· <b style="color:#9fdcff">分割 / 理想圓</b> → 兩者皆可,但注意 1K 是語意分割、LMM 是實例分割,標註格式與指標不同。</p>
+      <p style="color:var(--mut);font-size:13px"><b style="color:var(--y)">對 SurgeryOCR 的接法</b>:唯一能 head-to-head 的公分母是 <b>CNN+Recurrent(ResNet-50)階段辨識</b>——可先在兩個資料集上各跑一次,量「OCR 螢幕數值訊號」加進去能不能同時提升 in-domain 與跨中心 F1。跨中心那一欄(只有 LMM 有)正好回應 AI meta-analysis 指出的「多為單中心、泛化受限」缺口。</p>
+      <div class="links">
+        <a href="reference/6_modern_ai_ccc.md"><div class="t">▶ 現代 AI 撕囊分析(2023–2026)</div><div class="d">三篇關鍵論文 + 1K/LMM + SurgeryOCR 缺口 <span class="ar">→</span></div></a>
+        <a href="https://github.com/MJAHMADEE/Cataract-LMM"><div class="t">▶ Cataract-LMM(GitHub / HF)</div><div class="d">arXiv 2510.16371 · mjahmadi/Cataract-LMM <span class="ar">→</span></div></a>
+        <a href="https://www.nature.com/articles/s41597-024-03193-4"><div class="t">▶ Cataract-1K(Scientific Data 2024)</div><div class="d">arXiv 2312.06295 · Ghamsarian et al. <span class="ar">→</span></div></a>
+      </div>
+    </div>
+  </section>
+
+  <p class="foot">來源:Cataract-1K — Ghamsarian, El-Shabrawi, Nasirihaghighi et al., <i>Scientific Data</i> 11:373 (2024),arXiv 2312.06295,DOI 10.1038/s41597-024-03193-4。Cataract-LMM — M. J. Ahmadi et al., <i>Scientific Data</i> (2026),arXiv 2510.16371,DOI 10.1038/s41597-026-07464-0,HF <code>mjahmadi/Cataract-LMM</code>。模型成績取自兩篇技術驗證章節與 LMM 基準表(clip/video 級階段辨識、實例分割、技能評估)。詳見 <code>docs/reference/6_modern_ai_ccc.md</code>。</p>
+</div>
+</body>
+</html>

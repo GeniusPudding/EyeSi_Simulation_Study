@@ -1,5 +1,7 @@
 # FEM / Mass-Spring / ECM:核心差異 + 真實度對照
 
+> 用途:**選哪個變形引擎**(三選一取捨)。FEM 為何即時用不了、又怎麼用 GPU/TLED 救回即時 → 見 [`6_realtime_fem_pillars.md`](6_realtime_fem_pillars.md)。
+
 ## 核心差異總表
 
 | 面向 | **FEM** | **Mass-Spring** | **Enhanced ChainMail (ECM)** |
@@ -24,7 +26,7 @@
 即時可用:  mass-spring ≈ ECM  >>  FEM
 ```
 
-- **FEM**:物理最真,但即時用不了;適合離線規劃。
+- **FEM**:物理最真,但即時用不了;適合離線規劃(GPU/TLED 可救回即時,見 [`6`](6_realtime_fem_pillars.md))。
 - **Mass-Spring**:真實度中等,即時可行;但有穩定性/網格各向異性問題。
 - **ECM**:幾何近似(非真實物理量),但**視覺合理 + 穩定 + 可非均質 + 即時**;3D 穩定性勝 mass-spring。
 
@@ -44,4 +46,4 @@ mass-spring(簡單、夠用;CCC 囊膜 Layer A 採此)
 
 - **Layer A 囊膜變形**:Weber 2006 採 **mass-spring**(囊膜是「次要」,只需看起來會飄)。
 - **若要模玻璃體(vitreous)等 3D 體積**:ECM 穩定性更佳(Schill 的規劃)。
-- **撕裂本身**:三者都不直接處理拓樸改變 → 需獨立的撕裂 + remeshing(見 docs 06/07)。
+- **撕裂本身**:三者都不直接處理拓樸改變 → 需獨立的撕裂 + remeshing(見 [`ccc_method/1 描述式撕裂`](../ccc_method/1_tearing_descriptive.md) + 2 remesh)。

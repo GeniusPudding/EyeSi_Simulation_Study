@@ -1,0 +1,937 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docs Viewer</title>
+<style>
+  :root {
+    --bg: #ffffff; --bg-alt: #f6f7f9; --bg-side: #f0f2f5; --fg: #1c2128;
+    --fg-dim: #57606a; --border: #d0d7de; --accent: #0969da; --accent-soft: #ddf4ff;
+    --code-bg: #f6f8fa; --code-fg: #24292f; --hl: #fff3cd; --sel: #cfe8ff;
+    --danger: #cf222e; --ok: #1a7f37;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --bg-alt: #161b22; --bg-side: #10151c; --fg: #e6edf3;
+      --fg-dim: #8b949e; --border: #30363d; --accent: #58a6ff; --accent-soft: #163356;
+      --code-bg: #161b22; --code-fg: #e6edf3; --hl: #4a3c00; --sel: #1f4a73;
+      --danger: #f85149; --ok: #3fb950;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #ffffff; --bg-alt: #f6f7f9; --bg-side: #f0f2f5; --fg: #1c2128;
+    --fg-dim: #57606a; --border: #d0d7de; --accent: #0969da; --accent-soft: #ddf4ff;
+    --code-bg: #f6f8fa; --code-fg: #24292f; --hl: #fff3cd; --sel: #cfe8ff;
+    --danger: #cf222e; --ok: #1a7f37;
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1117; --bg-alt: #161b22; --bg-side: #10151c; --fg: #e6edf3;
+    --fg-dim: #8b949e; --border: #30363d; --accent: #58a6ff; --accent-soft: #163356;
+    --code-bg: #161b22; --code-fg: #e6edf3; --hl: #4a3c00; --sel: #1f4a73;
+    --danger: #f85149; --ok: #3fb950;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", "Microsoft JhengHei", "PingFang TC", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--fg); background: var(--bg); display: flex; flex-direction: column;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* top bar */
+  header {
+    display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+    border-bottom: 1px solid var(--border); background: var(--bg-alt); flex: 0 0 auto;
+  }
+  header .brand { font-weight: 700; font-size: 14px; white-space: nowrap; }
+  header .brand small { color: var(--fg-dim); font-weight: 400; margin-left: 4px; }
+  header .spacer { flex: 1; }
+  header input[type="search"] {
+    width: 320px; max-width: 40vw; padding: 6px 10px; border: 1px solid var(--border);
+    border-radius: 6px; background: var(--bg); color: var(--fg); font-size: 13px;
+  }
+  header button {
+    padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); color: var(--fg); font-size: 13px; cursor: pointer;
+    white-space: nowrap;
+  }
+  header button:hover { background: var(--bg-side); }
+  header button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  header button.primary:hover { filter: brightness(1.08); }
+  header button:disabled { opacity: .45; cursor: default; }
+  #saveState { font-size: 12px; color: var(--fg-dim); min-width: 74px; }
+  #liveStatus { font-size: 12px; color: var(--fg-dim); white-space: nowrap; }
+  /* disk-vs-editor conflict banner */
+  #conflict {
+    display: none; position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    z-index: 50; align-items: center; gap: 10px; padding: 10px 14px; font-size: 13px;
+    background: var(--bg-alt); color: var(--fg); border: 1px solid var(--danger);
+    border-radius: 8px; box-shadow: 0 4px 18px rgba(0,0,0,.3);
+  }
+  #conflict button {
+    padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); color: var(--fg); font-size: 12px; cursor: pointer;
+  }
+  #conflict button:hover { background: var(--bg-side); }
+  /* layout */
+  main { flex: 1; display: flex; min-height: 0; }
+  #sidebar {
+    width: 320px; flex: 0 0 auto; border-right: 1px solid var(--border);
+    background: var(--bg-side); overflow-y: auto; padding: 8px 4px 40px; font-size: 13px;
+  }
+  #sidebar .grp-title {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--fg-dim); padding: 8px 10px 4px; font-weight: 700;
+  }
+  .node { user-select: none; }
+  .row {
+    display: flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 5px;
+    cursor: pointer; line-height: 1.5; white-space: nowrap;
+  }
+  .row:hover { background: var(--bg-alt); }
+  .row.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .row .tw { width: 14px; text-align: center; color: var(--fg-dim); flex: 0 0 auto; }
+  .row .ic { width: 16px; text-align: center; flex: 0 0 auto; }
+  .row .nm { overflow: hidden; text-overflow: ellipsis; }
+  .children { margin-left: 12px; border-left: 1px dashed var(--border); }
+  .children.collapsed { display: none; }
+  .asset .nm { color: var(--fg-dim); }
+  .asset.htmlfile .nm { color: inherit; }   /* HTML reports are first-class reading */
+  /* search results */
+  #results { padding: 4px; }
+  .hit { padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+  .hit:hover { background: var(--bg-alt); }
+  .hit .hp { font-weight: 600; font-size: 12px; }
+  .hit .hs { font-size: 12px; color: var(--fg-dim); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hit mark, mark { background: var(--hl); color: inherit; padding: 0 1px; border-radius: 2px; }
+  .muted { color: var(--fg-dim); padding: 10px; font-size: 12px; }
+  /* content */
+  #content { flex: 1; overflow: auto; min-width: 0; position: relative; }
+  /* embedded asset (pdf / html demo / image) view */
+  .assetview { position: absolute; inset: 0; display: flex; flex-direction: column; }
+  .assetbar {
+    display: flex; align-items: center; gap: 12px; padding: 8px 16px;
+    border-bottom: 1px solid var(--border); background: var(--bg-alt); font-size: 13px; flex: 0 0 auto;
+  }
+  .assetbar .ap { color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .assetbar .newtab { margin-left: auto; color: var(--accent); text-decoration: none; white-space: nowrap; }
+  .assetbar .newtab:hover { text-decoration: underline; }
+  .assetframe { flex: 1; width: 100%; border: none; background: #fff; }
+  .imgwrap { flex: 1; overflow: auto; display: flex; align-items: flex-start; justify-content: center; padding: 20px; }
+  .imgwrap img { max-width: 100%; height: auto; }
+  /* PDF.js canvas rendering */
+  .pdfscroll { flex: 1; overflow: auto; background: var(--bg-alt); padding: 16px 0 40px; text-align: center; }
+  .pdfpage { display: block; margin: 0 auto 14px; box-shadow: 0 1px 8px rgba(0,0,0,.28); background: #fff; max-width: 96%; }
+  .pdfmsg { padding: 40px 20px; color: var(--fg-dim); font-size: 14px; }
+  .pdfmsg a { color: var(--accent); }
+  #editWrap { display: none; height: 100%; }
+  #editWrap.on { display: flex; }
+  #content.editing #view { display: none; }
+  #editor {
+    flex: 1; border: none; outline: none; resize: none; padding: 20px 24px;
+    font-family: "Cascadia Code", "Consolas", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 13px; line-height: 1.7; background: var(--bg); color: var(--fg);
+    border-right: 1px solid var(--border); tab-size: 2;
+  }
+  #livePreview { flex: 1; overflow: auto; }
+  .doc { max-width: 900px; margin: 0 auto; padding: 26px 34px 120px; }
+  /* markdown styles */
+  .doc h1, .doc h2, .doc h3, .doc h4 { line-height: 1.3; margin: 1.4em 0 .5em; }
+  .doc h1 { font-size: 1.9em; border-bottom: 1px solid var(--border); padding-bottom: .3em; }
+  .doc h2 { font-size: 1.5em; border-bottom: 1px solid var(--border); padding-bottom: .25em; }
+  .doc h3 { font-size: 1.22em; }
+  .doc h4 { font-size: 1.05em; }
+  .doc p { line-height: 1.75; margin: .7em 0; }
+  .doc a { color: var(--accent); text-decoration: none; }
+  .doc a:hover { text-decoration: underline; }
+  .doc code {
+    font-family: "Cascadia Code", "Consolas", ui-monospace, monospace; font-size: .88em;
+    background: var(--code-bg); padding: .15em .35em; border-radius: 4px;
+  }
+  .doc pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; line-height: 1.5;
+  }
+  .doc pre code { background: none; padding: 0; font-size: .84em; color: var(--code-fg); white-space: pre; }
+  .doc blockquote {
+    margin: .8em 0; padding: .3em 1em; border-left: 4px solid var(--accent);
+    background: var(--bg-alt); color: var(--fg-dim); border-radius: 0 6px 6px 0;
+  }
+  .doc blockquote p { margin: .4em 0; }
+  .doc ul, .doc ol { padding-left: 1.6em; line-height: 1.7; }
+  .doc li { margin: .25em 0; }
+  .doc hr { border: none; border-top: 1px solid var(--border); margin: 1.6em 0; }
+  .doc table {
+    border-collapse: collapse; margin: 1em 0; display: block; overflow-x: auto; max-width: 100%;
+  }
+  .doc th, .doc td { border: 1px solid var(--border); padding: 6px 11px; text-align: left; }
+  .doc th { background: var(--bg-alt); font-weight: 700; }
+  .doc tr:nth-child(2n) td { background: var(--bg-alt); }
+  .doc img { max-width: 100%; border-radius: 6px; }
+  .doc .highlight { animation: flash 1.6s ease; border-radius: 4px; }
+  @keyframes flash { 0%,40% { background: var(--sel); } 100% { background: transparent; } }
+  .empty { color: var(--fg-dim); text-align: center; margin-top: 18vh; font-size: 14px; }
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 11px; height: 11px; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">📘 <span id="rootName">Docs</span></span>
+  <input type="search" id="search" placeholder="搜尋全部文件（檔名 + 內文）…  Ctrl+K">
+  <span class="spacer"></span>
+  <span id="liveStatus" title="即時刷新">🟢 即時</span>
+  <span id="saveState"></span>
+  <button id="editBtn" title="切換編輯 / 閱讀">✏️ 編輯</button>
+  <button id="saveBtn" class="primary" title="存回硬碟 (Ctrl+S)" disabled>💾 存檔</button>
+  <button id="liveBtn" title="開/關即時刷新">刷新</button>
+  <button id="themeBtn" title="切換深/淺色">◐</button>
+</header>
+<main>
+  <nav id="sidebar">
+    <div id="tree"><div class="muted">載入中…</div></div>
+    <div id="results" hidden></div>
+  </nav>
+  <section id="content">
+    <div id="view"><div class="empty">← 從左側選一個檔案開始</div></div>
+    <div id="editWrap">
+      <textarea id="editor" spellcheck="false" placeholder="# 在這裡編輯 Markdown…"></textarea>
+      <div id="livePreview"><div class="doc"></div></div>
+    </div>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $ = (s, r = document) => r.querySelector(s);
+const state = {
+  files: [], mdSet: new Set(), assetSet: new Set(),
+  current: null, currentIsAsset: false, dirty: false, editing: false,
+  contentCache: new Map(), // path -> raw text
+  searchText: new Map(),   // path -> searchable text (html tag-stripped)
+  liveOn: true,            // live-reload polling enabled
+  liveState: null,         // last {path: "mtime-size"} snapshot
+  livePolling: false,      // guard against overlapping polls
+};
+
+/* ---------------- path helpers ---------------- */
+function dirname(p) { const i = p.lastIndexOf("/"); return i < 0 ? "" : p.slice(0, i); }
+function normalize(p) {
+  const parts = p.split("/"); const out = [];
+  for (const seg of parts) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") { out.pop(); } else out.push(seg);
+  }
+  return out.join("/");
+}
+function resolveRel(baseDir, rel) {
+  if (/^[a-z]+:\/\//i.test(rel) || rel.startsWith("#") || rel.startsWith("mailto:")) return null;
+  const joined = baseDir ? baseDir + "/" + rel : rel;
+  return normalize(joined);
+}
+function escapeHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function escapeAttr(s) { return escapeHtml(s).replace(/"/g, "&quot;"); }
+
+/* ---------------- Markdown renderer ---------------- */
+// Inline: code spans, images, links, bold, italic, strikethrough. `filePath`
+// is the doc being rendered, used to resolve relative links/images.
+function inline(text, filePath) {
+  const baseDir = dirname(filePath || "");
+  // Protect inline code spans first.
+  const codes = [];
+  text = text.replace(/`([^`]+)`/g, (_, c) => {
+    codes.push("<code>" + escapeHtml(c) + "</code>");
+    return " C" + (codes.length - 1) + " ";
+  });
+  text = escapeHtml(text);
+  // Images: ![alt](src)
+  text = text.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (_, alt, src) => {
+    const r = resolveRel(baseDir, src);
+    const url = r === null ? src : ("/api/raw?path=" + encodeURIComponent(r));
+    return `<img src="${escapeAttr(url)}" alt="${escapeAttr(alt)}">`;
+  });
+  // Links: [text](href)
+  text = text.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (_, label, href) => {
+    const lab = inlineLabel(label, codes);
+    if (/^[a-z]+:\/\//i.test(href) || href.startsWith("mailto:")) {
+      return `<a href="${escapeAttr(href)}" target="_blank" rel="noopener">${lab}</a>`;
+    }
+    if (href.startsWith("#")) return `<a href="${escapeAttr(href)}">${lab}</a>`;
+    const r = resolveRel(baseDir, href.split("#")[0]);
+    if (r !== null && state.mdSet.has(r)) {
+      return `<a href="#" class="mdlink" data-path="${escapeAttr(r)}">${lab}</a>`;
+    }
+    if (r !== null && (state.assetSet.has(r) || /\.(png|jpe?g|gif|svg|webp|pdf|html)$/i.test(r))) {
+      return `<a href="#" class="assetlink" data-path="${escapeAttr(r)}">${lab}</a>`;
+    }
+    return `<a href="${escapeAttr(href)}">${lab}</a>`;
+  });
+  // Bold / italic / strikethrough (after links so we don't clobber URLs).
+  text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  text = text.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+  text = text.replace(/~~([^~]+)~~/g, "<del>$1</del>");
+  // Restore code spans.
+  text = text.replace(/ C(\d+) /g, (_, i) => codes[+i]);
+  return text;
+}
+// Inline for link labels: code already protected in `codes`, no nested links.
+function inlineLabel(label, codes) {
+  let t = label.replace(/`([^`]+)`/g, (_, c) => {
+    codes.push("<code>" + escapeHtml(c) + "</code>");
+    return " C" + (codes.length - 1) + " ";
+  });
+  t = escapeHtml(t);
+  t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  t = t.replace(/~~([^~]+)~~/g, "<del>$1</del>");
+  return t;
+}
+
+function slugify(s) {
+  return s.trim().toLowerCase().replace(/[^\w一-鿿]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function renderMarkdown(md, filePath) {
+  const lines = md.replace(/\r\n?/g, "\n").split("\n");
+  let html = "", i = 0;
+
+  const flushListMarker = () => {};
+  while (i < lines.length) {
+    let line = lines[i];
+
+    // Fenced code block
+    const fence = line.match(/^(```+|~~~+)(.*)$/);
+    if (fence) {
+      const marker = fence[1][0];
+      const buf = [];
+      i++;
+      while (i < lines.length && !lines[i].startsWith(marker.repeat(3).slice(0, fence[1].length))) {
+        buf.push(lines[i]); i++;
+      }
+      i++; // consume closing fence
+      html += "<pre><code>" + escapeHtml(buf.join("\n")) + "</code></pre>\n";
+      continue;
+    }
+
+    // Horizontal rule
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { html += "<hr>\n"; i++; continue; }
+
+    // Heading
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h) {
+      const level = h[1].length;
+      const txt = h[2].replace(/\s+#+\s*$/, "");
+      html += `<h${level} id="${slugify(txt)}">${inline(txt, filePath)}</h${level}>\n`;
+      i++; continue;
+    }
+
+    // Table (GFM): header row + separator row of ---/:---:
+    if (line.includes("|") && i + 1 < lines.length &&
+        /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?\s*$/.test(lines[i + 1])) {
+      const splitRow = (r) => {
+        let s = r.trim();
+        if (s.startsWith("|")) s = s.slice(1);
+        if (s.endsWith("|")) s = s.slice(0, -1);
+        return s.split("|").map(c => c.trim());
+      };
+      const headers = splitRow(line);
+      i += 2;
+      let t = "<table><thead><tr>" +
+        headers.map(c => `<th>${inline(c, filePath)}</th>`).join("") + "</tr></thead><tbody>";
+      while (i < lines.length && lines[i].includes("|") && lines[i].trim() !== "") {
+        const cells = splitRow(lines[i]);
+        t += "<tr>" + headers.map((_, k) =>
+          `<td>${inline(cells[k] || "", filePath)}</td>`).join("") + "</tr>";
+        i++;
+      }
+      t += "</tbody></table>\n";
+      html += t; continue;
+    }
+
+    // Blockquote (possibly multi-line)
+    if (/^\s*>/.test(line)) {
+      const buf = [];
+      while (i < lines.length && /^\s*>/.test(lines[i])) {
+        buf.push(lines[i].replace(/^\s*>\s?/, "")); i++;
+      }
+      html += "<blockquote>" + renderMarkdown(buf.join("\n"), filePath) + "</blockquote>\n";
+      continue;
+    }
+
+    // Lists (unordered / ordered), with one level of nesting by indentation
+    if (/^\s*([-*+]|\d+[.)])\s+/.test(line)) {
+      const [listHtml, next] = renderList(lines, i, filePath);
+      html += listHtml; i = next; continue;
+    }
+
+    // Blank line
+    if (line.trim() === "") { i++; continue; }
+
+    // Paragraph: gather until blank / block start
+    const buf = [line];
+    i++;
+    while (i < lines.length && lines[i].trim() !== "" &&
+           !/^(#{1,6}\s|```|~~~|\s*>|\s*([-*+]|\d+[.)])\s)/.test(lines[i]) &&
+           !/^\s*([-*_])(\s*\1){2,}\s*$/.test(lines[i])) {
+      buf.push(lines[i]); i++;
+    }
+    html += "<p>" + inline(buf.join(" "), filePath) + "</p>\n";
+  }
+  return html;
+}
+
+function renderList(lines, start, filePath) {
+  const baseIndent = lines[start].match(/^(\s*)/)[1].length;
+  const ordered = /^\s*\d+[.)]\s+/.test(lines[start]);
+  let i = start, out = ordered ? "<ol>" : "<ul>";
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line.trim() === "") {
+      // allow single blank line inside list if next line is still a list item
+      if (i + 1 < lines.length && /^\s*([-*+]|\d+[.)])\s+/.test(lines[i + 1]) &&
+          lines[i + 1].match(/^(\s*)/)[1].length >= baseIndent) { i++; continue; }
+      break;
+    }
+    const indent = line.match(/^(\s*)/)[1].length;
+    const m = line.match(/^\s*([-*+]|\d+[.)])\s+(.*)$/);
+    if (!m || indent < baseIndent) break;
+    if (indent > baseIndent) {
+      const [childHtml, next] = renderList(lines, i, filePath);
+      out = out.replace(/<\/li>$/, childHtml + "</li>");
+      i = next; continue;
+    }
+    out += "<li>" + inline(m[2], filePath) + "</li>";
+    i++;
+  }
+  out += ordered ? "</ol>" : "</ul>";
+  return [out + "\n", i];
+}
+
+/* ---------------- Tree building ---------------- */
+function buildTreeData(files) {
+  const root = { dirs: new Map(), files: [] };
+  for (const f of files) {
+    const parts = f.path.split("/");
+    let node = root;
+    for (let k = 0; k < parts.length - 1; k++) {
+      if (!node.dirs.has(parts[k])) node.dirs.set(parts[k], { dirs: new Map(), files: [] });
+      node = node.dirs.get(parts[k]);
+    }
+    node.files.push(f);
+  }
+  return root;
+}
+function iconFor(f) {
+  if (f.type === "md") return "📄";
+  if (/\.html$/i.test(f.path)) return "🌐";
+  if (/\.pdf$/i.test(f.path)) return "📕";
+  if (/\.(png|jpe?g|gif|svg|webp)$/i.test(f.path)) return "🖼️";
+  return "📎";
+}
+function renderTreeNode(node, path, depth) {
+  const wrap = document.createElement("div");
+  wrap.className = "node";
+  // directories first, alphabetical
+  const dirNames = [...node.dirs.keys()].sort((a, b) => a.localeCompare(b));
+  for (const name of dirNames) {
+    const child = node.dirs.get(name);
+    const row = document.createElement("div");
+    row.className = "row";
+    const twist = document.createElement("span"); twist.className = "tw"; twist.textContent = "▾";
+    const ic = document.createElement("span"); ic.className = "ic"; ic.textContent = "📁";
+    const nm = document.createElement("span"); nm.className = "nm"; nm.textContent = name;
+    row.append(twist, ic, nm);
+    const childPath = path ? path + "/" + name : name;
+    const childBox = renderTreeNode(child, childPath, depth + 1);
+    childBox.classList.add("children");
+    childBox.dataset.dir = childPath;   // stable id so live-reload keeps collapse state
+    row.addEventListener("click", () => {
+      childBox.classList.toggle("collapsed");
+      twist.textContent = childBox.classList.contains("collapsed") ? "▸" : "▾";
+    });
+    wrap.append(row, childBox);
+  }
+  for (const f of node.files) {
+    const row = document.createElement("div");
+    const isHtml = /\.html?$/i.test(f.path);
+    row.className = "row " + (f.type === "md" ? "mdfile" : "asset") + (isHtml ? " htmlfile" : "");
+    row.dataset.path = f.path;
+    const twist = document.createElement("span"); twist.className = "tw"; twist.textContent = "";
+    const ic = document.createElement("span"); ic.className = "ic"; ic.textContent = iconFor(f);
+    const nm = document.createElement("span"); nm.className = "nm";
+    nm.textContent = f.path.split("/").pop();
+    row.append(twist, ic, nm);
+    row.addEventListener("click", () => {
+      if (f.type === "md") openFile(f.path);
+      else openAsset(f.path);
+    });
+    wrap.append(row);
+  }
+  return wrap;
+}
+
+/* ---------------- File open / render ---------------- */
+async function fetchText(path) {
+  if (state.contentCache.has(path)) return state.contentCache.get(path);
+  const res = await fetch("/api/file?path=" + encodeURIComponent(path));
+  if (!res.ok) throw new Error("load failed");
+  const txt = await res.text();
+  state.contentCache.set(path, txt);
+  return txt;
+}
+
+function stripHtml(html) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/[ \t]+/g, " ");
+}
+async function searchableText(f) {
+  if (state.searchText.has(f.path)) return state.searchText.get(f.path);
+  let text = await fetchText(f.path).catch(() => "");
+  if (/\.html?$/i.test(f.path)) text = stripHtml(text);
+  state.searchText.set(f.path, text);
+  return text;
+}
+
+async function openFile(path, opts = {}) {
+  if (state.dirty && !confirm("有未存檔的修改，切換會遺失。確定離開？")) return;
+  let text;
+  try { text = await fetchText(path); }
+  catch { $("#view").innerHTML = `<div class="empty">無法載入 ${escapeHtml(path)}</div>`; return; }
+  state.current = path; state.currentIsAsset = false; state.dirty = false;
+  setEditing(false);
+  $("#editBtn").disabled = false;
+  $("#view").innerHTML = `<div class="doc">${renderMarkdown(text, path)}</div>`;
+  $("#editor").value = text;
+  markActive(path);
+  updateSaveState();
+  localStorage.setItem("eyesi:last", path);
+  document.title = path.split("/").pop() + " — Docs";
+  wireDocLinks($("#view"));
+  const scroller = $("#content");
+  scroller.scrollTop = 0;
+  if (opts.query) highlightFirst($("#view"), opts.query);
+}
+
+// Show a non-markdown asset (PDF / HTML demo / image) embedded in the content pane.
+let assetToken = 0;               // bumped on each open so stale async renders bail out
+function openAsset(path) {
+  if (state.dirty && !confirm("有未存檔的修改，切換會遺失。確定離開？")) return;
+  state.current = path; state.currentIsAsset = true; state.dirty = false;
+  setEditing(false);
+  $("#editBtn").disabled = true;
+  const token = ++assetToken;
+  const rawUrl = "/api/raw?path=" + encodeURIComponent(path);
+  const ext = path.split(".").pop().toLowerCase();
+  const isHtml = ext === "html" || ext === "htm";
+  // HTML reports load via a path-style URL so their relative links resolve.
+  const openUrl = isHtml ? fileUrl(path) : rawUrl;
+  let inner;
+  if (ext === "pdf") {
+    inner = `<div class="pdfscroll" id="pdfscroll"><div class="pdfmsg">載入 PDF…</div></div>`;
+  } else if (isHtml) {
+    inner = `<iframe class="assetframe" id="assetframe" src="${escapeAttr(openUrl)}" title="${escapeAttr(path)}"></iframe>`;
+  } else {
+    inner = `<div class="imgwrap"><img src="${escapeAttr(rawUrl)}" alt="${escapeAttr(path)}"></div>`;
+  }
+  $("#view").innerHTML =
+    `<div class="assetview">` +
+      `<div class="assetbar">` +
+        `<span class="ap">${escapeHtml(path)}</span>` +
+        `<a class="newtab" href="${escapeAttr(openUrl)}" target="_blank" rel="noopener">在新分頁開啟 ↗</a>` +
+      `</div>${inner}</div>`;
+  markActive(path);
+  updateSaveState();
+  localStorage.setItem("eyesi:last", path);
+  document.title = path.split("/").pop() + " — Docs";
+  $("#content").scrollTop = 0;
+  if (ext === "pdf") renderPdf(rawUrl, $("#pdfscroll"), token);
+  if (isHtml) {
+    const frame = $("#assetframe");
+    frame.addEventListener("load", () => wireIframeLinks(frame, path));
+  }
+}
+
+function fileUrl(p) { return "/file/" + p.split("/").map(encodeURIComponent).join("/"); }
+
+// Same-origin HTML reports: rewire in-report links so navigation stays inside the
+// viewer -> md links render in the main pane, other reports swap in (tree stays in
+// sync), in-page anchors scroll, external links open a new tab.
+function wireIframeLinks(frame, htmlPath) {
+  let doc;
+  try { doc = frame.contentDocument; } catch { return; }   // cross-origin -> leave native
+  if (!doc) return;
+  const baseDir = dirname(htmlPath);
+  doc.querySelectorAll("a[href]").forEach(a => {
+    const href = a.getAttribute("href");
+    if (!href || href.startsWith("#")) return;               // in-page anchor
+    if (/^[a-z]+:\/\//i.test(href) || href.startsWith("mailto:")) { a.target = "_blank"; return; }
+    const r = resolveRel(baseDir, href.split("#")[0]);
+    if (r === null) return;
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      if (state.mdSet.has(r)) openFile(r);
+      else if (/\.html?$/i.test(r) || state.assetSet.has(r)) openAsset(r);
+      else window.open(fileUrl(r), "_blank");
+    });
+  });
+}
+
+// Lazily load the vendored PDF.js UMD build (independent of browser PDF settings).
+let pdfjsReady = null;
+function ensurePdfjs() {
+  if (pdfjsReady) return pdfjsReady;
+  pdfjsReady = new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "/vendor/pdfjs/pdf.min.js";
+    s.onload = () => {
+      const lib = window.pdfjsLib;
+      if (!lib) return reject(new Error("pdfjsLib missing"));
+      lib.GlobalWorkerOptions.workerSrc = "/vendor/pdfjs/pdf.worker.min.js";
+      resolve(lib);
+    };
+    s.onerror = () => reject(new Error("load error"));
+    document.head.appendChild(s);
+  });
+  return pdfjsReady;
+}
+
+async function renderPdf(url, container, token) {
+  if (!container) return;
+  const fallback = (msg) =>
+    `<div class="pdfmsg">${msg}<br><br>` +
+    `<a href="${escapeAttr(url)}" target="_blank" rel="noopener">在新分頁開啟 ↗</a></div>`;
+  let lib;
+  try { lib = await ensurePdfjs(); }
+  catch { if (token === assetToken) container.innerHTML = fallback("PDF.js 未載入（可能尚未下載完成，重啟 server 後再試）。"); return; }
+  if (token !== assetToken) return;
+  try {
+    const pdf = await lib.getDocument({ url }).promise;
+    if (token !== assetToken) return;
+    container.innerHTML = "";
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const targetW = Math.max(320, container.clientWidth - 40);
+    for (let n = 1; n <= pdf.numPages; n++) {
+      const page = await pdf.getPage(n);
+      if (token !== assetToken) return;
+      const base = page.getViewport({ scale: 1 });
+      const scale = targetW / base.width;
+      const viewport = page.getViewport({ scale: scale * dpr });
+      const canvas = document.createElement("canvas");
+      canvas.className = "pdfpage";
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      canvas.style.width = (viewport.width / dpr) + "px";
+      canvas.style.height = (viewport.height / dpr) + "px";
+      container.appendChild(canvas);
+      await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+      if (token !== assetToken) return;
+    }
+  } catch (err) {
+    if (token === assetToken) container.innerHTML = fallback("無法渲染此 PDF：" + escapeHtml(err.message || String(err)));
+  }
+}
+
+function wireDocLinks(root) {
+  root.querySelectorAll("a.mdlink").forEach(a => {
+    a.addEventListener("click", (e) => { e.preventDefault(); openFile(a.dataset.path); });
+  });
+  root.querySelectorAll("a.assetlink").forEach(a => {
+    a.addEventListener("click", (e) => { e.preventDefault(); openAsset(a.dataset.path); });
+  });
+}
+function markActive(path) {
+  document.querySelectorAll(".row.active").forEach(r => r.classList.remove("active"));
+  const row = document.querySelector(`.row[data-path="${CSS.escape(path)}"]`);
+  if (row) { row.classList.add("active"); row.scrollIntoView({ block: "nearest" }); }
+}
+function highlightFirst(root, query) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const q = query.toLowerCase();
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    const idx = node.nodeValue.toLowerCase().indexOf(q);
+    if (idx >= 0 && node.parentElement.tagName !== "SCRIPT") {
+      const span = document.createElement("span");
+      span.className = "highlight";
+      const range = document.createRange();
+      range.setStart(node, idx); range.setEnd(node, idx + query.length);
+      range.surroundContents(span);
+      span.scrollIntoView({ block: "center" });
+      return;
+    }
+  }
+}
+
+/* ---------------- Edit / save ---------------- */
+function setEditing(on) {
+  state.editing = on;
+  $("#content").classList.toggle("editing", on);
+  $("#editWrap").classList.toggle("on", on);
+  $("#editBtn").textContent = on ? "👁 閱讀" : "✏️ 編輯";
+  if (on) { syncPreview(); $("#editor").focus(); }
+  updateSaveState();
+}
+function syncPreview() {
+  $("#livePreview .doc").innerHTML = renderMarkdown($("#editor").value, state.current);
+  wireDocLinks($("#livePreview"));
+}
+function updateSaveState() {
+  const editable = state.current && !state.currentIsAsset;
+  $("#saveBtn").disabled = !state.dirty || !editable;
+  $("#saveState").textContent = editable ? (state.dirty ? "● 未存檔" : "已同步") : "";
+  $("#saveState").style.color = state.dirty ? "var(--danger)" : "var(--fg-dim)";
+}
+async function saveCurrent() {
+  if (!state.current || !state.dirty) return;
+  const content = $("#editor").value;
+  $("#saveState").textContent = "存檔中…";
+  try {
+    const res = await fetch("/api/save", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: state.current, content }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || "save failed");
+    state.dirty = false;
+    state.contentCache.set(state.current, content);
+    $("#view").innerHTML = `<div class="doc">${renderMarkdown(content, state.current)}</div>`;
+    wireDocLinks($("#view"));
+    updateSaveState();
+    $("#saveState").textContent = "✔ 已存 " + data.bytes + " B";
+    $("#saveState").style.color = "var(--ok)";
+    setTimeout(updateSaveState, 1600);
+  } catch (err) {
+    $("#saveState").textContent = "✖ " + err.message;
+    $("#saveState").style.color = "var(--danger)";
+  }
+}
+
+/* ---------------- Search ---------------- */
+let searchTimer = null;
+async function runSearch(q) {
+  const results = $("#results"), tree = $("#tree");
+  if (!q.trim()) { results.hidden = true; tree.hidden = false; return; }
+  tree.hidden = true; results.hidden = false;
+  results.innerHTML = `<div class="muted">搜尋「${escapeHtml(q)}」…</div>`;
+  const ql = q.toLowerCase();
+  // Search across md notes AND html reports (html is tag-stripped for clean snippets).
+  const targets = state.files.filter(f => f.type === "md" || /\.html?$/i.test(f.path));
+  await Promise.all(targets.map(f => searchableText(f)));
+  const hits = [];
+  for (const f of targets) {
+    const text = state.searchText.get(f.path) || "";
+    const nameHit = f.path.toLowerCase().includes(ql);
+    const lines = text.split("\n");
+    let snippet = null, count = 0;
+    for (const ln of lines) {
+      const at = ln.toLowerCase().indexOf(ql);
+      if (at >= 0) { count++; if (!snippet) snippet = { ln, at }; }
+    }
+    if (nameHit || snippet) hits.push({ f, snippet, count, nameHit });
+  }
+  hits.sort((a, b) => b.count - a.count);
+  if (!hits.length) { results.innerHTML = `<div class="muted">找不到符合的內容</div>`; return; }
+  results.innerHTML = "";
+  for (const h of hits) {
+    const div = document.createElement("div");
+    div.className = "hit";
+    let snipHtml = "";
+    if (h.snippet) {
+      const { ln, at } = h.snippet;
+      const from = Math.max(0, at - 24);
+      const pre = (from > 0 ? "…" : "") + ln.slice(from, at);
+      const mid = ln.slice(at, at + q.length);
+      const post = ln.slice(at + q.length, at + q.length + 60);
+      snipHtml = `<div class="hs">${escapeHtml(pre)}<mark>${escapeHtml(mid)}</mark>${escapeHtml(post)}</div>`;
+    }
+    const tag = h.f.type === "md" ? "" : ` <span style="color:var(--fg-dim);font-weight:400">🌐</span>`;
+    div.innerHTML = `<div class="hp">${escapeHtml(h.f.path)}${tag}` +
+      (h.count ? ` <span style="color:var(--fg-dim);font-weight:400">· ${h.count}</span>` : "") +
+      `</div>${snipHtml}`;
+    div.addEventListener("click", () =>
+      h.f.type === "md" ? openFile(h.f.path, { query: q }) : openAsset(h.f.path));
+    results.append(div);
+  }
+}
+
+/* ---------------- Theme ---------------- */
+function applyTheme(t) {
+  if (t) document.documentElement.setAttribute("data-theme", t);
+  else document.documentElement.removeAttribute("data-theme");
+  localStorage.setItem("eyesi:theme", t || "");
+}
+function toggleTheme() {
+  const cur = document.documentElement.getAttribute("data-theme");
+  const sysDark = matchMedia("(prefers-color-scheme: dark)").matches;
+  const next = cur === "dark" ? "light" : cur === "light" ? "dark" : (sysDark ? "light" : "dark");
+  applyTheme(next);
+}
+
+/* ---------------- Live reload ---------------- */
+// Poll a lightweight disk fingerprint; when files change on disk, refresh the
+// tree and the open document without a manual F5. Unsaved edits are protected.
+async function pollState() {
+  if (!state.liveOn || state.livePolling) return;
+  state.livePolling = true;
+  try {
+    const data = await (await fetch("/api/state")).json();
+    handleStateSnapshot(data.files || {});
+  } catch { /* server momentarily unreachable; try again next tick */ }
+  state.livePolling = false;
+}
+
+function handleStateSnapshot(now) {
+  const prev = state.liveState;
+  state.liveState = now;
+  if (!prev) return;                         // first snapshot is just the baseline
+  const prevKeys = Object.keys(prev), nowKeys = Object.keys(now);
+  let structural = nowKeys.length !== prevKeys.length;
+  const changed = [];
+  for (const k of nowKeys) {
+    if (!(k in prev)) structural = true;
+    else if (prev[k] !== now[k]) changed.push(k);
+  }
+  for (const k of changed) { state.contentCache.delete(k); state.searchText.delete(k); }
+  if (structural) refreshTreePreserving();
+  if (state.current && changed.includes(state.current)) reloadCurrent();
+  if (structural || changed.length) flashLive();
+}
+
+async function refreshTreePreserving() {
+  const collapsed = new Set();
+  document.querySelectorAll(".children.collapsed").forEach(c => c.dataset.dir && collapsed.add(c.dataset.dir));
+  const scroll = $("#sidebar").scrollTop;
+  let data;
+  try { data = await (await fetch("/api/tree")).json(); } catch { return; }
+  state.files = data.files;
+  state.mdSet = new Set(data.files.filter(f => f.type === "md").map(f => f.path));
+  state.assetSet = new Set(data.files.filter(f => f.type === "asset").map(f => f.path));
+  const treeData = buildTreeData(data.files);
+  $("#tree").innerHTML = "";
+  $("#tree").append(renderTreeNode(treeData, "", 0));
+  document.querySelectorAll(".children").forEach(c => {
+    if (c.dataset.dir && collapsed.has(c.dataset.dir)) {
+      c.classList.add("collapsed");
+      const tw = c.previousElementSibling && c.previousElementSibling.querySelector(".tw");
+      if (tw) tw.textContent = "▸";
+    }
+  });
+  if (state.current) markActive(state.current);
+  $("#sidebar").scrollTop = scroll;
+}
+
+function reloadCurrent() {
+  const path = state.current;
+  if (state.currentIsAsset) { openAsset(path); return; }     // html/pdf: re-fetch & re-render
+  if (state.dirty) { showConflict(); return; }               // don't clobber unsaved edits
+  const s = $("#content");
+  const ratio = s.scrollHeight ? s.scrollTop / s.scrollHeight : 0;
+  openFile(path).then(() => { const c = $("#content"); c.scrollTop = ratio * c.scrollHeight; });
+}
+
+function flashLive() {
+  const el = $("#liveStatus");
+  el.textContent = "🔄 已更新";
+  clearTimeout(flashLive._t);
+  flashLive._t = setTimeout(() => { if (state.liveOn) el.textContent = "🟢 即時"; }, 1400);
+}
+
+function showConflict() {
+  let bar = $("#conflict");
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "conflict";
+    document.body.appendChild(bar);
+  }
+  bar.innerHTML = `⚠️ 此檔在硬碟上已變動，但你有未存檔的修改。` +
+    `<button id="cfReload">放棄修改，載入硬碟版</button>` +
+    `<button id="cfKeep">保留我的修改</button>`;
+  bar.style.display = "flex";
+  $("#cfReload").onclick = () => { state.dirty = false; bar.style.display = "none"; openFile(state.current); };
+  $("#cfKeep").onclick = () => { bar.style.display = "none"; };
+}
+
+function setLive(on) {
+  state.liveOn = on;
+  localStorage.setItem("docsviewer:live", on ? "1" : "0");
+  $("#liveStatus").textContent = on ? "🟢 即時" : "⚪ 已暫停";
+  $("#liveStatus").style.opacity = on ? "1" : ".6";
+  $("#liveBtn").textContent = on ? "刷新" : "已暫停";
+  if (on) pollState();
+}
+
+/* ---------------- Init ---------------- */
+async function init() {
+  applyTheme(localStorage.getItem("eyesi:theme") || "");
+  let data;
+  try {
+    data = await (await fetch("/api/tree")).json();
+  } catch {
+    $("#tree").innerHTML = `<div class="muted">無法連到本機 server。<br>請執行：<br><code>python docs_viewer.py</code></div>`;
+    return;
+  }
+  state.files = data.files;
+  state.mdSet = new Set(data.files.filter(f => f.type === "md").map(f => f.path));
+  state.assetSet = new Set(data.files.filter(f => f.type === "asset").map(f => f.path));
+  $("#rootName").textContent = data.root;
+
+  const treeData = buildTreeData(data.files);
+  $("#tree").innerHTML = "";
+  $("#tree").append(renderTreeNode(treeData, "", 0));
+
+  const last = localStorage.getItem("eyesi:last");
+  if (last && state.mdSet.has(last)) openFile(last);
+  else if (last && state.assetSet.has(last)) openAsset(last);
+  else {
+    const readme = data.files.find(f => f.path.toLowerCase() === "readme.md")
+      || data.files.find(f => f.type === "md");
+    if (readme) openFile(readme.path);
+  }
+
+  // Start live reload: seed the baseline fingerprint, then poll every second.
+  setLive(localStorage.getItem("docsviewer:live") !== "0");
+  await pollState();               // baseline snapshot
+  setInterval(pollState, 1000);
+}
+
+/* ---------------- Events ---------------- */
+$("#editBtn").addEventListener("click", () => { if (state.current && !state.currentIsAsset) setEditing(!state.editing); });
+$("#saveBtn").addEventListener("click", saveCurrent);
+$("#themeBtn").addEventListener("click", toggleTheme);
+$("#liveBtn").addEventListener("click", () => setLive(!state.liveOn));
+$("#editor").addEventListener("input", () => {
+  state.dirty = ($("#editor").value !== (state.contentCache.get(state.current) || ""));
+  updateSaveState();
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(syncPreview, 180);
+});
+$("#search").addEventListener("input", (e) => {
+  clearTimeout(searchTimer);
+  const q = e.target.value;
+  searchTimer = setTimeout(() => runSearch(q), 200);
+});
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+    e.preventDefault(); saveCurrent();
+  } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault(); $("#search").focus(); $("#search").select();
+  } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "e") {
+    e.preventDefault(); if (state.current && !state.currentIsAsset) setEditing(!state.editing);
+  } else if (e.key === "Escape" && document.activeElement === $("#search")) {
+    $("#search").value = ""; runSearch("");
+  }
+});
+window.addEventListener("beforeunload", (e) => {
+  if (state.dirty) { e.preventDefault(); e.returnValue = ""; }
+});
+
+init();
+</script>
+</body>
+</html>

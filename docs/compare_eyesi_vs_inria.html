@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EyeSi vs INRIA — CCC 撕囊模擬兩條技術路線(一頁對照)</title>
+<style>
+  :root{--bg:#0c111c;--card:#141b2b;--card2:#171f31;--line:#2a3550;--txt:#e6e9ef;--mut:#93a1c0;
+    --y:#ffd479;--g:#2ecc71;--r:#ff6b6b;--b:#6fd3ff;--o:#ffb454;--p:#88aaff;}
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;line-height:1.6}
+  .wrap{max-width:1180px;margin:0 auto;padding:26px 22px 60px}
+  h1{font-size:26px;margin:0 0 4px}
+  h1 .yr{color:var(--y)}
+  .lead{color:var(--mut);font-size:14px;margin:0 0 22px;max-width:940px}
+  .lead b{color:var(--txt)}
+  .badge{display:inline-block;font-size:12px;padding:2px 9px;border-radius:20px;margin-left:8px;vertical-align:middle;font-weight:700}
+  .bEye{background:rgba(255,107,107,.16);color:#ff9a9a;border:1px solid #7a3a3a}
+  .bIn{background:rgba(111,211,255,.16);color:#9fdcff;border:1px solid #35607a}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:18px 20px}
+  .card h2{font-size:17px;margin:0 0 3px}
+  .card .tag{font-size:12px;color:var(--mut);margin:0 0 12px}
+  .card .tag b{color:var(--txt)}
+  .flow{background:var(--card2);border:1px solid var(--line);border-radius:9px;padding:12px 14px;font-family:ui-monospace,Consolas,monospace;font-size:12.5px;line-height:1.85;white-space:pre-wrap}
+  .flow .hl{color:var(--y)}.flow .gg{color:var(--g)}.flow .rr{color:var(--r)}.flow .bb{color:var(--p)}.flow .cy{color:var(--b)}.flow .mm{color:var(--mut)}
+  .arrowrow{display:flex;align-items:center;justify-content:center;gap:14px;margin:26px 0 22px}
+  .arrowrow .big{font-size:30px;color:var(--y)}
+  .arrowrow .lbl{font-size:13px;color:var(--mut);max-width:300px}
+  section{margin-top:34px}
+  section > h3{font-size:16px;margin:0 0 12px;padding-left:10px;border-left:3px solid var(--y)}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;overflow:hidden;border-radius:11px;border:1px solid var(--line)}
+  th,td{padding:9px 13px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#1a2338;font-size:12.5px;letter-spacing:.3px}
+  th.cEye{color:#ff9a9a}th.cIn{color:#9fdcff}
+  tr:last-child td{border-bottom:0}
+  td:first-child{color:var(--mut);width:130px;white-space:nowrap}
+  td.vEye{color:#e9c0c0}td.vIn{color:#c2e4f5}
+  tbody tr:nth-child(even){background:rgba(255,255,255,.017)}
+  .layer{display:grid;grid-template-columns:135px 1fr 1fr;gap:0;border:1px solid var(--line);border-radius:11px;overflow:hidden}
+  .layer > div{padding:12px 14px;border-bottom:1px solid var(--line)}
+  .layer .lh{background:#1a2338;font-weight:700;font-size:13px;display:flex;flex-direction:column;justify-content:center}
+  .layer .same{background:rgba(46,204,113,.06)}
+  .layer .chg{background:rgba(255,212,121,.07)}
+  .layer .colh{background:#141b2b;color:var(--mut);font-weight:700;font-size:12.5px}
+  .pill{display:inline-block;font-size:11px;padding:1px 8px;border-radius:20px;font-weight:700;margin-left:6px}
+  .pSame{background:rgba(46,204,113,.18);color:#7de6a6}
+  .pChg{background:rgba(255,212,121,.2);color:var(--y)}
+  .insight{background:linear-gradient(135deg,rgba(111,211,255,.1),rgba(136,170,255,.08));border:1px solid #35607a;border-radius:12px;padding:16px 20px}
+  .insight h3{border:0;margin:0 0 8px;padding:0;color:var(--b)}
+  .insight p{margin:6px 0;font-size:14px}
+  .insight b{color:var(--y)}
+  .crit{background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:16px 20px}
+  .crit .eq{font-family:ui-monospace,Consolas,monospace;font-size:15px;color:var(--y);background:#101827;border:1px solid var(--line);border-radius:8px;padding:10px 14px;display:inline-block;margin:2px 0 14px}
+  .crit ol{margin:0;padding-left:20px}
+  .crit li{margin:9px 0;font-size:13.5px}
+  .crit li b{color:var(--b)}
+  .links{display:flex;gap:12px;flex-wrap:wrap;margin-top:14px}
+  .links a{flex:1;min-width:230px;text-decoration:none;background:var(--card);border:1px solid var(--line);border-radius:11px;padding:14px 16px;color:var(--txt);transition:.15s}
+  .links a:hover{border-color:#3f6fb0;background:#18213a}
+  .links a .t{font-weight:700;font-size:14px}
+  .links a .d{font-size:12px;color:var(--mut);margin-top:3px}
+  .links a .ar{color:var(--y)}
+  .foot{color:var(--mut);font-size:12px;margin-top:30px;border-top:1px solid var(--line);padding-top:12px}
+  code{background:#1c2740;padding:1px 6px;border-radius:5px;font-size:12px;color:#cdd6ea}
+  @media(max-width:760px){.grid2{grid-template-columns:1fr}.layer{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>CCC 撕囊模擬的兩條路線:<span class="yr">EyeSi vs INRIA</span></h1>
+  <p class="lead">同一臨床任務(CCC 連續環形撕囊),兩種哲學。<b>EyeSi</b>(Mannheim / Männer 的 ViPA 組 → VRmagic)走<b>描述式</b>:手調規則模仿「撕痕往周邊跑」的外觀。<b>INRIA</b>(法國,SOFA → InSimo)走<b>物理式</b>:把成因(同心圓纖維各向異性)建進材料,現象自己湧現。分歧不在外觀,在<b>有沒有把因果建進去</b>——與各自的代價。</p>
+
+  <!-- 兩張並排卡:哲學 -->
+  <div class="grid2">
+    <div class="card">
+      <h2>EyeSi <span class="badge bEye">描述式 descriptive</span></h2>
+      <p class="tag">Weber / Wagner / Männer 2006 · <b>mass-spring + Indicator</b></p>
+      <div class="flow"><span class="mm"># 撕痕方向 = 切平面上手調向量合成</span>
+PullDir = 器械拉的方向
+DriftDir = 往周邊(徑向外,<span class="mm">手調</span>)
+<span class="rr">Indicator = 膜瓣法線朝晶體? shear : rip</span>
+<span class="rr">newDir = rotate(CurrDir, driftA + pullA)</span>
+<span class="mm"># 撕往哪「不依賴物理」,由規則直接決定</span></div>
+      <p class="tag" style="margin-top:12px">把教科書的操作指南<b style="color:#ff9a9a">翻成幾何規則</b>。可控、可教、即時上線;但沒有理論母體,換器械/拉法要重調。</p>
+    </div>
+
+    <div class="card">
+      <h2>INRIA <span class="badge bIn">物理式 physical FEM</span></h2>
+      <p class="tag">Comas 08 / Allard 09 / Dequidt 13 · <b>三角 FEM + argmax c</b></p>
+      <div class="flow"><span class="mm"># 撕痕方向 = 從真纖維各向異性算出</span>
+每三角形帶纖維方向 θ(<span class="cy">同心圓</span>)
+<span class="bb">c = (σ_d⊥ / σ̄_d⊥) · H((d·p) − cosθ_P)</span>
+<span class="bb">裂向 = argmax c</span>(負載/強度最大方向)
+<span class="mm"># 等向退化 = 最大主應力準則(公認定律)</span></div>
+      <p class="tag" style="margin-top:12px"><b style="color:#9fdcff">讀真實應力場</b>,往「負載超強度最多」的方向裂。徑向弱 → 撕痕自然往周邊,不必手調 drift。物理最真,代價是工程量與 FPS。</p>
+    </div>
+  </div>
+
+  <div class="arrowrow">
+    <div class="lbl" style="text-align:right">觀察現象 → 手調規則模仿外觀<br><span style="color:#ff9a9a">「模仿它看起來的樣子」</span></div>
+    <div class="big">⟷</div>
+    <div class="lbl">建因果進材料 → 現象自己湧現<br><span style="color:#9fdcff">「讓它自己算出方向」</span></div>
+  </div>
+
+  <!-- 名詞小抄 -->
+  <section>
+    <h3>先看這裡:公式與術語小抄(看不懂先讀這段)</h3>
+    <div class="crit">
+      <p style="margin:0 0 14px;color:var(--mut);font-size:13.5px">下面整頁的專有名詞逐塊拆解。已經懂的可略過。</p>
+
+      <p style="margin:0 0 6px;color:var(--b);font-weight:700">▍撕裂準則 c = (σ_d⊥ / σ̄_d⊥) · H((d·p) − cosθ_P)</p>
+      <p style="margin:2px 0 10px;font-size:13.5px">問題:撕痕下一步往哪個方向 d 走、該不該撕?把每個候選方向都算一個分數 c,選最大的。三塊:</p>
+      <table style="margin-bottom:16px">
+        <tbody>
+          <tr><td style="width:150px"><code>σ_d⊥</code> 垂直張力</td><td>撐開裂縫的是<b style="color:var(--b)">垂直於撕痕線</b>的張力(撕紙:紙往兩側被扯開,不是沿撕痕方向)。σ=應力。</td></tr>
+          <tr><td><code>σ̄_d⊥</code> 方向強度</td><td>材料在那個方向<b style="color:var(--b)">撐得住的上限</b>(bar=極限)。比值 <code>σ_d⊥/σ̄_d⊥</code> = 負載/能耐,<b style="color:var(--y)">&gt;1 就裂</b>(像繩子承重超過上限就斷)。</td></tr>
+          <tr><td><code>H(·)</code> 防回折閘</td><td>Heaviside 階梯函數:括號 ≥0 輸出 1、否則 0(開關)。<code>d·p</code>=候選方向與上一步方向的夾角餘弦;<code>cosθ_P</code>=最大允許轉角。<b>夾角太大(急轉)→ 分數歸零</b>,讓裂縫平滑不急折。</td></tr>
+          <tr><td><code>argmax c</code></td><td>選 c 最大的方向 = 在不急轉的方向裡,<b style="color:var(--y)">負載超過能耐最多</b>的那個,材料最撐不住處先裂。</td></tr>
+        </tbody>
+      </table>
+
+      <p style="margin:0 0 6px;color:var(--b);font-weight:700">▍同心圓纖維各向異性</p>
+      <p style="margin:2px 0 16px;font-size:13.5px"><b>各向異性</b> = 強度隨方向不同(像<b style="color:var(--b)">木頭</b>:順木紋好劈、橫木紋難砍)。囊膜的膠原纖維<b style="color:var(--b)">繞水晶體中心一圈圈排</b>(像年輪)→ 圓周方向(沿纖維)強、<b style="color:var(--y)">徑向(往周邊、跨纖維)弱</b> → σ̄ 徑向特別小 → 撕痕天生偏往周邊。(臨床上「往周邊跑」的主推手其實是赤道<b>懸韌帶</b>的持續徑向張力;纖維各向異性是 INRIA 在其上的精緻化。)</p>
+
+      <p style="margin:0 0 6px;color:var(--b);font-weight:700">▍最大主應力準則(Rankine)</p>
+      <p style="margin:2px 0 16px;font-size:13.5px">固體力學最古老的斷裂判據:一點的應力隨方向而變,其中<b>最大的那個純拉力</b>叫最大主應力 σ₁;<b style="color:var(--y)">σ₁ 超過材料抗拉強度就裂,且裂縫垂直於 σ₁</b>(玻璃/粉筆的脆性斷裂)。<b>argmax c 關掉各向異性(σ̄ 各向相同)+ 關掉防回折閘,數學上就退化成 Rankine</b>——所以它不是新 heuristic,是「Rankine + 纖維各向異性 + 平滑閘」的升級版,能退化回百年驗證的定律才可信。</p>
+
+      <p style="margin:0 0 6px;color:var(--b);font-weight:700">▍Han 2021 離線 FEM 撕囊力學(CMPB 203:106025, PubMed 33714899)</p>
+      <p style="margin:2px 0 16px;font-size:13.5px"><b>四層 3D 水晶體模型</b>(前囊+後囊+皮質+核)。判據 = <b style="color:var(--b)">Von Mises 變形能失效準則</b>(元素何時起裂)+ <b style="color:var(--b)">雙線性內聚律(bilinear cohesive)</b>(前囊↔皮質介面怎麼一段段撕開,牽引力先升峰值再降到零=斷,曲線下面積=斷裂能)。用<b>豬眼力感測鑷子</b>校準(p=0.76/0.10 吻合)。結論:撕裂力 ~10–30 mN,<b style="color:var(--y)">最省力撕裂方向 θ₁=0°、θ₂=30°</b>(速度不影響、直徑有影響)。這個「最省力方向」= Weber drift / INRIA argmax c 各自要捕捉的「撕痕有偏好方向」的物理背書。<b style="color:var(--o)">注意:此判據(Von Mises)≠ INRIA 的 argmax c(退化為 Rankine 最大主應力),是不同斷裂框架,勿混同。</b>詳見 <code>reference/7_han2021_fem_tearing.md</code>。</p>
+
+      <p style="margin:0 0 6px;color:var(--b);font-weight:700">▍其他引擎術語 <span style="font-weight:400;color:var(--mut);font-size:12px">(逐項展開見 <code>engines/6_realtime_fem_pillars.md</code>)</span></p>
+      <table>
+        <tbody>
+          <tr><td style="width:150px"><code>mass-spring</code></td><td>質點+彈簧網格,力驅動(F=ma)。k 靠手調、隨網格而變,<b>不是可量測的材料常數</b>(對比 FEM 的 E/ν)。</td></tr>
+          <tr><td><code>FEM</code></td><td>把連續體切成小元素解真應力/應變。輸入 E、ν 可量測,細分會<b>收斂到連續解</b>;準但慢(要解全域 KU=F)。</td></tr>
+          <tr><td><code>TLED</code></td><td><b>T</b>otal <b>L</b>agrangian(一切相對原始構型→導數預算一次)+ <b>E</b>xplicit <b>D</b>ynamics(顯式逐節點→GPU)。讓真 FEM 即時。</td></tr>
+          <tr><td><code>co-rotational</code></td><td>每元素扣掉剛體旋轉 → 在小應變下線性算力 → 再轉回。線性速度 + 大旋轉不失真(否則會憑空膨脹)。</td></tr>
+          <tr><td><code>matrix-free</code></td><td>改用迭代 CG(只需 K·v,逐元素即時算),<b>全域 K 從不成形</b> → 撕裂改拓樸只改元素 loop,免重組/重分解。</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 血緣 -->
+  <section>
+    <h3>血緣:兩支不同的團隊譜系</h3>
+    <table>
+      <thead><tr><th>面向</th><th class="cEye">EyeSi 路線(Mannheim)</th><th class="cIn">INRIA 路線(法國)</th></tr></thead>
+      <tbody>
+        <tr><td>團隊 / 商用</td><td class="vEye">Männer 的 ViPA 組 → VRmagic / EyeSi</td><td class="vIn">INRIA → InSimo(HelpMeSee)</td></tr>
+        <tr><td>引擎根</td><td class="vEye">Schill 2001 ECM + vrmDesign 架構</td><td class="vIn">SOFA / SofaCUDA(開源 LGPL)</td></tr>
+        <tr><td>CCC 藍圖</td><td class="vEye">Webster 04/05 開山 → <b>Weber 2006</b> 精緻版</td><td class="vIn"><b>Allard 2009</b> 纖維斷裂準則</td></tr>
+        <tr><td>集大成</td><td class="vEye">Weber 2006 本身即上線</td><td class="vIn"><b>Dequidt 2013</b>(撕囊+phaco+IOL)</td></tr>
+        <tr><td>臨床/部署驗證</td><td class="vEye">McCannel 2013:錯誤撕囊率降 ~68%</td><td class="vIn">InSimo / HelpMeSee 商用部署</td></tr>
+        <tr><td>開源狀態</td><td class="vEye">閉源商品</td><td class="vIn">引擎(SOFA)開源、成品(InSimo)閉源</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 四個子問題並排 -->
+  <section>
+    <h3>四個子問題正面對照(CCC 模擬的四塊積木)</h3>
+    <div class="layer">
+      <div class="colh">子問題</div><div class="colh" style="color:#ff9a9a">EyeSi(Weber 2006)</div><div class="colh" style="color:#9fdcff">INRIA(Allard/Dequidt)</div>
+
+      <div class="lh">① 變形引擎<br><span style="font-weight:400;color:var(--mut);font-size:11.5px">Layer A:囊膜怎麼飄</span></div>
+      <div class="chg">mass-spring(囊膜視為「次要」,看起來會飄即可);k 靠手調</div>
+      <div class="chg">三角形 FEM(幾何非線性 / co-rotational);E、ν 可量測 <span class="pill pChg">物理化</span></div>
+
+      <div class="lh">② 撕裂判定<br><span style="font-weight:400;color:var(--mut);font-size:11.5px">往哪走 / 何時撕</span><br><span style="color:var(--y);font-size:11px">← 分歧最大</span></div>
+      <div class="chg">方向:CurrDir+PullDir+DriftDir 合成;何時:應力≥門檻觸發;drift 手調模仿「往周邊」</div>
+      <div class="chg">方向:argmax c(纖維各向異性算出);何時:應變張量特徵值>門檻;「往周邊」自己湧現 <span class="pill pChg">因果化</span></div>
+
+      <div class="lh">③ 拓樸改變<br><span style="font-weight:400;color:var(--mut);font-size:11.5px">撕開後網格怎麼改</span><br><span style="color:var(--g);font-size:11px">← 兩邊最接近</span></div>
+      <div class="same">Delaunay remesh(split/collapse/flip)+ Attached 旗標讓膜瓣長大</div>
+      <div class="same">沿 argmax c 方向切分三角形;應變觸發局部細分 <span class="pill pSame">思路一致</span></div>
+
+      <div class="lh" style="border-bottom:0">④ 即時性<br><span style="font-weight:400;color:var(--mut);font-size:11.5px">怎麼跑得動</span></div>
+      <div class="chg" style="border-bottom:0">策略:一開始就放棄物理換即時。mass-spring 顯式積分,本來就快;無全域 K</div>
+      <div class="chg" style="border-bottom:0">策略:工程拆掉「解全域 K」瓶頸。<b>TLED + GPU gather + co-rotational + matrix-free CG</b> 讓真 FEM 即時</div>
+    </div>
+  </section>
+
+  <!-- INRIA 準則為何「更對」 -->
+  <section>
+    <h3>為什麼 INRIA 的 argmax c 準則「更對」(三層邏輯)</h3>
+    <div class="crit">
+      <div class="eq">c = (σ_d⊥ / σ̄_d⊥) · H((d·p) − cosθ_P) &nbsp;&nbsp; → &nbsp; c &gt; 1 就撕,方向 = argmax c</div>
+      <ol>
+        <li><b>把因果建進去</b>:囊膜纖維呈同心圓 → 徑向比圓周方向弱 → 撕痕天生易往周邊。Weber 手調一個 DriftDir 去<span style="color:#ff9a9a">模仿</span>這現象;Allard 把<span style="color:#9fdcff">造成現象的原因(同心圓纖維各向異性)建進材料</span>,「往周邊跑」自己湧現。</li>
+        <li><b>每一塊都是標準斷裂力學</b>:看<span style="color:#9fdcff">垂直於撕痕的張力</span>(σ_d⊥,撐開裂縫的是它)÷ <span style="color:#9fdcff">該方向的材料強度</span>(σ̄_d⊥)→ 比值 &gt;1 = 應力超過強度 = 裂;各向異性從 σ̄ 進來(纖維強、徑向弱);H(·) 防回折(只允許與上一步夾角 ≤ θ_P)。</li>
+        <li><b>等向時退化成公認定律</b>:關掉纖維、關掉防回折,argmax c <span style="color:var(--y)">數學上等於「最大主應力準則」</span>——固體力學公認的脆性斷裂判據。能退化成已驗證的定律,邏輯上就可信。Weber 的手調 drift 沒有這個理論母體。</li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- 深入:即時性攻防 -->
+  <section>
+    <h3>深入:INRIA 怎麼化解「撕裂讓隱式失效」(即時性攻防)</h3>
+    <div class="crit">
+      <p style="margin:0 0 6px;font-size:13.5px"><b style="color:#ff9a9a">Weber 的論點(2006)</b>:隱式積分省時,靠把要解的大矩陣 <code>K</code> 預先<b>分解(factorize,≈預先反轉)</b>存起來重複用。但<b>撕裂一直改網格 → 存好的分解馬上失效 → 每步重算(很貴)→ 隱式優勢沒了</b>。所以「會撕的膜用顯式反而划算」。</p>
+      <p style="margin:8px 0 14px;font-size:13.5px"><b style="color:#9fdcff">INRIA 不反駁這事實,用三層把它「溶解」:</b></p>
+
+      <div style="border-left:3px solid var(--b);padding:2px 0 2px 14px;margin:0 0 12px">
+        <p style="margin:0 0 3px;font-weight:700;color:var(--b)">第 1 層 · Comas 2008(TLED):同意,那就用顯式——但保住真物理</p>
+        <p style="margin:0;font-size:13px;color:#c9d3e6">TLED = 顯式中央差分、逐節點獨立,<b>不組任何全域 K</b>,撕裂只改元素清單。跟 Weber 同招(<b style="color:var(--y)">沒有 K 就沒有分解會失效</b>),差別只在力從真應變場算、非彈簧手調。顯式要小 dt,但軟組織剛度低→臨界 dt 大→不痛;GPU 平行→數萬元素即時。</p>
+      </div>
+
+      <div style="border-left:3px solid var(--b);padding:2px 0 2px 14px;margin:0 0 12px">
+        <p style="margin:0 0 3px;font-weight:700;color:var(--b)">第 2 層 · Matrix-free CG:非要隱式的穩定?那就「永遠不分解」</p>
+        <p style="margin:0;font-size:13px;color:#c9d3e6">接觸/大 dt/穩定有時真需要隱式。洞見:<b>「分解失效」只在你「預先組裝+分解 K」時才發生</b>。改用迭代解法<b>共軛梯度(CG)</b>——它只需要 <code>K·v</code>(K 乘向量),而 <code>K·v</code> 可逐元素即時算,<b>K 從頭到尾不成形</b>。撕裂改拓樸 = 只改「loop 哪些元素」。<b style="color:var(--y)">沒有分解,就沒有分解會失效</b>——Weber 那條死路根本不存在。</p>
+      </div>
+
+      <div style="border-left:3px solid var(--o);padding:2px 0 2px 14px;margin:0 0 8px">
+        <p style="margin:0 0 3px;font-weight:700;color:var(--o)">第 3 層 · Courtecuisse 非同步預條件子:隱式迭代在異質組織會變慢(最硬一關)</p>
+        <p style="margin:0;font-size:13px;color:#c9d3e6">新問題:CG 在<b>軟硬不均組織</b>(囊膜軟、核硬)上收斂慢→隱式又慢回去。<b>預條件子</b>能加速收斂,但算它貴、拓樸一變又要重算。巧思:<b>預條件子丟背景執行緒非同步算,主迴圈用「稍微過期」的版本</b>(組織變形夠慢,稍舊仍好用)。→ 隱式穩定 + 收斂快 + 即時,撐起 Dequidt 2013 的<b>接觸 + 器械互動</b>(摩擦接觸;器械 IR 光學追蹤,無力回饋裝置)。</p>
+      </div>
+
+      <p style="margin:12px 0 0;font-size:13px;color:var(--mut)">🔑 三層答案:(1) 乾脆用顯式(TLED,無 K);(2) 非要隱式就 matrix-free(永不分解);(3) 迭代慢就非同步預條件子。Weber「會撕就用顯式」在 2006 是對的取捨;INRIA 用 GPU + 迭代 + 非同步,把「隱式的穩定」也一起拿回來。詳見 <code>reference/3_inria_fem_lineage.md</code>(四瓶頸→四解法)、<code>reference/4_inria_fem_realtime.md</code>。</p>
+    </div>
+
+    <h3 style="margin-top:26px">INRIA 的優勢 · 以及每個劣勢怎麼克服</h3>
+    <table>
+      <thead><tr><th style="width:210px">面向</th><th class="cIn">優勢</th><th>對應劣勢 → 怎麼克服</th></tr></thead>
+      <tbody>
+        <tr><td>物理真實度</td><td class="vIn">真連續體力學,E、ν 可量測;3D;完整術式(撕囊+phaco+IOL)+ 摩擦接觸(器械 IR 追蹤,無力回饋)</td><td>—(這是它的根本優勢)</td></tr>
+        <tr><td>FEM 太慢(解全域 K)</td><td class="vIn">真 FEM 也能即時</td><td><b>GPU TLED</b>(Comas 08):顯式逐節點→GPU 平行,比 CPU 快 16×,數萬元素即時</td></tr>
+        <tr><td>撕裂改拓樸→矩陣失效</td><td class="vIn">撕裂即時,不卡矩陣</td><td><b>顯式無 K</b> / <b>matrix-free CG</b>(永不分解)→ 改拓樸只改元素 loop</td></tr>
+        <tr><td>隱式迭代在異質組織慢</td><td class="vIn">隱式穩定 + 收斂快 + 即時</td><td><b>非同步預條件子</b>(Courtecuisse 10-11):背景執行緒算、主迴圈用稍過期版本</td></tr>
+        <tr><td>工程量龐大</td><td class="vIn">不必從零手刻</td><td>直接用<b>開源 SOFA</b>:引擎/拓樸/求解器/碰撞/繪圖現成,只需自寫纖維+argmax c+remesh</td></tr>
+        <tr><td>IOL 步 FPS 低(~5)</td><td class="vIn">—</td><td>⚠️ 僅 IOL 置入那步(高剛度低質量、用直接稀疏解);<b>水晶體 phaco 其實 80fps、撕囊即時</b>。現代 GPU 更改善,描述式在純流暢度仍佔優</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 逐項差異總表 -->
+  <section>
+    <h3>逐項差異總表</h3>
+    <table>
+      <thead><tr><th>面向</th><th class="cEye">EyeSi(Weber 2006)</th><th class="cIn">INRIA(Comas/Allard/Dequidt)</th></tr></thead>
+      <tbody>
+        <tr><td>物理 ↔ 描述</td><td class="vEye">純描述式(不解組織應力場)</td><td class="vIn">物理式(連續體力學 + 斷裂力學)</td></tr>
+        <tr><td>變形引擎</td><td class="vEye">mass-spring(2D 平面圓盤)</td><td class="vIn">三角 FEM 囊膜 + 四面體 FEM 水晶體(3D)</td></tr>
+        <tr><td>時間推進</td><td class="vEye">顯式(各節點獨立)</td><td class="vIn">顯式中央差分(TLED,同骨架)/ Dequidt 用隱式求穩健</td></tr>
+        <tr><td>撕裂方向</td><td class="vEye">向量合成 + 角度旋轉(幾何)</td><td class="vIn">argmax c(纖維各向異性,物理)</td></tr>
+        <tr><td>撕裂觸發</td><td class="vEye">mass-spring 應力 ≥ 門檻</td><td class="vIn">應力張量最大特徵值 &gt; 門檻(醫師調;等向=最大主應力)</td></tr>
+        <tr><td>「往周邊跑」</td><td class="vEye">手調 DriftDir(模仿)</td><td class="vIn">同心圓纖維各向異性(湧現)</td></tr>
+        <tr><td>手法切換</td><td class="vEye">Indicator 顯式判 shearing/ripping</td><td class="vIn">隱含在應力場(無需顯式切換)</td></tr>
+        <tr><td>防回折</td><td class="vEye">CurrDir 延續</td><td class="vIn">H((d·p)−cosθ_P) 硬約束 + 歷史方向</td></tr>
+        <tr><td>拓樸(remesh)</td><td class="vEye">Delaunay flip/split/collapse</td><td class="vIn">沿撕裂方向切分(應變觸發)</td></tr>
+        <tr><td>即時關鍵技術</td><td class="vEye">兩層解耦(撕裂 ⊥ 變形)</td><td class="vIn">TLED / GPU gather / co-rotational / matrix-free</td></tr>
+        <tr><td>撕裂時矩陣問題</td><td class="vEye">無 K,只改元素清單</td><td class="vIn">不預組裝全域 K(改拓樸免重組/重分解)</td></tr>
+        <tr><td>實測效能</td><td class="vEye">流暢(2006 即上線,≥25fps)</td><td class="vIn">phaco 80fps、撕囊即時;IOL ~5fps(直接解)。2.4GHz+一般顯卡</td></tr>
+        <tr><td>完整術式</td><td class="vEye">撕囊(+ 2009 延伸 ILM/ERM peeling)</td><td class="vIn">撕囊 + phaco + IOL 置入</td></tr>
+        <tr><td>器械 / 接觸</td><td class="vEye">PHANToM 力回饋(囊膜)</td><td class="vIn">摩擦接觸 + 自我碰撞(IOL);器械 IR 光學追蹤、<b>無力回饋</b></td></tr>
+        <tr><td>定位</td><td class="vEye">教學/訓練即時,已臨床驗證</td><td class="vIn">SOTA 物理真實,博士級工程</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 核心洞見 -->
+  <section>
+    <div class="insight">
+      <h3>核心洞見:不是競爭,是同一問題在不同約束下的兩個答案</h3>
+      <p>兩條路線<b>不是誰對誰錯</b>,而是在「即時 vs 物理真實」的取捨上站在不同位置:</p>
+      <p>· <b style="color:#ff9a9a">要教學 / 訓練即時上線</b> → Weber 路線就夠(EyeSi 已用 McCannel 2013 證明能降 68% 錯誤撕囊率)。理解撕囊力學不需要 3D FEM。</p>
+      <p>· <b style="color:#9fdcff">要物理最真 / 完整術式(phaco + IOL)</b> → INRIA 路線;正確做法是直接用 SOFA(Dequidt 系統就建在上面),而非手刻 FEM。</p>
+      <p style="color:var(--mut);font-size:13px"><b style="color:var(--y)">兩者其實會師</b>:Han 2021 離線 FEM(Von Mises + 內聚律 + 豬眼驗證)算出「最省力撕裂方向」(θ₁=0°/θ₂=30°),替 Weber 憑觀察塞進去的「撕痕有偏好方向」<b style="color:var(--y)">提供物理背書</b>——描述式當年猜對的,物理式後來證實了。反差:描述式在純流暢度仍佔優(但 INRIA 的 5fps 只是 IOL 那步——phaco 其實 80fps、撕囊即時,現代 GPU 更快)。</p>
+      <div class="links">
+        <a href="ccc_method/1_tearing_descriptive.md"><div class="t">▶ EyeSi 描述式撕裂(Weber 2006)</div><div class="d">Indicator + 切平面向量合成 <span class="ar">→</span></div></a>
+        <a href="ccc_method/4_inria_fiber_fracture.md"><div class="t">▶ INRIA 纖維 FEM 撕囊(argmax c)</div><div class="d">三層邏輯 + 三篇實作分工 <span class="ar">→</span></div></a>
+        <a href="reference/4_inria_fem_realtime.md"><div class="t">▶ FEM 為何能即時</div><div class="d">TLED / gather / matrix-free <span class="ar">→</span></div></a>
+        <a href="compare_2006_vs_2009.html"><div class="t">▶ 相關:Weber 2006 vs 2009</div><div class="d">EyeSi 內部:描述式 → 物理啟發式 <span class="ar">→</span></div></a>
+      </div>
+    </div>
+  </section>
+
+  <p class="foot">來源:Weber/Wagner/Männer 2006 <i>Simulation of the CCC Procedure</i>;Comas et al. 2008(GPU FEM/SOFA);Allard/Marchal/Cotin 2009(纖維斷裂);Courtecuisse/Allard/…/Dequidt 2013 <i>Computer-based training system for cataract surgery</i>(HAL hal-00855821)。詳見 <code>docs/ccc_method/1_tearing_descriptive.md</code>、<code>docs/ccc_method/4_inria_fiber_fracture.md</code>、<code>docs/reference/4_inria_fem_realtime.md</code>、<code>docs/reference/5_dequidt2013_vs_demo.md</code>、<code>docs/reference/7_han2021_fem_tearing.md</code>(Han 2021 精讀 + 判據修正)。</p>
+</div>
+</body>
+</html>

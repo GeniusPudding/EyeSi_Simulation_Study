@@ -7,7 +7,7 @@
 
 ## 1. 基本量(符號上的「點」= 對時間微分 = 每秒變化率)
 
-| 量 | 符號 | 白話 |
+| 量 | 符號 | 白話![alt text](image.png) |
 |---|---|---|
 | 位置 | x | 它在哪 |
 | 速度 | v = ẋ | 位置每秒變多少 |
@@ -61,7 +61,7 @@ x_new = x_old + v_new * dt
   Webster 用「**預先算好近似解**」加速(*modified implicit predictor*)。
 - 入門:explicit + 小 dt;硬組織:implicit。
 
-→ 對應虛擬碼:[`../pseudocode/mass_spring.py`](../pseudocode/mass_spring.py)
+→ 對應虛擬碼:[`pseudocode/mass_spring.py`](../../pseudocode/mass_spring.py)
 
 ---
 

@@ -1,5 +1,7 @@
 # 釐清 FAQ(精簡)
 
+> 🔖 **隨查層(Lookup)**——非主幹,需要時翻。閱讀主幹見 [`overview.md`](overview.md) 的 START HERE。
+
 把學習過程中釐清的關鍵事實集中於此。
 
 ## 引擎 / ECM

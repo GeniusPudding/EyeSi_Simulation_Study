@@ -1,6 +1,8 @@
 # INRIA 引擎技術原理:FEM 為何能即時(KU=F / TLED / GPU)
 
 速讀:FEM 從「太慢」變「即時」的核心原理。脈絡見 [`3_inria_fem_lineage.md`](3_inria_fem_lineage.md),Dequidt 細節見 [`5_dequidt2013_vs_demo.md`](5_dequidt2013_vs_demo.md)。
+> 濃縮速查(三支柱 + E/ν vs k 地基,符號全解):[`../engines/6_realtime_fem_pillars.md`](../engines/6_realtime_fem_pillars.md)。
+> ⚠️ **INRIA 有兩套引擎**:Comas 2008 = **TLED 顯式**(本篇 §2–3);Marchal 09 / Dequidt 13 = **co-rotational 隱式 + matrix-free GPU-CG**(撕裂/系統走這套,§4)。別一律當成 TLED。完整對照見 [`8_inria_implementation_deepread.md`](8_inria_implementation_deepread.md)。
 
 ---
 
@@ -37,6 +39,7 @@ x(t+Δt) = 2·x(t) − x(t−Δt) + (Δt²/mᵢ)·Fᵢ(t)
 算應變需要「形狀函數空間導數」。相對**原始(t=0,永不變)構型**算 → 導數是**常數 → 離線預算一次、每步查表**(相對「當前構型」則每步重算)。
 
 > 🔑 **TLED = 顯式(各節點獨立→GPU)+ 總拉格朗日(導數預算好→算力便宜)。** 顯式要小 dt,但**軟組織低剛度 → 臨界 dt 較大 → 限制不痛**。三點互補 = GPU 即時。
+> **元素型別**:Comas 支援四面體**與 reduced-integration 8 節點六面體**。線性四面體對近乎不可壓縮軟組織易 **volumetric locking**(常應變 + 不可壓縮約束過多 → 假性超硬);六面體元素少、不鎖死(代價:hourglass 零能量模式,加 Flanagan-Belytschko 控制)。原理見 [`8_inria_implementation_deepread.md`](8_inria_implementation_deepread.md) §2。
 
 ---
 
@@ -85,7 +88,7 @@ Kernel 2(每 thread = 一個節點):讀「周圍元素的力貢獻」加總 → 
 ## 5. 即時標準 & 開源現況
 
 **FPS**:~10 = 沉浸最低門檻;**20–30 = 實用流暢**;觸覺 ~1kHz 獨立迴路。
-Dequidt 5 FPS 是 2010 硬體 + 追求物理真實的代價;現代 GPU 快很多。描述式 demo 反在「流暢度」佔優。
+Dequidt 的 **~5 FPS 只是 IOL 置入那步**(高剛度低質量、用直接稀疏解換穩);**水晶體 phaco 其實 80 fps、撕囊即時** → 「INRIA 慢」是誤讀。現代 GPU 更快;描述式 demo 在純流暢度仍佔優。
 
 **開源**:✅ SOFA/SofaCUDA(INRIA 自研,LGPL)——GPU FEM、co-rotational 現成;⚠️ 撕囊撕裂邏輯(Allard/Dequidt)需自己拼;❌ 完整成品 = InSimo 商用(HelpMeSee),閉源。
 

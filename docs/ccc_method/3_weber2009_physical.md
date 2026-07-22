@@ -3,7 +3,7 @@
 > 來源:**Weber, K. (2009).** *Interaktive Echtzeitsimulation deformierbarer Oberflächen für Trainingssysteme in der Augenchirurgie*
 > (Interactive Real-time Simulation of Deformable Surfaces for Training Systems in Eye Surgery). PhD thesis, Univ. Mannheim.
 > 原文 **德文、161 頁、無英文版**(`papers/Weber_2009_PhD_DeformableSurfaces_EyeSurgery.pdf`)。本文為第 5、6、7.1 章的**中英夾雜精讀翻譯 + 技術解讀**。
-> 相關:[`06`](1_tearing_descriptive.md)(2006 描述式)、[`11`](../implementation/2_freetear_demo.md)(本 repo demo 實作)、[`15`](../literature/2_weber2006_citations.md)(引用地圖)。
+> 相關:[`ccc_method/1 描述式撕裂`](1_tearing_descriptive.md)(2006 描述式)、[`implementation/2 demo`](../implementation/2_freetear_demo.md)(本 repo demo 實作)、[`reference/2 引用地圖`](../reference/2_weber2006_citations.md)(引用地圖)。
 
 ---
 
@@ -194,7 +194,7 @@ $$\vec a := \vec a + tearLength\cdot\frac{\vec d-\vec a}{|\vec d-\vec a|}$$
 ---
 
 ## 7. 對本 repo 的升級路徑
-- 現況:`demo_remesh_attached` = **2006 描述式**(見 [`11`](../implementation/2_freetear_demo.md))。
+- 現況:`demo_remesh_attached` = **2006 描述式**(見 [`implementation/2 demo`](../implementation/2_freetear_demo.md))。
 - 升級成 2009 物理版需改 **Layer B**:
   1. 每幀對脫離區的每個三角形算**應變**(現長/原長),尖端周圍取**應變最小**方向(§1.3);
   2. 節點應力 `s(k)`(§1.2)決定何處/是否延伸;長度 ∝ 應力(§1.4);

@@ -127,14 +127,31 @@ MOUSE_STIFFNESS = 400.0
 # False for as long as the grab lasts, then True again. Result: orbit normally, but the
 # view holds still while you pull.
 LOCK_CAMERA = False            # True = never allow orbiting at all
-# FREEZE_CAMERA_WHILE_PULLING: DISABLED -- it does not work and it broke orbiting.
-# The idea was to spot AttachBodyPerformer's interaction spring appearing in the graph and
-# freeze the camera only for the duration of a grab. Headless it behaves (object count is
-# a stable 56, never misfires), but in the GUI the count sits permanently above the
-# baseline -- SofaGLFW/SofaImGui add their own mouse-interactor objects -- so it decides
-# you are grabbing forever and the camera stays locked. A global object COUNT is simply
-# the wrong signal; it must match the attach spring specifically. Off until that is done.
+# FREEZE_CAMERA_WHILE_PULLING: freeze the orbit ONLY while you are Shift+dragging to pull,
+# so the view never spins out from under you mid-pull; released, you orbit normally.
+# The old attempt failed because it fixed a baseline object count on the FIRST step -- but
+# SofaImGui keeps adding its own persistent objects afterwards, so the count sat permanently
+# above that stale baseline and the camera locked forever. Fixed here by tracking the
+# self-calibrating RESTING (minimum) object count instead: a Shift+drag adds one transient
+# attach object that pushes the live count ABOVE the resting min -> that is the grab signal,
+# and it auto-adapts to whatever the GUI's idle object count happens to be. See _is_grabbing.
+#
+# DISABLED AGAIN (2nd attempt failed): SofaImGui keeps ADDING objects for seconds after
+# startup, so the running-min stays pinned at the startup low and every later step reads
+# "above min" -> the detector says you are grabbing forever and the camera locks solid.
+# Object count -- min, fixed, or otherwise -- is simply not a usable grab signal in this GUI.
+# The reliable fix needs to spot the SPECIFIC attach object by name (see the CAM_PROBE
+# diagnostic) rather than count anything. Left OFF so the orbit works normally meanwhile.
 FREEZE_CAMERA_WHILE_PULLING = False
+# Diagnostic: when True, print how the object count changes and (on an increase) the names
+# of the objects that appeared. Do ONE Shift+drag with this on, paste the log, and we can
+# build a name-based grab detector that actually works. Off in normal use.
+CAM_PROBE = False
+# Camera keyboard controls (best effort -- SofaImGui may only deliver keys when the 3D
+# viewport has focus; if arrows/letters do nothing, click the viewport first, or rely on the
+# auto-freeze + mouse orbit). Arrow keys OR W/A/S/D pan the view; R re-centres to the start
+# view; V toggles the orbit lock manually.
+CAM_PAN_STEP = 1.5             # world units the camera pans per key press
 
 # --- stress field (this is what the tear criterion will be built on) ----------
 # We compute the per-triangle principal stress OURSELVES in numpy, because the FEM's own
@@ -175,6 +192,19 @@ STRESS_NU = 0.3
 # (The textbook fix is a constraint-based/Lagrangian attach, which needs
 # FreeMotionAnimationLoop + an LCP solver: a much bigger rework.)
 MAX_SPEED = 25.0         # units/s; 0 disables the clamp
+# MAGNITUDE net -- the cure for the SILENT disappearance (mesh vanishes, NO error). A
+# triangle that INVERTS (flips through collinear) under a hard pull gets pushed the WRONG
+# way by the co-rotational FEM, so it inflates without bound: positions run to ~1e150 in a
+# few steps. That is HUGE but still FINITE, so np.isfinite() is True and the NaN-rollback
+# never fires -- the sheet just flies off-screen (confirmed by "overflow encountered in
+# square" once |coord| passes ~1e154). The whole cap lives within |coord| < ~15 in normal
+# use (radius 7, lifted a few mm), so any node past MAX_COORD is a runaway: rewind to the
+# last healthy frame WHILE it is still small enough to recover, instead of after it hits 1e150.
+MAX_COORD = 50.0         # units; a node past this = runaway blow-up -> rewind. 0 disables.
+                         # The whole cap lives within |coord| < ~15 even when a flap is
+                         # peeled and lifted, so 50 is a wide safety margin. Was 300, which
+                         # let a node fly to z=-72 (off-screen = "mesh disappeared") before
+                         # the net caught it; 50 rewinds it while it is still on-screen.
 
 # STRAIN CLAMP -- stops the membrane crushing into a knot. When the adhesion avalanche
 # unglues the whole sheet, nothing holds its shape, and the mouse spring + self-collision
@@ -186,6 +216,21 @@ MAX_SPEED = 25.0         # units/s; 0 disables the clamp
 # the sim from exploding.)
 MAX_STRETCH = 1.6        # an edge may not exceed this multiple of its rest length; 0 = off
 STRAIN_ITERS = 3         # relaxation passes per step
+# ANTI-COLLAPSE (min-area) clamp -- the MISSING TWIN of MAX_STRETCH. MAX_STRETCH stops a
+# triangle from INFLATING, but nothing stopped it COLLAPSING: three nodes can drift
+# collinear with every edge still a perfectly normal length, giving a ZERO-AREA triangle.
+# The FEM's computeStrainDisplacementLocal then divides by that zero -> the "Null
+# determinant / Division by zero" flood, and the mesh vanishes (NaN forces spread every-
+# where). Any triangle whose area drops below MIN_AREA_FRAC x its ORIGINAL rest area gets
+# its flattest vertex pushed back off the opposite edge, so no triangle ever reaches zero
+# area. This is the direct cure for the "拉一陣子突然無限 ERROR + 幾何消失" crash.
+MIN_AREA_FRAC = 0.05     # repair a triangle below 5% of its rest area; 0 = off
+# When MORE than this many triangles collapse in a SINGLE step, it is not a stray sliver
+# but an acute blow-up (a hard mouse flick spiking a whole cluster). Local repair only
+# band-aids that into a frozen "撕碎" mesh, so instead REWIND the whole sheet -- positions
+# AND rest shape -- to the last healthy frame and kill the velocity. A handful (<= this)
+# is treated as a stray and just locally repaired.
+SEVERE_COLLAPSE = 5
 # What actually floods "Null determinant in computeStrainDisplacementLocal" is the ENDGAME: the
 # instant the cap fully peels off the lens it is a free stiff FEM sheet carrying the pull momentum;
 # that momentum drives a triangle collinear (zero area -> singular FEM) every step. A gently
@@ -362,6 +407,16 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.step = 0
             self.last_ks = None
             self.clamped = 0
+            self.tri_idx = None        # triangle index array for the anti-collapse clamp
+            self.tri_rest_area = None  # each triangle's ORIGINAL rest area (stable ref)
+            self.collapsed = 0         # count of near-flat triangles repaired
+            self.last_good_rest = None # rest shape paired with last_good, for full rewind
+            self.rewinds = 0           # count of severe-blow-up rewinds
+            self.rest_objs = None      # self-calibrating idle object count (grab detection)
+            self._probe_prev = None    # previous object-name list, for the CAM_PROBE diag
+            self.cam_home = None       # (position, lookAt) captured at t0, for R = re-centre
+            self.cam_lock = False      # manual orbit lock toggled by V
+            self.cam_active = not LOCK_CAMERA  # last-written camera.activated (write on change)
 
         def _freeze(self, why):
             self.mo.rest_position.value = self.mo.position.value
@@ -398,6 +453,100 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             else:
                 self.edge_rest = np.zeros(0)
 
+        def _build_tri_areas(self):
+            # Triangle list + each triangle's ORIGINAL rest area, cached once. The rest area
+            # is the stable reference the anti-collapse clamp measures against; it is taken
+            # from rest_position at first call (before plasticity has had time to drift it),
+            # i.e. the undeformed cap.
+            tris = np.array(self.topo.triangles.value)
+            self.tri_idx = tris if len(tris) else np.zeros((0, 3), int)
+            R = np.array(self.mo.rest_position.value)
+            if len(self.tri_idx):
+                e1 = R[self.tri_idx[:, 1]] - R[self.tri_idx[:, 0]]
+                e2 = R[self.tri_idx[:, 2]] - R[self.tri_idx[:, 0]]
+                self.tri_rest_area = 0.5 * np.linalg.norm(np.cross(e1, e2), axis=1)
+            else:
+                self.tri_rest_area = np.zeros(0)
+
+        def _has_degenerate(self, P):
+            # True if any triangle is below the min-area threshold in configuration P.
+            if self.tri_idx is None or not len(self.tri_idx):
+                return False
+            t = self.tri_idx
+            a = 0.5 * np.linalg.norm(
+                np.cross(P[t[:, 1]] - P[t[:, 0]], P[t[:, 2]] - P[t[:, 0]]), axis=1)
+            return bool((a < MIN_AREA_FRAC * self.tri_rest_area).any())
+
+        def _is_healthy(self, P):
+            # STRICT test for "safe to snapshot as a rewind target". A rewind can only
+            # rescue the sheet if the frame it rewinds TO is genuinely good, so this must
+            # reject BOTH failure directions -- not just collapse. A blow-up inflates
+            # triangles (area ratio in the thousands) with finite, sub-MAX_COORD coords, so
+            # the old "finite and not collapsed" test happily cached the exploding frame as
+            # last_good; the runaway net then rewound straight back into the explosion and
+            # stuck at the same |coord| forever. Require: finite, coords bounded, and every
+            # triangle's area within [MIN_AREA_FRAC, DEGEN_HI] x its rest area.
+            if not np.isfinite(P).all():
+                return False
+            if MAX_COORD > 0.0 and P.size and np.abs(P).max() > MAX_COORD:
+                return False
+            if self.tri_idx is not None and len(self.tri_idx):
+                t = self.tri_idx
+                a = 0.5 * np.linalg.norm(
+                    np.cross(P[t[:, 1]] - P[t[:, 0]], P[t[:, 2]] - P[t[:, 0]]), axis=1)
+                ratio = a / np.maximum(self.tri_rest_area, 1e-12)
+                if (ratio < MIN_AREA_FRAC).any() or (ratio > DEGEN_HI).any():
+                    return False
+            return True
+
+        def _repair_flat_triangle(self, P, tri, rest_area):
+            # Push the apex (the vertex opposite the LONGEST edge) perpendicular to that edge
+            # until the triangle area reaches MIN_AREA_FRAC x rest_area. Moves ONE node, so it
+            # barely perturbs the sheet while lifting the triangle off collinearity.
+            pts = [int(tri[0]), int(tri[1]), int(tri[2])]
+            v = P[pts]
+            pairs = [(1, 2), (2, 0), (0, 1)]      # edge opposite vertex 0, 1, 2
+            Ls = [np.linalg.norm(v[i] - v[j]) for i, j in pairs]
+            apex = int(np.argmax(Ls))             # the vertex NOT on the longest edge
+            b0, b1 = pairs[apex]                   # the two base-edge vertices
+            A, B, C = v[apex], v[b0], v[b1]
+            u = C - B
+            ulen = np.linalg.norm(u)
+            if ulen < 1e-12:
+                return                            # base edge collapsed too: unrepairable here
+            u = u / ulen
+            w = (A - B) - np.dot(A - B, u) * u     # apex offset perpendicular to the base
+            wlen = np.linalg.norm(w)
+            if wlen < 1e-9:
+                # fully collinear -> no in-plane perpendicular survives; pick any direction
+                # orthogonal to the base so the apex lifts off the line.
+                ref = np.array([0.0, 0.0, 1.0])
+                if abs(np.dot(ref, u)) > 0.9:
+                    ref = np.array([1.0, 0.0, 0.0])
+                w = ref - np.dot(ref, u) * u
+                w = w / np.linalg.norm(w)
+                cur_alt = 0.0
+            else:
+                cur_alt = wlen
+                w = w / wlen
+            target_alt = 2.0 * MIN_AREA_FRAC * rest_area / ulen
+            if cur_alt < target_alt:
+                P[pts[apex]] = A + (target_alt - cur_alt) * w
+
+        def _rewind(self):
+            # Restore the last HEALTHY frame -- positions, rest shape, and zero velocity.
+            # Used by every safety net (NaN, unrepairable collapse, acute cluster blow-up).
+            # Restoring the REST too is what un-bakes a plasticity-frozen blow-up: without it
+            # the FEM equilibrium would still be the shredded shape.
+            if self.last_good is None:
+                return
+            self.mo.position.value = self.last_good
+            if self.last_good_rest is not None:
+                self.mo.rest_position.value = self.last_good_rest
+                self.bending.reinit()
+            self.mo.velocity.value = [[0.0, 0.0, 0.0]] * len(self.last_good)
+            self.rewinds += 1
+
         def _count_objs(self):
             """Total objects in the graph. The mouse attach adds one while you grab."""
             n = 0
@@ -410,6 +559,66 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 except Exception:  # noqa: BLE001
                     pass
             return n
+
+        def _obj_paths(self):
+            # Flat list of "ClassName:name" for every object in the graph -- for the CAM_PROBE
+            # diagnostic, so we can see exactly which object a Shift+drag adds.
+            out = []
+            stack = [self.root]
+            while stack:
+                nd = stack.pop()
+                try:
+                    for o in nd.objects:
+                        try:
+                            out.append(f"{o.getClassName()}:{o.getName()}")
+                        except Exception:  # noqa: BLE001
+                            out.append(str(o))
+                    stack.extend(list(nd.children))
+                except Exception:  # noqa: BLE001
+                    pass
+            return out
+
+        def _is_grabbing(self):
+            # Self-calibrating grab detector: track the RESTING (minimum) object count seen,
+            # and treat any live count above it as "an attach object is present = you are
+            # Shift+dragging". This adapts to whatever idle object count SofaImGui settles at
+            # (which is why the old fixed-first-step baseline locked the camera forever).
+            n = self._count_objs()
+            if self.rest_objs is None or n < self.rest_objs:
+                self.rest_objs = n
+            return n > self.rest_objs
+
+        def _pan_camera(self, dr, du):
+            # Translate BOTH position and lookAt by dr*right + du*up (screen-plane pan), so
+            # the view slides without rotating. Right/up derived from the current view dir.
+            if self.camera is None:
+                return
+            try:
+                pos = np.array(self.camera.position.value, dtype=float)
+                look = np.array(self.camera.lookAt.value, dtype=float)
+            except Exception:  # noqa: BLE001
+                return
+            fwd = look - pos
+            fn = np.linalg.norm(fwd)
+            if fn < 1e-9:
+                return
+            fwd = fwd / fn
+            world_up = np.array([0.0, 0.0, 1.0])
+            right = np.cross(fwd, world_up)
+            if np.linalg.norm(right) < 1e-6:            # looking straight up/down: fall back
+                right = np.cross(fwd, np.array([0.0, 1.0, 0.0]))
+            right = right / max(np.linalg.norm(right), 1e-9)
+            up = np.cross(right, fwd)
+            delta = dr * right + du * up
+            self.camera.position.value = (pos + delta).tolist()
+            self.camera.lookAt.value = (look + delta).tolist()
+
+        def _reset_camera(self):
+            if self.camera is None or self.cam_home is None:
+                return
+            self.camera.position.value = list(self.cam_home[0])
+            self.camera.lookAt.value = list(self.cam_home[1])
+            print("[Camera] re-centred to the start view")
 
         def _report(self):
             print(f"[Knobs] bend={float(self.bending.stiffness.value):7.1f} | "
@@ -446,6 +655,23 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 self._report()
             elif k in ("P", "p"):      # print current values
                 self._report()
+            # --- camera controls (best effort; may need the 3D viewport to have focus) ---
+            # Arrow keys OR W/A/S/D pan the view; R re-centres; V toggles the orbit lock.
+            # SofaGLFW delivers arrow keys as the control chars 18/20/19/21 (up/down/left/
+            # right); accept both those and W/A/S/D so at least one route works.
+            elif k in ("W", "w", "\x12"):              # up  (\x12 = 18)
+                self._pan_camera(0.0, CAM_PAN_STEP)
+            elif k in ("S", "s", "\x14"):              # down (\x14 = 20)
+                self._pan_camera(0.0, -CAM_PAN_STEP)
+            elif k in ("A", "a", "\x13"):              # left (\x13 = 19)
+                self._pan_camera(-CAM_PAN_STEP, 0.0)
+            elif k in ("D", "d", "\x15"):              # right (\x15 = 21)
+                self._pan_camera(CAM_PAN_STEP, 0.0)
+            elif k in ("R", "r"):                       # re-centre the view
+                self._reset_camera()
+            elif k in ("V", "v"):                       # toggle orbit lock manually
+                self.cam_lock = not self.cam_lock
+                print(f"[Camera] orbit {'LOCKED' if self.cam_lock else 'free'}")
 
         def onAnimateEndEvent(self, event):
             # (0) NaN-rollback net. Once the membrane is FULLY peeled off the lens it is a
@@ -455,10 +681,14 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             # this step went non-finite, restore the last all-finite positions and kill the
             # velocity, turning a permanent blow-up into a recoverable hiccup.
             P0 = np.array(self.mo.position.value)
-            if not np.isfinite(P0).all():
-                if self.last_good is not None:
-                    self.mo.position.value = self.last_good
-                    self.mo.velocity.value = [[0.0, 0.0, 0.0]] * len(self.last_good)
+            runaway = (MAX_COORD > 0.0 and P0.size > 0
+                       and np.isfinite(P0).all() and np.abs(P0).max() > MAX_COORD)
+            if not np.isfinite(P0).all() or runaway:
+                if runaway and self.step % 15 == 0:
+                    print(f"[Runaway] a node passed |coord|>{MAX_COORD:g} "
+                          f"(max {float(np.abs(P0).max()):.1f}) -> rewound before it "
+                          f"flew off-screen")
+                self._rewind()
                 return
 
             # (1) Velocity clamp: clip a runaway node's speed before it flies a long way in
@@ -501,10 +731,65 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                     if moved:
                         self.mo.position.value = P.tolist()
 
-            # (3) Cache this finite state as the rollback target for (0).
+            # (2b) ANTI-COLLAPSE (min-area) clamp -- the twin of the MAX_STRETCH clamp above.
+            # MAX_STRETCH stops a triangle inflating; this stops it COLLAPSING to zero area,
+            # which is exactly what makes computeStrainDisplacementLocal divide by zero ("Null
+            # determinant" flood) and the mesh disappear. Repair the flattest vertex of any
+            # near-collinear triangle; if one is so collapsed it cannot be repaired (its base
+            # edge is gone too), roll the whole sheet back to the last HEALTHY state rather
+            # than let the FEM choke on it forever.
+            degenerate_after = None       # None = not yet known; (3) will check if needed
+            if MIN_AREA_FRAC > 0.0:
+                if self.tri_idx is None:
+                    self._build_tri_areas()
+                tris = self.tri_idx
+                if len(tris):
+                    P = np.array(self.mo.position.value)
+                    area = 0.5 * np.linalg.norm(
+                        np.cross(P[tris[:, 1]] - P[tris[:, 0]],
+                                 P[tris[:, 2]] - P[tris[:, 0]]), axis=1)
+                    bad = np.where(area < MIN_AREA_FRAC * self.tri_rest_area)[0]
+                    if len(bad) > SEVERE_COLLAPSE and self.last_good is not None:
+                        # ACUTE blow-up (a whole cluster collapsed this step): local repair
+                        # would only band-aid it into a frozen shredded mesh. Rewind the whole
+                        # sheet -- positions AND rest -- to the last healthy frame instead.
+                        self._rewind()
+                        if self.step % 15 == 0:
+                            print(f"[Rewind] {len(bad)} triangles collapsed at once -> "
+                                  f"rewound to last healthy frame (total {self.rewinds})")
+                        return
+                    if len(bad):
+                        for t in bad:
+                            self._repair_flat_triangle(P, tris[t],
+                                                       float(self.tri_rest_area[t]))
+                        self.collapsed += int(len(bad))
+                        self.mo.position.value = P.tolist()
+                        if self.step % 15 == 0:
+                            print(f"[AntiCollapse] repaired {len(bad)} near-flat "
+                                  f"triangle(s) (total {self.collapsed}); mesh kept solvable")
+                        degenerate_after = self._has_degenerate(P)
+                        if degenerate_after and self.last_good is not None:
+                            # repair could not save every triangle -> escape to safety
+                            self._rewind()
+                            return
+                    else:
+                        degenerate_after = False
+
+            # (3) Cache this finite state as the rollback target for (0) -- but ONLY if it is
+            # also NON-DEGENERATE. Caching a finite-but-collinear state would make (0)/(2b)
+            # roll back INTO the same zero-area trap forever (the infinite flood). Requiring
+            # healthy triangles guarantees every rollback escapes to a solvable configuration.
+            # Snapshot as a rewind target ONLY when the whole frame is genuinely healthy --
+            # not merely finite-and-not-collapsed. This is what stops last_good being
+            # poisoned by an inflating blow-up (which the runaway net then rewinds straight
+            # back into, sticking at a fixed |coord| forever). See _is_healthy.
             Pn = np.array(self.mo.position.value)
-            if np.isfinite(Pn).all():
+            if self._is_healthy(Pn):
                 self.last_good = Pn.tolist()
+                # Snapshot the rest shape TOO, so a rewind restores a matching
+                # (position, rest) pair -- otherwise a rewind of positions onto a
+                # plasticity-drifted rest would itself be a mismatch.
+                self.last_good_rest = list(self.mo.rest_position.value)
 
         def onAnimateBeginEvent(self, event):
             t = self.fem.getContext().getTime()
@@ -523,7 +808,12 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 print(f"[Tune] BEND_STIFFNESS -> {ks_now:.1f} (applied)")
 
             if not self.paper_done and t >= SWITCH_T:
-                self.fem.youngModulus.value = [PAPER_YOUNG]
+                # FEMOptim takes youngModulus as a SCALAR; the plain version took a vector.
+                # Try scalar first, fall back to the list form so this survives either class.
+                try:
+                    self.fem.youngModulus.value = PAPER_YOUNG
+                except Exception:  # noqa: BLE001
+                    self.fem.youngModulus.value = [PAPER_YOUNG]
                 self.fem.reinit()
                 self.springs.linesStiffness.value = EDGE_STIFFNESS
                 self.paper_done = True
@@ -600,14 +890,31 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             # the mouse directly (SofaPython3 does not bind onMouseEvent) and the
             # left-drag=orbit binding is hard-coded in SofaGLFW, so this is the way to
             # stop the view spinning out from under you mid-pull.
-            if FREEZE_CAMERA_WHILE_PULLING and not LOCK_CAMERA and self.camera is not None:
-                now = self._count_objs()
-                if self.base_objs is None:
-                    self.base_objs = now
-                grabbing = now > self.base_objs
-                if grabbing != self.grabbing:
-                    self.grabbing = grabbing
-                    self.camera.activated.value = not grabbing
+            if CAM_PROBE:
+                cur = self._obj_paths()
+                if self._probe_prev is not None:
+                    added = [x for x in cur if x not in self._probe_prev]
+                    removed = [x for x in self._probe_prev if x not in cur]
+                    if added or removed:
+                        print(f"[CamProbe] {len(self._probe_prev)}->{len(cur)} "
+                              f"ADDED={added} REMOVED={removed}", flush=True)
+                self._probe_prev = cur
+
+            if self.camera is not None and not LOCK_CAMERA:
+                # Capture the start view once, for R = re-centre.
+                if self.cam_home is None:
+                    try:
+                        self.cam_home = (list(self.camera.position.value),
+                                         list(self.camera.lookAt.value))
+                    except Exception:  # noqa: BLE001
+                        self.cam_home = None
+                # Orbit is disabled when EITHER you manually locked it (V) OR you are
+                # currently Shift+dragging to pull. Write activated only on a change.
+                grabbing = self._is_grabbing() if FREEZE_CAMERA_WHILE_PULLING else False
+                want_active = not (self.cam_lock or grabbing)
+                if want_active != self.cam_active:
+                    self.camera.activated.value = want_active
+                    self.cam_active = want_active
 
             # --- STRESS FIELD: the foundation the tear criterion will run on -------
             # Computed from geometry (rest vs current), so it is independent of which
@@ -703,6 +1010,27 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                                     np.fromiter(self.adhered, dtype=int)
                                     if self.adhered else np.empty(0, dtype=int),
                                     assume_unique=False)
+                # PLASTICITY HEALTH GUARD. Creep bakes the CURRENT shape into the rest, so
+                # if a hard yank momentarily blows a cluster of triangles up (or squashes
+                # them flat), letting the rest adopt that broken shape makes the damage
+                # PERMANENT: the FEM's equilibrium becomes the shredded shape, the anti-
+                # collapse clamp then fights it forever and the mesh stays torn (the frozen
+                # "撕碎" state). So exclude any node touching an unhealthy triangle
+                # (area ratio outside DEGEN_LO..DEGEN_HI): its rest stays clean, and once
+                # the spike passes the FEM pulls that cluster back to a good shape instead
+                # of setting the blow-up in stone. Uses the current-vs-rest area ratio.
+                if free.size and self.tri_idx is None:
+                    self._build_tri_areas()
+                if free.size and self.tri_idx is not None and len(self.tri_idx):
+                    tI = self.tri_idx
+                    ca = 0.5 * np.linalg.norm(
+                        np.cross(pos[tI[:, 1]] - pos[tI[:, 0]],
+                                 pos[tI[:, 2]] - pos[tI[:, 0]]), axis=1)
+                    ratio = ca / np.maximum(self.tri_rest_area, 1e-12)
+                    sick = (ratio < DEGEN_LO) | (ratio > DEGEN_HI)
+                    if sick.any():
+                        unsafe = np.unique(tI[sick].ravel())
+                        free = np.setdiff1d(free, unsafe, assume_unique=False)
                 if free.size:
                     newrest = np.array(rest, copy=True)
                     newrest[free] += self.plastic_rate * (pos[free] - rest[free])
@@ -792,7 +1120,14 @@ def createScene(root):
     mo = cap.addObject("MechanicalObject", name="Mo", src="@../loader")
     cap.addObject("DiagonalMass", massDensity=1.0)
 
-    fem = cap.addObject("TriangularFEMForceField", name="FEM", method="large",
+    # TriangularFEMForceFieldOptim (NOT the plain TriangularFEMForceField): the Optim
+    # rewrite internally guards the 1/area term in the strain-displacement matrix, so a
+    # degenerate/inverting triangle no longer throws "Null determinant in
+    # computeStrainDisplacementLocal" and NaN-floods the whole sheet. Same corotational
+    # physics; the principal-stress field the tear criterion needs is computed in numpy here
+    # (principal_stress), independent of the FEM class. On Optim, youngModulus is a SCALAR
+    # (not the per-triangle vector the plain version takes) -- see the ClothToPaper setter.
+    fem = cap.addObject("TriangularFEMForceFieldOptim", name="FEM", method="large",
                         youngModulus=CLOTH_YOUNG, poissonRatio=0.3)
     springs = cap.addObject("MeshSpringForceField", name="EdgeSprings",
                             linesStiffness=EDGE_STIFFNESS, linesDamping=1.0)

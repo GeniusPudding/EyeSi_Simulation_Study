@@ -11,7 +11,7 @@
 所以**把撕裂傳播和囊膜變形拆成兩層**:
 
 ```
-Layer A 囊膜變形 = mass-spring(docs 02)  →「掀起的膜瓣怎麼飄」+ 算應力,次要
+Layer A 囊膜變形 = mass-spring(engines/2 mass-spring)  →「掀起的膜瓣怎麼飄」+ 算應力,次要
 Layer B 撕裂傳播 = Indicator 描述式演算法  →「撕痕下一步往哪走」,核心
 ```
 > 囊膜的 stress **只用來「觸發」撕裂**;一旦觸發,撕往哪走**完全由 Layer B 決定,不依賴物理模擬**。
@@ -37,7 +37,7 @@ mass-spring(Layer A)算膜瓣應力 → 應力 ≥ 門檻? ──否──► �
 2. Layer A:對 Attached=False 節點跑 mass-spring → 膜瓣變形 + 算應力
 3. 應力觸發:應力 ≥ 門檻 → 撕一步;否則撕痕不動
 4. Layer B:算撕痕方向(切平面,§3),末端前進一小段固定距離
-5. 拓樸:remesh(docs 07);撕裂前緣掃過的節點 Attached: True→False(膜瓣長大)
+5. 拓樸:remesh(ccc_method/2 remesh);撕裂前緣掃過的節點 Attached: True→False(膜瓣長大)
 6. 繪圖(立體 + 陰影)
 ```
 兩層耦合點:Layer A 算應力 → 觸發 Layer B;Layer B 前進 → 改 Attached → 回饋 Layer A;
@@ -90,7 +90,7 @@ if Indicator == Ripping:
     PullAngle  = FRACTION * angle(CurrDir, PullDir)   # 模擬「拉向近乎垂直」的反直覺行為
     PullAngle  = min(PullAngle, MAX_rip)        # 上限高 → 允許急轉、救援
 ```
-- 每步:撕痕末端**沿新方向前進一小段固定距離**,然後更新網格(見 docs 07)。
+- 每步:撕痕末端**沿新方向前進一小段固定距離**,然後更新網格(見 [`ccc_method/2 remesh`](2_topological_remesh.md))。
 
 ## 4. 為何這能重現真實行為
 
@@ -98,7 +98,7 @@ if Indicator == Ripping:
 - 醫學文獻建議用**受控 ripping** 救歪掉的撕痕 → 模型中只有 ripping 能大幅急轉 →
   訓練者學會用 planned ripping maneuver 救援。
 
-→ 對應虛擬碼:[`../pseudocode/ccc_tearing.py`](../pseudocode/ccc_tearing.py)
+→ 對應虛擬碼:[`pseudocode/ccc_tearing.py`](../../pseudocode/ccc_tearing.py)
 
 ---
 

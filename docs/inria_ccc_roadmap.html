@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>INRIA CCC 撕囊模擬:完整技術路線圖(物理 → SofaCUDA → 撕裂 → 器械)</title>
+<style>
+  :root{--bg:#0c111c;--card:#141b2b;--card2:#171f31;--line:#2a3550;--txt:#e6e9ef;--mut:#93a1c0;
+    --y:#ffd479;--g:#2ecc71;--r:#ff6b6b;--b:#6fd3ff;--o:#ffb454;--p:#88aaff;}
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;line-height:1.6}
+  .wrap{max-width:1180px;margin:0 auto;padding:26px 22px 60px}
+  h1{font-size:25px;margin:0 0 4px}
+  h1 .hl{color:var(--b)}
+  .lead{color:var(--mut);font-size:14px;margin:0 0 8px;max-width:940px}
+  .lead b{color:var(--txt)}
+  .src{color:var(--mut);font-size:12px;margin:0 0 22px}
+  .src code{background:#1c2740;padding:1px 6px;border-radius:5px;color:#cdd6ea}
+  section{margin-top:30px}
+  section>h2{font-size:19px;margin:0 0 4px;padding-left:11px;border-left:4px solid var(--b)}
+  section>.sub{color:var(--mut);font-size:13px;margin:0 0 14px;padding-left:11px}
+  .box{background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin:10px 0}
+  .box.warn{border-color:#7a5a2a;background:linear-gradient(135deg,rgba(255,180,84,.09),rgba(255,212,121,.05))}
+  .box.good{border-color:#2f5b45;background:linear-gradient(135deg,rgba(46,204,113,.08),rgba(111,211,255,.05))}
+  .box h3{margin:0 0 8px;font-size:15px;color:var(--y)}
+  .box.warn h3{color:var(--o)} .box.good h3{color:var(--g)}
+  .box p{margin:6px 0;font-size:13.5px}
+  .flow{background:#0e1420;border:1px solid var(--line);border-radius:9px;padding:14px 16px;font-family:ui-monospace,Consolas,monospace;font-size:12.5px;line-height:1.9;white-space:pre;overflow-x:auto}
+  .flow .hl{color:var(--y)}.flow .gg{color:var(--g)}.flow .rr{color:var(--r)}.flow .bb{color:var(--p)}.flow .cy{color:var(--b)}.flow .oo{color:var(--o)}.flow .mm{color:var(--mut)}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;overflow:hidden;border-radius:11px;border:1px solid var(--line);margin:6px 0}
+  th,td{padding:9px 13px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#1a2338;font-size:12.5px}
+  tr:last-child td{border-bottom:0}
+  td:first-child{color:var(--b);white-space:nowrap}
+  tbody tr:nth-child(even){background:rgba(255,255,255,.017)}
+  code{background:#1c2740;padding:1px 6px;border-radius:5px;font-size:12px;color:#cdd6ea}
+  .stage{display:grid;grid-template-columns:150px 1fr;gap:0;border:1px solid var(--line);border-radius:11px;overflow:hidden;margin:6px 0}
+  .stage>div{padding:12px 15px;border-bottom:1px solid var(--line)}
+  .stage .lh{background:#1a2338;font-weight:700;font-size:13.5px;display:flex;flex-direction:column;justify-content:center;color:var(--b)}
+  .stage>div:last-child,.stage .lh:nth-last-child(2){border-bottom:0}
+  .pill{display:inline-block;font-size:11px;padding:1px 8px;border-radius:20px;font-weight:700;margin-left:4px;background:rgba(111,211,255,.16);color:#9fdcff}
+  .pill.exp{background:rgba(255,107,107,.16);color:#ff9a9a}
+  .foot{color:var(--mut);font-size:12px;margin-top:30px;border-top:1px solid var(--line);padding-top:12px}
+  .foot code{font-size:11.5px}
+  b.r{color:#ff9a9a} b.g{color:#7de6a6} b.y{color:var(--y)} b.b{color:var(--b)} b.o{color:var(--o)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>INRIA CCC 撕囊模擬:<span class="hl">完整技術路線圖</span></h1>
+  <p class="lead">端到端:<b>建 mesh → 物理引擎 → 克服運算量 → 撕裂 + remesh → 器械操作</b>。基於 SOFA/SofaCUDA。含 volumetric locking 名詞解釋、真實實作範例、以及「器械力怎麼來」的正確流程(不是力回饋、也不是速度推算)。</p>
+  <p class="src">來源:三篇一手 PDF 深讀(Comas 2008 · Marchal/Allard 2009 · Dequidt/Courtecuisse 2013,存 <code>papers/</code>)。整合正本:<code>reference/8_inria_implementation_deepread.md</code>。標 <b>[推論]</b> 者為原文未明述。</p>
+
+  <!-- 名詞 -->
+  <section>
+    <h2>名詞先解:volumetric locking(體積鎖死)</h2>
+    <div class="box warn">
+      <h3>⚠ 為何 4 節點線性四面體「易鎖死」</h3>
+      <p>軟組織近乎<b>不可壓縮</b>(ν → 0.5,幾乎是水)。4 節點線性四面體的形狀函數太「窮」——自由度不夠在<b>每個積分點</b>同時滿足「體積不變」又自由變形。結果元素為了硬湊不可壓縮約束,變得<b class="o">假性過硬、抗變形遠大於真材料</b>,這就叫鎖死。</p>
+      <p><b class="g">解法</b>:高階元素、<b>reduced-integration(單積分點)</b>、<b>六面體</b>、混合 u–p 公式、F-bar…。<b>Comas 2008 就是為此加了 reduced-integration 8 節點六面體</b>——同自由度下元素更少、且不鎖死(代價:六面體有 hourglass 零能量模式,要加 Flanagan-Belytschko 控制)。</p>
+    </div>
+  </section>
+
+  <!-- 真實範例 -->
+  <section>
+    <h2>符合此路線的真實實作(範例血緣)</h2>
+    <p class="sub">這條「SOFA + GPU FEM + 纖維斷裂 + remesh」路線的實際實作,是一條可追的血緣:</p>
+    <table>
+      <tbody>
+        <tr><td>SOFA</td><td>INRIA 開源模擬框架(sofa-framework.org)——scene-graph + component,GPU FEM/co-rotational/碰撞現成。<b>整條路線的地基。</b></td></tr>
+        <tr><td>Comas 2008</td><td>SofaCUDA:GPU TLED 引擎(讓真非線性 FEM 即時)。</td></tr>
+        <tr><td>Allard/Marchal 2009</td><td>纖維斷裂 argmax c 準則 + remesh(撕裂核心)。</td></tr>
+        <tr><td>Courtecuisse 2010</td><td>GPU 共軛梯度 + <b>非同步預條件子</b>(讓隱式接觸/撕裂即時的數值核心)。</td></tr>
+        <tr><td>Dequidt 2013 ⭐</td><td>學術<b>參考實作</b>:撕囊 + phaco + IOL 完整白內障系統(本路線圖主要依據)。</td></tr>
+        <tr><td>Le Gouis/Marchal 2017</td><td>FEM 撕裂 + haptic rendering(纖維斷裂續作)。</td></tr>
+        <tr><td>InSimo → HelpMeSee</td><td>INRIA 衍生公司 InSimo 把此路線<b>產品化</b>成 HelpMeSee 白內障手術模擬器(商用、閉源)。這是「符合此路線」最完整的落地範例。</td></tr>
+      </tbody>
+    </table>
+    <p class="sub" style="padding-left:0;margin-top:8px">→ 這條路線相當 INRIA/SOFA 專屬;引擎(SOFA)開源可用,成品(InSimo/HelpMeSee)閉源。</p>
+  </section>
+
+  <!-- 兩套引擎 -->
+  <section>
+    <h2>先分清:INRIA 有「兩套引擎」</h2>
+    <p class="sub">常見誤解是「INRIA = TLED」。實際上撕裂與完整系統走的是另一套。</p>
+    <table>
+      <thead><tr><th>面向</th><th>Comas 2008(引擎)</th><th>Marchal 09 / Dequidt 13(撕裂+系統)</th></tr></thead>
+      <tbody>
+        <tr><td>形變模型</td><td><b class="r">TLED</b>(Total Lagrangian) <span class="pill exp">顯式</span></td><td><b class="b">co-rotational</b> 線彈性 <span class="pill">隱式</span></td></tr>
+        <tr><td>積分</td><td>中央差分,逐節點獨立</td><td>隱式,dt=0.01s,穩健、大步長</td></tr>
+        <tr><td>克運算量靠</td><td>不解方程 + GPU 兩 kernel(scatter→gather)</td><td>matrix-free GPU-CG + 非同步預條件子</td></tr>
+        <tr><td>材料</td><td>各向異性 visco-hyperelastic</td><td>co-rot 線彈性 + 囊膜各向異性剛度矩陣</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 完整路線圖 -->
+  <section>
+    <h2>完整端到端路線圖</h2>
+    <p class="sub">從離線建置到每幀即時迴圈的整條流程。</p>
+
+    <div class="box">
+      <h3>A. 離線建置(init,一次)</h3>
+<div class="flow"><span class="mm"># 幾何 + 物理參數,上傳 GPU</span>
+建 mesh   <span class="cy">水晶體</span>=四面體 FEM(3000)  <span class="cy">前囊</span>=三角 FEM 橫向同性(1500)  <span class="cy">IOL</span>=三角殼(743)
+兩層網格  1 粗四面體 ─1→8─> 8 細(粗=力學/細=渲染+碰撞;8 細全刪→粗也刪)
+纖維     逐三角給方向 θ:每 0.5mm 一圈<span class="bb">同心圓</span>(F=圓周切線)  <span class="mm">[初始化公式=推論]</span>
+預算     <span class="rr">TLED</span>:形狀函數導數相對原始構型=常數,預算一次上傳 GPU(texture 綁 linear memory)
+材料     水晶體 1→5 kPa(依年齡) · IOL E=1MPa ν=0.42</div>
+    </div>
+
+    <div class="box">
+      <h3>B. 每幀即時迴圈(~30–80 fps)</h3>
+<div class="flow"><span class="oo">1. 追蹤</span>    6 台 IR 相機 → 器械<b class="b">位置/姿態</b>(每器械 4 標記,VRPN,雙電腦)
+<span class="oo">2. 碰撞</span>    器械(位置控制剛體)vs 組織 mesh → 接觸點;夾持:閉合把碰到節點約束到器械
+<span class="oo">3. 解算</span>    <span class="bb">隱式 + matrix-free CG(GPU)</span>:K 從不成形,逐元素算 K·v;異質組織用非同步預條件子加速
+           <span class="mm">└ Comas 路線則是: 顯式中央差分逐節點更新(無解),兩 kernel gather 累加力</span>
+<span class="oo">4. 撕裂</span>    裂尖每方向 d 算 c=(σ_d⊥/σ̄_d⊥)·H((d·p)−cosθ_P);<span class="rr">c>1 且 argmax</span> → 撕一步
+<span class="oo">5. remesh</span>  沿撕裂方向切分三角(每步);避免退化細三角(否則病態);matrix-free → 免重組矩陣
+<span class="oo">6. 移除</span>    phaco:抽吸球內粒子加力拉向尖端;乳化=刪四面體
+<span class="oo">7. 渲染</span>    Projected Tetrahedra 體積渲染(光沿深度衰減=手術視覺線索)+ 立體顯微鏡</div>
+      <p style="margin:10px 0 0;font-size:12.5px;color:var(--mut)">🔑 步驟 3–5 的關鍵:<b class="b">matrix-free</b> 讓「撕裂改拓樸」不必重組/重分解矩陣——這是撕裂能即時的根本。</p>
+    </div>
+  </section>
+
+  <!-- 引擎剖面 -->
+  <section>
+    <h2>引擎剖面:GPU TLED 逐步過程(讓真非線性 FEM 即時)</h2>
+    <p class="sub">放大看 Comas 的引擎:顯式怎麼「不解方程」、每幀六步在算什麼、GPU 兩 kernel 怎麼拆。</p>
+
+    <div class="box">
+      <h3>顯式 vs 隱式:差在「下一步用不用到下一步自己」</h3>
+      <p><b class="r">傳統 FEM(隱式)</b>:解全域 <code>K·U = F</code> —— 這是<b>靜力平衡</b>(內彈力=外力)離散到網格。K 是剛度矩陣,把所有節點<b>耦合</b>(動一個節點會拉扯鄰居)→ 要<b>解一個所有節點同時自洽的大方程</b>,貴、順序相依、難平行。</p>
+      <p><b class="g">TLED(顯式)</b>:下一步位置<b>只用「現在已知」的量</b>算,不引用未知的下一步狀態 → 沒有方程可解、每節點獨立:</p>
+<div class="flow"><span class="gg">uₙ₊₁ = 2uₙ − uₙ₋₁ + Δt²·M⁻¹·(F_ext − F_int(uₙ))</span>   M=對角(集中)質量 → M⁻¹ 只是逐節點除以質量</div>
+      <p style="font-size:12.5px;color:var(--mut)">代價:顯式只看當下受力,Δt 太大會衝過頭→爆掉(條件穩定);隱式看「未來構型」的受力→無條件穩定但要解方程。軟組織剛度低→顯式 Δt 上限較寬→划算。<b>所以「每節點獨立算自己的下一步位置」是顯式的結果,不是定義本身——定義是「不引用未知的下一步」。</b></p>
+    </div>
+
+    <div class="box">
+      <h3>每幀六步(給定節點位置 → 算彈力 → 走一步)</h3>
+<div class="flow"><span class="cy">每元素(GPU thread=一個元素):</span>
+  a. 讀節點位置 → <span class="bb">變形梯度 F</span>(原始小箭頭 dX 變成 dx:dx=F·dX,含拉伸+旋轉)
+  b. <span class="bb">C = FᵀF</span>(扣掉旋轉、只剩純拉伸)→ 套材料本構律 → <span class="bb">應力 S</span>
+  c. <span class="bb">strain-displacement 矩陣 B</span>(由形狀函數空間導數組成:應變 ε = B·u)
+  d. 由 S 算「這元素對它每個角節點的力貢獻」
+<span class="cy">每節點(GPU thread=一個節點):</span>
+  e. gather 鄰元素的力貢獻加總 → 節點淨內力 F_int
+  f. 中央差分更新位置(上面那條式)</div>
+      <p style="font-size:12.5px;color:var(--mut)">整體 = FEM 版的「算彈簧力 → 積分 F=ma」,只是力來自<b>真連續體力學</b>(F→C→S)而非虎克彈簧。<b>為何應變要形狀函數空間導數</b>:應變=位移在空間中的變化率;元素內位移 u(x)=ΣNᵢ(x)·uᵢ,故 ε ∝ Σ(dNᵢ/dx)·uᵢ——那個導數就是 B。<b>Total Lagrangian</b> 讓這些導數相對原始構型=常數,預算一次、每步查表。</p>
+    </div>
+
+    <div class="box">
+      <h3>GPU 兩 kernel:是「兩趟平行」,不是把 GPU 切成兩半</h3>
+      <p><b>kernel</b> = 一段程式,一發射就在<b>幾千個 thread 上同時跑同一段碼</b>、每 thread 處理一筆資料。兩個 kernel = <b>兩趟(先後)的全域平行掃描</b>,每趟都用<b>整顆 GPU</b>:</p>
+<div class="flow"><span class="oo">Kernel 1</span>(thread=元素):算 a–d,把力貢獻寫進「自己獨佔的格子」  ── 整顆 GPU 掃一遍所有元素
+        ▼
+<span class="oo">Kernel 2</span>(thread=節點):gather 加總 → e–f 更新位置             ── 整顆 GPU 掃一遍所有節點</div>
+      <p style="font-size:12.5px;color:var(--mut)">拆兩趟是為了避開<b>寫衝突</b>:若一趟就讓元素直接寫共用節點,多個 thread 同寫同一位址=race condition。翻成「寫私有格子(Kernel1)+ 讀共用來 gather(Kernel2)」→ 衝突消失(scatter→gather)。「拆兩半」是時間上的兩趟,不是空間上切 GPU。</p>
+    </div>
+
+    <div class="box warn">
+      <h3>⚠ 這顆引擎只做變形——撕裂/接觸/觸覺怎麼辦?</h3>
+      <p>Comas TLED(顯式)<b>不做撕裂、接觸、觸覺</b>(顯式對接觸力不穩)。解法不是硬擴充它,而是<b class="o">換另一套引擎</b>接手:</p>
+      <table>
+        <tbody>
+          <tr><td>撕裂</td><td>Allard 2009:<b class="b">co-rotational + 隱式 + matrix-free CG</b> + argmax c 準則 + remesh</td></tr>
+          <tr><td>接觸/穩定</td><td>Courtecuisse 2010:<b class="b">GPU-CG + 非同步預條件子</b>(隱式才穩得住接觸)</td></tr>
+          <tr><td>完整系統</td><td>Dequidt 2013:上兩者 + phaco(刪四面體)+ IOL(殼+摩擦接觸)+ IR 光學追蹤</td></tr>
+        </tbody>
+      </table>
+      <p style="font-size:12.5px;color:var(--mut)">→ 這就是「<b>兩套引擎</b>」:純變形用 TLED 顯式;要撕裂/接觸就切 <b>co-rotational 隱式 matrix-free</b>。在 SOFA 裡 = 每個部件掛合適的 ForceField + Solver。</p>
+    </div>
+  </section>
+
+  <!-- 撕裂細節 -->
+  <section>
+    <h2>撕裂 + remesh:具體怎麼做</h2>
+    <div class="box">
+      <h3>斷裂準則(Marchal Eq.4–6,Dequidt 沿用)</h3>
+<div class="flow"><span class="rr">c(d,σ,f,p) = σ_d⊥ / σ̄_d⊥ · H((d·p) − cosθ_P)</span> ,  d⊥ = d×n         (Eq.4)
+σ_u  = cos²θ_u·σx + sin²θ_u·σy + 2 sinθ_u cosθ_u·τxy               (Eq.5  Mohr 投影)
+σ̄_u = σ̄_T + (σ̄_F − σ̄_T)·[1 − (2/π)·acos(|u·f|)]^α                 (Eq.6  方向強度內插)
+撕裂方向 = <span class="rr">argmax_d c</span>   (c>1 才撕)</div>
+      <p style="font-size:13px"><b>σ_d⊥</b>=垂直撕痕的張應力(撐開裂縫的 Mode-I 分量,非沿 d 的力)。<b>σ̄</b>:u∥纖維→強 σ̄_F、u⊥纖維→弱 σ̄_T。<b>H(·)</b>:只准與上一步 p 夾角≤θ_P(防回折)。<b class="y">等向退化 = 最大主應力準則</b>(Marchal 明證)。</p>
+      <p style="font-size:13px"><b>何處/何時</b>:裂尖或潛在裂元素中心;粗網格單元素應力不準→<b>鄰域加權平均</b>平滑;<b>不做 substepping</b>(大 dt 取 argmax)。<b>Dequidt 正文用 stress 特徵值</b>(非 strain),門檻依外科醫師調。</p>
+      <p style="font-size:13px"><b>remesh 兩策略</b>:沿既有邊(便宜、mesh-dependent)或任意方向切分(mesh-independent,須避免退化細三角,引 Federl)。每步做。</p>
+    </div>
+  </section>
+
+  <!-- 器械力 -->
+  <section>
+    <h2>器械力怎麼來?(修正「速度推算」的誤解)</h2>
+    <div class="box warn">
+      <h3>⚠ 不是力回饋裝置、也不是用光學追蹤速度推算</h3>
+      <p>光學追蹤給的是<b class="o">位置/姿態</b>(每幀),不是力。力是<b>接觸/約束模型的輸出</b>,由器械位置「推/夾」組織而生。速度只影響動力學/阻尼,不是力來源。</p>
+    </div>
+<div class="flow"><span class="oo">IR 光學追蹤</span> ── 每幀器械<b class="b">位置/姿態</b>(非力、非速度)
+      │
+      ▼
+<span class="bb">器械 = 位置控制的剛體障礙 / 夾持物</span>
+      │
+      ├─ 推:碰撞偵測 → <span class="cy">接觸模型(penalty / constraint;Saupin contact-warping + 摩擦)</span> → 組織受接觸力
+      └─ 夾:鑷子閉合 → 把碰到的節點<span class="cy">約束到器械</span> → 移動器械 = 拉那些節點 → mesh 生張力
+      │
+      ▼
+<span class="bb">隱式 FEM 回應</span> → 組織變形 → 張力超門檻 → <span class="rr">觸發撕裂(argmax c)</span>
+      │
+      ▼
+反力理論上可導出(可接觸覺),<b class="r">但此系統無力回饋裝置</b>
+      │
+      ▼
+醫師手感 = <b class="g">只有視覺回饋 + 眼球模型的機械約束(插針孔/眼窩限制器械運動)</b></div>
+    <div class="box good">
+      <h3>✔ 一句話</h3>
+      <p>器械是<b>位置驅動</b>的(追蹤給位置)→ 碰撞/夾持約束<b>產生</b>組織受力 → 隱式 FEM 算變形與撕裂。<b class="r">沒有力回饋到醫師手上</b>,回饋是視覺 + 眼球機械約束。所以「用速度推算力」不成立。</p>
+    </div>
+  </section>
+
+  <!-- 效能 -->
+  <section>
+    <h2>效能真相(修正「INRIA 慢」)</h2>
+    <p class="sub">全在 2.4 GHz + 一般顯卡。「5 fps」只是 IOL 那步,不是整個系統。</p>
+    <table>
+      <thead><tr><th>步驟</th><th>FPS</th><th>解法</th></tr></thead>
+      <tbody>
+        <tr><td>水晶體 phaco(3000 tetra)</td><td><b class="g">80 fps</b></td><td>隱式 + GPU-CG</td></tr>
+        <tr><td>囊膜撕囊(1500 tri)</td><td>即時(未給 fps)</td><td>matrix-free CG</td></tr>
+        <tr><td>IOL 完整</td><td><b class="o">~5 fps</b></td><td><b>直接稀疏解</b>(非 CG)</td></tr>
+        <tr><td>IOL 僅變形</td><td>~10 fps</td><td>直接稀疏解</td></tr>
+        <tr><td>Comas GPU 引擎</td><td>53.6× CPU</td><td>TLED 顯式 + gather</td></tr>
+      </tbody>
+    </table>
+    <p class="sub" style="padding-left:0;margin-top:6px">IOL 慢是因為它<b>高剛度+低質量</b>,刻意用直接解換準與穩。撕囊、phaco 其實很快。</p>
+  </section>
+
+  <p class="foot">整合正本(完整方程式、符號全解、SofaCUDA 元件對映、對舊敘述 6 點修正):<code>docs/reference/8_inria_implementation_deepread.md</code>。<br>相關:<code>ccc_method/4_inria_fiber_fracture.md</code>(argmax c)、<code>engines/6_realtime_fem_pillars.md</code>(TLED/co-rot/matrix-free 用途)、<code>reference/5_dequidt2013_vs_demo.md</code>(系統 vs demo)。<br>來源論文:Comas 2008 · Allard/Marchal/Cotin 2009 · Courtecuisse 2010(非同步預條件子)· Courtecuisse/…/Dequidt 2013。</p>
+</div>
+</body>
+</html>

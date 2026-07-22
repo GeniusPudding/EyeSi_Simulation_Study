@@ -1,7 +1,7 @@
 # INRIA 纖維 FEM 撕囊:準則邏輯 + 三篇實作分工
 
 與 [`1_tearing_descriptive.md`](1_tearing_descriptive.md)(Weber 描述式)對稱:這是**物理式**撕囊的實作。
-脈絡見 [`../literature/3_inria_fem_lineage.md`](../literature/3_inria_fem_lineage.md),引擎原理見 [`../literature/4_inria_fem_realtime.md`](../literature/4_inria_fem_realtime.md)。
+脈絡見 [`../reference/3_inria_fem_lineage.md`](../reference/3_inria_fem_lineage.md),引擎原理見 [`../reference/4_inria_fem_realtime.md`](../reference/4_inria_fem_realtime.md)。
 
 ---
 
@@ -11,7 +11,7 @@
 |---|---|---|
 | **撕囊怎麼撕**(往哪/何時) | **Allard 2009** | 纖維各向異性 + argmax c 撕裂準則 + remesh |
 | **怎麼即時** | **Comas 2008** | SofaCUDA 上的 GPU TLED FEM 引擎 |
-| **組成完整系統** | **Dequidt 2013** | 撕囊+phaco+IOL + 接觸/觸覺 + 兩層網格 |
+| **組成完整系統** | **Dequidt 2013** | 撕囊+phaco+IOL + 摩擦接觸 + 兩層網格(器械=IR 光學追蹤,無力回饋) |
 
 > 單看「撕囊邏輯」→ **Allard 2009**;單看「即時引擎」→ **Comas 2008**;單看「完整系統」→ **Dequidt 2013**。
 
@@ -77,6 +77,7 @@
 
 ```
 GPU TLED(Total Lagrangian Explicit Dynamics):
+  - 元素:四面體 or reduced-integration 8 節點六面體(避 volumetric locking + 元素數少)
   - 顯式中央差分:x(t+Δt)=2x(t)−x(t−Δt)+(Δt²/m)F  → 各節點獨立,可平行
   - Total Lagrangian:形狀函數導數相對原始構型=常數 → 預算一次
   - 材料:各向異性 visco-hyperelastic
@@ -84,20 +85,20 @@ GPU TLED(Total Lagrangian Explicit Dynamics):
   Kernel1(每 thread=元素):算應力→力貢獻,寫「自己的格子」
   Kernel2(每 thread=節點):收集鄰元素力貢獻加總→中央差分更新位置
 ```
-效能:比 CPU 快 16×、比舊 OpenGL 快 3×,~3 萬節點即時。詳見 [`../literature/4_inria_fem_realtime.md`](../literature/4_inria_fem_realtime.md)。
+效能:比 CPU 快 **53.6×**、比舊 OpenGL 快 3×,3993–177957 DOF 即時(Comas 2008 CUDA;「16×」是更早的 OpenGL 版數字)。詳見 [`../reference/4_inria_fem_realtime.md`](../reference/4_inria_fem_realtime.md)。
 
 ---
 
 ## 4. Dequidt 2013 實作(完整系統集成)
 
 把上兩者 + 眼科零件組成能跑的白內障系統:
-- **撕囊**:三角 FEM + 同心圓纖維 + **應變張量特徵值超門檻→可斷**(門檻依外科醫師調)+ 歷史方向;每步 remesh。
+- **撕囊**:三角 FEM + 同心圓纖維 + **應力(stress)張量特徵值超門檻→可斷**(門檻依外科醫師調;等向時=最大主應力方向)+ 歷史方向;每步 remesh。
 - **phaco**:水晶體=四面體 FEM;**Projected Tetrahedra** 體積渲染;乳化=移除四面體;
   **兩層網格**——粗四面體(算力學,須夠粗保效能)+ 細元素(算移除),**粗四面體的 8 個細元素都移除時,粗的也移除**(力學上反映失去的物質)。
 - **IOL**:薄鏡片=**Shell Model**(殼)+ co-rotational(大位移);注射含**自我碰撞 + 鏡片vs注射器vs囊袋 + 摩擦**。
   巧思:**FEM 的多項式形狀函數同時用於「算內力」與「算接觸」**(曲面接觸不必另建)。
-- **接觸/觸覺**:隱式積分 + Courtecuisse 非同步預條件子;器械用 **4 個反光標記**(冗餘,追蹤更穩)。
-- 效能:~5 FPS(完整)/ ~10 FPS(僅變形)。
+- **接觸/器械**:摩擦接觸(Saupin contact-warping)+ 隱式積分 + Courtecuisse 非同步預條件子(Dequidt **引用** Courtecuisse 2010,非本篇提出);器械 = **IR 光學追蹤**(每器械 4 反光標記,冗餘更穩),**無力回饋裝置**——手感靠視覺 + 眼球機械約束(插針孔/眼窩)。
+- 效能:水晶體 phaco **80 fps**、撕囊即時;**~5 FPS 是 IOL 置入那步**(高剛度低質量、改用直接稀疏解換準與穩)、~10 FPS 僅變形。全在 2.4 GHz + 一般顯卡。
 
 ---
 
