@@ -974,9 +974,6 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                         del self.peel_fade[nd]
                 self._push_adhesion()
 
-            # AUTOMATIC plasticity: the already-peeled part slowly adopts its current
-            # shape as its rest shape, so letting go barely springs back. Nodes still
-            # glued keep their rest on the lens (adhesion must still hold them).
             self.step += 1
 
             # --- camera: probe / freeze-while-grabbing (both normally off) ----------
@@ -1087,6 +1084,9 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                                   f"z={float(c[2]):5.2f} sigma1_vs_radial={ang:5.1f}deg "
                                   f"-> crack {crack}{flag}")
 
+            # Automatic plasticity (every PLASTIC_EVERY steps): already-peeled nodes
+            # slowly adopt their current shape as their rest shape, so letting go
+            # barely springs back; glued nodes keep their rest on the lens.
             if (not self.frozen and self.plastic_rate > 0.0
                     and self.step % PLASTIC_EVERY == 0 and self.adhered is not None):
                 free = np.setdiff1d(np.arange(len(pos)),
@@ -1149,6 +1149,12 @@ def createScene(root):
                    computeZClip=False, zNear=0.3, zFar=500.0)
 
     if ENABLE_MOUSE:
+        # Collision funnel, coarse -> fine: BroadPhase overlaps AABBs (cheap cull),
+        # NarrowPhase walks BVH trees down to close triangle pairs, Intersection
+        # runs exact distance tests (alarm = start tracking, contact = target
+        # separation), Response turns each contact into a penalty force. With
+        # selfCollision off and the lens visual-only, the funnel is normally
+        # EMPTY -- its real job here is serving the Shift+drag ray-pick below.
         root.addObject("CollisionPipeline")
         root.addObject("BruteForceBroadPhase")
         root.addObject("BVHNarrowPhase")
@@ -1173,7 +1179,19 @@ def createScene(root):
     root.addObject("MeshOBJLoader", name="loader", filename=CAP_OBJ)
 
     cap = root.addChild("Cap")
+    # Implicit (backward) Euler: every step solves
+    #     [(1+h*rM)*M - h*(B + rK*K) - h^2*K] * dv  =  h*f(x,v) + h^2*K*v
+    # where K = df/dx and B = df/dv are summed over ALL force fields below (FEM or
+    # springs alike -- the integrator is mode-agnostic). Stiffness sits inside the
+    # matrix, so any k is stable at any dt; explicit would need w*dt < 2 and this
+    # mesh runs at w*dt ~ 9-16. Rayleigh terms = uniform numerical damping (rK*K
+    # kills high-frequency mesh modes, rM*M calms drift).
     cap.addObject("EulerImplicitSolver", rayleighStiffness=0.2, rayleighMass=0.2)
+    # CG solves that system MATRIX-FREE: each iteration asks for one product
+    # (M - h*B - h^2*K)*p, computed by a scene traversal (addMdx + addDForce) --
+    # the matrix is never assembled. 30 iterations suffice at this condition
+    # number (~1 + h^2*w^2, up to ~250); tolerance = relative-residual stop,
+    # threshold = tiny-denominator guard.
     cap.addObject("CGLinearSolver", iterations=30, tolerance=1e-8, threshold=1e-8)
 
     topo = cap.addObject("TriangleSetTopologyContainer", name="topo", src="@../loader")
