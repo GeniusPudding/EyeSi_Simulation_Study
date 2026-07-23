@@ -18,7 +18,8 @@ os.environ["SOFA_ROOT"] = SOFA_ROOT
 sys.path.insert(0, os.path.join(SOFA_ROOT, "plugins", "SofaPython3", "lib", "python3", "site-packages"))
 for _p in (os.path.join(SOFA_ROOT, "bin"),):
     if os.path.isdir(_p):
-        os.add_dll_directory(_p)
+        if hasattr(os, "add_dll_directory"):  # Windows only
+            os.add_dll_directory(_p)
 
 
 def _controller():
