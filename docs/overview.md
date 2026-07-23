@@ -8,7 +8,7 @@
 ```
 變形引擎  engines/1 框架 → 2 mass-spring → 3 ECM → 4 FEM → 5 選型 → 6 FEM如何即時
 撕裂演算法 ccc_method/1 兩層+描述式 → 2 remesh → 3 Weber09物理 → 4 INRIA纖維FEM → 5 免重網格切割(XFEM/CutFEM)
-實作      implementation/1 架構(SOFA) → 2 demo → 3 架構決策 → 4 stock-SOFA 撕裂 demo(實測能耐 + 模型極限 vs EyeSi/INRIA)
+實作      implementation/1 架構(SOFA) → 2 demo → 3 架構決策 → 4 stock-SOFA 撕裂 demo(實測能耐 + 模型極限 vs EyeSi/INRIA) → 5 互動耦合決策(懲罰彈簧為何爆、INRIA 的約束式接觸)
 對照(選讀) compare_eyesi_vs_inria.html · compare_2006_vs_2009.html
 前沿(獨立) reference/6_modern_ai_ccc
 ```

@@ -10,15 +10,18 @@ SOFA_ROOT = os.environ.get("SOFA_ROOT", r"C:\SOFA\SOFA_v25.12.00_Win64")
 os.environ["SOFA_ROOT"] = SOFA_ROOT
 sys.path.insert(0, os.path.join(SOFA_ROOT, "plugins", "SofaPython3", "lib", "python3", "site-packages"))
 
-os.add_dll_directory(os.path.join(SOFA_ROOT, "bin"))
+if hasattr(os, "add_dll_directory"):  # Windows only
+    os.add_dll_directory(os.path.join(SOFA_ROOT, "bin"))
 for plugin in ("SofaPython3", "Tearing", "Sofa.Component.SolidMechanics.FEM.Elastic"):
     d = os.path.join(SOFA_ROOT, "plugins", plugin, "bin")
     if os.path.isdir(d):
-        os.add_dll_directory(d)
+        if hasattr(os, "add_dll_directory"):  # Windows only
+            os.add_dll_directory(d)
 
 # our freshly built plugin
 BUILD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "build")
-os.add_dll_directory(BUILD_DIR)
+if hasattr(os, "add_dll_directory"):  # Windows only
+    os.add_dll_directory(BUILD_DIR)
 
 import SofaRuntime  # noqa: E402
 

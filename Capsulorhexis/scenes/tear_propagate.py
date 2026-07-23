@@ -26,11 +26,13 @@ os.environ["SOFA_ROOT"] = SOFA_ROOT
 sys.path.insert(0, os.path.join(SOFA_ROOT, "plugins", "SofaPython3", "lib", "python3", "site-packages"))
 for _p in (os.path.join(SOFA_ROOT, "bin"),):
     if os.path.isdir(_p):
-        os.add_dll_directory(_p)
+        if hasattr(os, "add_dll_directory"):  # Windows only
+            os.add_dll_directory(_p)
 for _plugin in ("SofaPython3", "SofaImGui"):
     _d = os.path.join(SOFA_ROOT, "plugins", _plugin, "bin")
     if os.path.isdir(_d):
-        os.add_dll_directory(_d)
+        if hasattr(os, "add_dll_directory"):  # Windows only
+            os.add_dll_directory(_d)
 
 # --- membrane grid + tear params --------------------------------------------
 NX, NY = 15, 11          # grid resolution

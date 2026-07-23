@@ -4,3 +4,7 @@ build/
 tools/
 # logs
 *.log
+
+# per-session diagnostics (cap_membrane LOG_DIAG + run_cap.sh tee)
+scenes/diag_last.csv
+scenes/run_last.log

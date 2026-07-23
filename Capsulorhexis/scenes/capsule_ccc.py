@@ -25,17 +25,20 @@ os.environ["SOFA_ROOT"] = SOFA_ROOT
 sys.path.insert(0, os.path.join(SOFA_ROOT, "plugins", "SofaPython3", "lib", "python3", "site-packages"))
 for _p in (os.path.join(SOFA_ROOT, "bin"),):
     if os.path.isdir(_p):
-        os.add_dll_directory(_p)
+        if hasattr(os, "add_dll_directory"):  # Windows only
+            os.add_dll_directory(_p)
 for _plugin in ("SofaPython3", "SofaImGui", "Tearing",
                 "Sofa.Component.SolidMechanics.FEM.Elastic"):
     _d = os.path.join(SOFA_ROOT, "plugins", _plugin, "bin")
     if os.path.isdir(_d):
-        os.add_dll_directory(_d)
+        if hasattr(os, "add_dll_directory"):  # Windows only
+            os.add_dll_directory(_d)
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PLUGIN_BUILD = os.path.join(os.path.dirname(_HERE), "build")
 if os.path.isdir(_PLUGIN_BUILD):
-    os.add_dll_directory(_PLUGIN_BUILD)
+    if hasattr(os, "add_dll_directory"):  # Windows only
+        os.add_dll_directory(_PLUGIN_BUILD)
 
 # Register the plugin location so RequiredPlugin "Capsulorhexis" resolves whether
 # this scene is launched by runSofa or directly by Python.

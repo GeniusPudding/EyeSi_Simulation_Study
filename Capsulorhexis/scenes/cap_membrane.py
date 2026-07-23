@@ -23,13 +23,14 @@ import sys
 SOFA_ROOT = os.environ.get("SOFA_ROOT", r"C:\SOFA\SOFA_v25.12.00_Win64")
 os.environ["SOFA_ROOT"] = SOFA_ROOT
 sys.path.insert(0, os.path.join(SOFA_ROOT, "plugins", "SofaPython3", "lib", "python3", "site-packages"))
-for _p in (os.path.join(SOFA_ROOT, "bin"),):
-    if os.path.isdir(_p):
-        os.add_dll_directory(_p)
-for _plugin in ("SofaPython3", "SofaImGui"):
-    _d = os.path.join(SOFA_ROOT, "plugins", _plugin, "bin")
-    if os.path.isdir(_d):
-        os.add_dll_directory(_d)
+if hasattr(os, "add_dll_directory"):  # Windows only; mac/linux resolve via rpath
+    for _p in (os.path.join(SOFA_ROOT, "bin"),):
+        if os.path.isdir(_p):
+            os.add_dll_directory(_p)
+    for _plugin in ("SofaPython3", "SofaImGui"):
+        _d = os.path.join(SOFA_ROOT, "plugins", _plugin, "bin")
+        if os.path.isdir(_d):
+            os.add_dll_directory(_d)
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
@@ -55,7 +56,19 @@ LENS_OBJ = os.path.join(_HERE, "lens.obj")  # the flattened (oblate) base it sti
 # -- so it works identically under mass-spring. A triangle with three fixed edge lengths is
 # rigid, so edge springs alone already give full in-plane (stretch+shear) stiffness; bending
 # springs give the out-of-plane fold. Both components already exist below.
-USE_MASS_SPRING = True    # True = drop the FEM, run a pure mass-spring membrane (blow-up-proof)
+# Membrane in-plane model. Switchable WITHOUT editing this file:
+#     CAP_MODE=fem   (or run_cap.ps1 -Fem / run_cap.sh --fem)  -> co-rotational FEM
+#     CAP_MODE=spring / unset                                  -> mass-spring (default)
+# Default stays mass-spring: that is the tuned, known-good interactive configuration.
+#
+# Why FEM is worth having as an option (measured 2026-07-23, identical scripted kinematic
+# pulls, headless): at the scene's normal pull rate the two are indistinguishable --
+# mass-spring rawMax 1.79e3 / degen 0 vs FEMOptim rawMax 1.77e3 / degen 0 -- and under
+# violent pulls both degrade comparably. So FEM costs nothing in stability while giving back
+# the real continuum stress tensor the tear criterion wants, citable E/nu, and the route to
+# the fiber-anisotropic model in the Capsulorhexis plugin. TriangularFEMForceFieldOptim also
+# eliminated the "Null determinant" flood entirely (0 occurrences across every profile).
+USE_MASS_SPRING = os.environ.get("CAP_MODE", "spring").lower() != "fem"
 
 # --- material presets (same feel as the flat paper) -------------------------
 CLOTH_YOUNG = 120.0
@@ -65,6 +78,38 @@ EDGE_STIFFNESS = 2500.0   # per-edge -> the membrane does not stretch (in-plane)
                           # spring mode this ALSO carries all the in-plane stiffness the FEM
                           # used to add, so raise it if the sheet feels too soft.
 DAMPING = 2.0
+# The damper MUST be implicit. As a plain explicit force (the component's default),
+# F = -c*v is evaluated at the old velocity and never enters the solver matrix, so it
+# is only stable while c*dt/m < 2. The lightest nodes here have m~0.012 -> c*dt/m=3.4
+# already past the limit at c=2, and the full-peel settle ramp (PEEL_SETTLE_DAMPING=60)
+# puts it at 18-100x: the "settle" damping was itself the post-full-peel explosion
+# (free idle sheet blowing up to 1e11 -- previously blamed on self-collision).
+# Implicit damping (df/dv assembled into the matrix) is unconditionally stable.
+DAMPING_IMPLICIT = True
+
+# Per-step DISPLACEMENT clamp -- the anti-flash net. The implicit solve is stable but
+# NOT bounded: one fast mouse flick = a huge attach-spring extension = a legal solve
+# answer that moves a node several units IN ONE STEP. That exploded geometry is what
+# gets rendered for a few frames (the "flash"), because the |coord|>MAX_COORD net only
+# fires past 50 while the membrane lives under ~15. This clamp runs in onAnimateEnd,
+# BEFORE the frame is drawn: any node that moved more than DISP_CLAMP this step is
+# pulled back onto that limit and its velocity rescaled (NOT zeroed) to the matching
+# speed, so a violent yank renders as "the membrane saturates and follows at a capped
+# speed" instead of a one-frame explosion.
+# TUNING (from session logs): 0.25 (=12.5 units/s) was too tight -- the tip of a flap
+# being FOLDED OVER legitimately swings at 10-15 units/s, so the clamp kept biting
+# normal folding in 81 short bursts, and because it then ZEROED the velocity the flap
+# froze-and-restarted every few steps (the "卡一下卡一下" stutter + micro-flicker).
+# 0.5 (=25 units/s, matching MAX_SPEED) clears legitimate motion; explosions live far
+# above it. Velocity is rescaled to the cap instead of killed for the same reason.
+DISP_CLAMP = 0.5
+
+# --- diagnostics: per-step CSV, so a drag session can be analysed afterwards -------
+# One numeric row per step (peak coord / speed / edge stretch, glued count, safety-net
+# counters). Overwritten each run. Pair it with run_last.log (console tee in
+# run_cap.sh) to correlate flashes with [Runaway]/[Peel] events after a session.
+LOG_DIAG = True
+DIAG_PATH = os.path.join(_HERE, "diag_last.csv")
 
 # THE knob for "does the lifted flap flop over, or stand up stiff in the air?"
 # = TriangularBendingSprings.stiffness.
@@ -97,6 +142,31 @@ LENS_REPULSION = 2000.0
 # --- adhesion of the membrane to the BALL -----------------------------------
 ADHESION_STIFF = 120.0
 BREAK_FORCE = 60.0        # pull force needed to peel off the ball
+# PEEL FADE -- release the adhesion GRADUALLY instead of instantly. Cutting a node
+# loose in one step releases its full stored spring force (up to BREAK_FORCE=60) as a
+# single impulse: dv = F*dt/m ~ 40 units/s on a light node -> the one-step "2->25->2"
+# speed pops the session log shows during active peeling (felt as local twitches).
+# Instead, a just-broken node keeps a private adhesion spring whose stiffness decays by
+# PEEL_FADE each step until it drops below PEEL_FADE_MIN: the same energy leaves over
+# several steps and the pop becomes a soft release (~5 steps = 0.1 s).
+PEEL_FADE = 0.55
+PEEL_FADE_MIN = 6.0
+# PEEL AS A PROPAGATING FRONT, not a global threshold. The debond test is a per-node LIFT
+# distance (break_lift = BREAK_FORCE/ADHESION_STIFF = 0.5), but the membrane is nearly
+# INEXTENSIBLE, so pulling one edge lifts the ENTIRE sheet past 0.5 almost at once. Measured
+# without this guard: 2127 glued spots -> 0 in ten steps (0.2 s), the whole cap let go and
+# crumpled off the lens. Physically wrong: a bonded spot in the middle of a still-bonded
+# region cannot debond, it is surrounded by intact adhesive. Real peeling advances as a crack
+# FRONT from a free boundary. So a spot may only debond when it is on the mesh boundary (the
+# rim or the slit -- the natural crack initiation sites) or when one of its neighbours has
+# already let go. Set False to restore the old global-threshold behaviour.
+PEEL_FRONT_ONLY = os.environ.get("CAP_PEEL_FRONT", "1") == "1"
+# ...and cap how fast that front may advance. The front constraint alone is not enough under a
+# violent pull: once a crack starts, every newly-freed spot makes its neighbours eligible, so
+# the front sweeps the whole cap in a few steps anyway (measured: still 2263 -> 0). A real
+# crack has a finite propagation speed. Only this many spots may debond per step, and the most
+# heavily loaded ones (largest lift = the crack tip) go first. 0 = unlimited.
+PEEL_RATE = int(os.environ.get("CAP_PEEL_RATE", "9"))
 
 # --- how you pull -----------------------------------------------------------
 # OFF by default: on opening, the membrane just sits STUCK to the lens and nothing
@@ -387,7 +457,17 @@ def principal_stress(pos, rest, tris, E=None, nu=None):
     s1 = mid + dev
     area_ratio = np.abs(np.linalg.det(F))     # 1.0 = undeformed area
     # principal direction (2D angle) mapped back into 3D via the current frame
-    ang = 0.5 * np.arctan2(2.0 * sxy, np.maximum(sxx - syy, 1e-12))
+    # NO np.maximum guard on the denominator. arctan2(y, x) determines the QUADRANT from
+    # the sign of x, so clamping x to be >= 1e-12 destroys exactly the information it needs:
+    # every state with syy > sxx (denominator genuinely negative) got folded onto the wrong
+    # branch. Verified against the analytic solution -- uniaxial tension along y came out as
+    # 0 deg instead of 90 deg (a FULL 90-degree error), and mixed states were off by 22.5 deg.
+    # Since the crack runs PERPENDICULAR to sigma1 (Rankine), a 90-degree error in this angle
+    # swaps "circumferential (good)" and "radial (runs to the periphery)" -- i.e. it inverts
+    # the single classification this whole stress field exists to produce.
+    # The guard was also unnecessary: arctan2 performs no division and handles x = 0 (and
+    # x = y = 0) correctly on its own.
+    ang = 0.5 * np.arctan2(2.0 * sxy, sxx - syy)
     d3 = np.cos(ang)[:, None] * xc + np.sin(ang)[:, None] * yc
     return s1, d3, area_ratio
 
@@ -425,6 +505,9 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.sigma1_max = 0.0
             self.paper_done = False
             self.adhered = None
+            self.peel_fade = {}        # node -> decaying adhesion stiffness (peel fade-out)
+            self.nbr = None            # per-node neighbours, for front-only peeling
+            self.boundary = None       # mesh-boundary nodes = crack initiation sites
             # instance copies so the hotkeys can tune them live
             self.plastic_rate = PLASTIC_RATE
             self.break_force = BREAK_FORCE
@@ -435,6 +518,10 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.step = 0
             self.last_ks = None
             self.clamped = 0
+            self.prev_pos = None       # positions as rendered last step, for the disp clamp
+            self.disp_clamped = 0      # nodes caught by the per-step displacement clamp
+            self.last_jump = 0.0       # pre-guard peak single-frame jump (diagnostics)
+            self.diag = None           # diagnostics CSV handle (opened lazily)
             self.tri_idx = None        # triangle index array for the anti-collapse clamp
             self.tri_rest_area = None  # each triangle's ORIGINAL rest area (stable ref)
             self.collapsed = 0         # count of near-flat triangles repaired
@@ -446,12 +533,29 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.cam_lock = False      # manual orbit lock toggled by V
             self.cam_active = not LOCK_CAMERA  # last-written camera.activated (write on change)
 
+        def _push_adhesion(self):
+            # Points = still-glued nodes at full stiffness, then just-broken nodes with
+            # their fading stiffness (per-point stiffness list, order-matched). An EMPTY
+            # points list makes RestShapeSpringsForceField apply to ALL nodes (snapping
+            # the whole membrane back), so when nothing is left, zero the stiffness
+            # instead of emptying the points.
+            fading = sorted(self.peel_fade)
+            pts = sorted(self.adhered) + fading
+            if pts:
+                self.adhesion.points.value = pts
+                self.adhesion.stiffness.value = (
+                    [ADHESION_STIFF] * len(self.adhered)
+                    + [self.peel_fade[p] for p in fading])
+            else:
+                self.adhesion.stiffness.value = [0.0]
+
         def _freeze(self, why):
             self.mo.rest_position.value = self.mo.position.value
             self.springs.reinit()
             self.bending.reinit()
             if self.adhered is not None:
                 self.adhered.clear()
+            self.peel_fade.clear()
             self.adhesion.points.value = []
             self.adhesion.stiffness.value = [0.0]
             if RELEASE_AFTER_FREEZE and self.pull is not None:
@@ -467,6 +571,29 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.last_ks = float(new_ks)
             print(f"[Tune] BEND_STIFFNESS = {float(new_ks):.1f}   "
                   f"(K = stiffer / J = softer; too low -> crumples, too high -> stands rigid)")
+
+        def _build_peel_adjacency(self):
+            """Node neighbours + mesh-boundary nodes, for front-only peeling.
+
+            A boundary edge belongs to exactly ONE triangle; its endpoints are the free
+            edges of the sheet (this cap's outer rim and its radial slit) and are the only
+            places a peel may START. Everything else must be reached by the advancing front.
+            """
+            tris = np.array(self.topo.triangles.value)
+            n = len(self.mo.position.value)
+            nbr = [set() for _ in range(n)]
+            from collections import Counter
+            ecount = Counter()
+            for a, b, c in tris.tolist():
+                nbr[a].update((b, c)); nbr[b].update((a, c)); nbr[c].update((a, b))
+                for u, v in ((a, b), (b, c), (c, a)):
+                    ecount[(u, v) if u < v else (v, u)] += 1
+            self.nbr = [np.fromiter(x, dtype=int) for x in nbr]
+            bset = set()
+            for (u, v), k in ecount.items():
+                if k == 1:
+                    bset.add(u); bset.add(v)
+            self.boundary = bset
 
         def _build_edges(self):
             tris = np.array(self.topo.triangles.value)
@@ -573,6 +700,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 self.mo.rest_position.value = self.last_good_rest
                 self.bending.reinit()
             self.mo.velocity.value = [[0.0, 0.0, 0.0]] * len(self.last_good)
+            self.prev_pos = np.array(self.last_good)   # disp clamp baseline follows the rewind
             self.rewinds += 1
 
         def _count_objs(self):
@@ -724,6 +852,31 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 self._rewind()
                 return
 
+            # (0b) Per-step DISPLACEMENT clamp -- the anti-flash net (see DISP_CLAMP).
+            # Runs before this frame is rendered, so a spike is capped in the very step
+            # it is born and the exploded geometry never reaches the screen.
+            if (DISP_CLAMP > 0.0 and self.prev_pos is not None
+                    and len(self.prev_pos) == len(P0)):
+                d = P0 - self.prev_pos
+                dist = np.linalg.norm(d, axis=1)
+                hot = dist > DISP_CLAMP
+                if hot.any():
+                    P0[hot] = self.prev_pos[hot] + d[hot] * (DISP_CLAMP / dist[hot])[:, None]
+                    self.mo.position.value = P0.tolist()
+                    # Rescale (not zero) the clamped nodes' velocity to the cap speed:
+                    # zeroing froze a legitimately-swinging flap for a frame and the
+                    # springs restarted it -- the stop-go stutter. Rescaling keeps the
+                    # motion continuous while still discarding the overshoot energy.
+                    vcap = DISP_CLAMP / max(float(self.mo.getContext().getDt()), 1e-9)
+                    v2 = np.array(self.mo.velocity.value, copy=True)
+                    sp = np.linalg.norm(v2[hot], axis=1)
+                    fast = sp > vcap
+                    if fast.any():
+                        idx = np.where(hot)[0][fast]
+                        v2[idx] *= (vcap / sp[fast])[:, None]
+                        self.mo.velocity.value = v2
+                    self.disp_clamped += int(hot.sum())
+
             # (1) Velocity clamp: clip a runaway node's speed before it flies a long way in
             # one step and becomes a giant triangle.
             if MAX_SPEED > 0.0:
@@ -758,11 +911,51 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                         moved = True
                         n = d[over] / L[over][:, None]
                         excess = (L[over] - limit[over])[:, None]
-                        # split the correction between the two endpoints
-                        np.add.at(P, e0[over], 0.5 * excess * n)
-                        np.add.at(P, e1[over], -0.5 * excess * n)
+                        # AVERAGE the correction per node instead of summing it. With a
+                        # plain np.add.at, a node shared by k over-limit edges receives k
+                        # stacked corrections x STRAIN_ITERS passes -- at an adhesion-
+                        # avalanche moment (dozens of edges railing at MAX_STRETCH at
+                        # once) that single write moved a node further than the whole
+                        # solve step, re-injecting the one-frame spike this net exists
+                        # to prevent. Averaging keeps the relaxation convergent.
+                        corr = np.zeros_like(P)
+                        cnt = np.zeros(len(P))
+                        np.add.at(corr, e0[over], 0.5 * excess * n)
+                        np.add.at(corr, e1[over], -0.5 * excess * n)
+                        np.add.at(cnt, e0[over], 1.0)
+                        np.add.at(cnt, e1[over], 1.0)
+                        touched = cnt > 0
+                        P[touched] += corr[touched] / cnt[touched][:, None]
                     if moved:
                         self.mo.position.value = P.tolist()
+                        # Velocity consistency: the projection changed edge lengths but
+                        # NOT velocities, so the solver re-stretches the same edges next
+                        # step and the k=2500 springs recoil -- the single-step
+                        # "2 -> 25 -> 2" speed pops in the session log (stretch briefly
+                        # reads 1.7-1.97 there). Remove the SEPARATING component of the
+                        # relative velocity on edges at the limit (averaged per node,
+                        # like the position pass) so the projection sticks instead of
+                        # fighting the next solve.
+                        V = np.array(self.mo.velocity.value, copy=True)
+                        d = P[e1] - P[e0]
+                        L = np.linalg.norm(d, axis=1)
+                        near = L > 0.98 * limit
+                        if near.any():
+                            u = d[near] / np.maximum(L[near], 1e-12)[:, None]
+                            vrel = ((V[e1[near]] - V[e0[near]]) * u).sum(1)
+                            sep = vrel > 0.0
+                            if sep.any():
+                                iN = np.where(near)[0][sep]
+                                corr = 0.5 * vrel[sep][:, None] * u[sep]
+                                dV = np.zeros_like(V)
+                                cnt = np.zeros(len(V))
+                                np.add.at(dV, e1[iN], -corr)
+                                np.add.at(dV, e0[iN], corr)
+                                np.add.at(cnt, e1[iN], 1.0)
+                                np.add.at(cnt, e0[iN], 1.0)
+                                touched = cnt > 0
+                                V[touched] += dV[touched] / cnt[touched][:, None]
+                                self.mo.velocity.value = V
 
             # (2b) ANTI-COLLAPSE (min-area) clamp -- the twin of the MAX_STRETCH clamp above.
             # MAX_STRETCH stops a triangle inflating; this stops it COLLAPSING to zero area,
@@ -812,6 +1005,37 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                     else:
                         degenerate_after = False
 
+            # (2c) FINAL render guard. The strain clamp above edits positions AFTER the
+            # (0b) displacement clamp, so it was the one remaining writer able to move a
+            # rendered node further than DISP_CLAMP in a single frame (session log
+            # evidence: every residual flash coincided with maxstretch railing at 1.6,
+            # i.e. the strain clamp firing hardest). Re-apply the displacement cap as
+            # the LAST position edit of the step: whatever any net wrote, the frame that
+            # reaches the screen can never jump a node more than DISP_CLAMP. last_jump
+            # records the PRE-guard peak jump -> the 'maxjump' diagnostics column.
+            self.last_jump = 0.0
+            if DISP_CLAMP > 0.0 and self.prev_pos is not None:
+                P = np.array(self.mo.position.value)
+                if len(P) == len(self.prev_pos):
+                    d = P - self.prev_pos
+                    dist = np.linalg.norm(d, axis=1)
+                    if len(dist):
+                        self.last_jump = float(dist.max())
+                    hot = dist > DISP_CLAMP
+                    if hot.any():
+                        P[hot] = self.prev_pos[hot] + d[hot] * (DISP_CLAMP / dist[hot])[:, None]
+                        self.mo.position.value = P.tolist()
+                        # same soft response as (0b): rescale velocity, don't freeze it
+                        vcap = DISP_CLAMP / max(float(self.mo.getContext().getDt()), 1e-9)
+                        v2 = np.array(self.mo.velocity.value, copy=True)
+                        sp = np.linalg.norm(v2[hot], axis=1)
+                        fast = sp > vcap
+                        if fast.any():
+                            idx = np.where(hot)[0][fast]
+                            v2[idx] *= (vcap / sp[fast])[:, None]
+                            self.mo.velocity.value = v2
+                        self.disp_clamped += int(hot.sum())
+
             # (3) Cache this finite state as the rollback target for (0) -- but ONLY if it is
             # also NON-DEGENERATE. Caching a finite-but-collinear state would make (0)/(2b)
             # roll back INTO the same zero-area trap forever (the infinite flood). Requiring
@@ -827,6 +1051,8 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 # (position, rest) pair -- otherwise a rewind of positions onto a
                 # plasticity-drifted rest would itself be a mismatch.
                 self.last_good_rest = list(self.mo.rest_position.value)
+            # What this step will actually render = the disp clamp's next baseline.
+            self.prev_pos = Pn
 
         def onAnimateBeginEvent(self, event):
             # Time from the MechanicalObject's context (works whether or not a FEM exists --
@@ -891,19 +1117,57 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             if self.adhered is None:
                 self.adhered = set(range(len(pos)))
                 self.adhesion.points.value = sorted(self.adhered)
+
+            # --- diagnostics CSV: one numeric row per step, analysed offline after a
+            # session (peaks + safety-net counters; see LOG_DIAG at the top).
+            if LOG_DIAG:
+                if self.diag is None:
+                    # line-buffered, so closing the app mid-session loses no rows
+                    self.diag = open(DIAG_PATH, "w", buffering=1)
+                    self.diag.write("step,t,maxcoord,maxspeed,maxstretch,maxjump,glued,"
+                                    "rewinds,vclamped,dclamped\n")
+                P = np.asarray(pos)
+                V = np.asarray(self.mo.velocity.value)
+                if self.edges is None:
+                    self._build_edges()
+                if len(self.edges):
+                    L = np.linalg.norm(P[self.edges[:, 1]] - P[self.edges[:, 0]], axis=1)
+                    maxstretch = float((L / np.maximum(self.edge_rest, 1e-12)).max())
+                else:
+                    maxstretch = 1.0
+                maxspeed = float(np.linalg.norm(V, axis=1).max()) if len(V) else 0.0
+                self.diag.write(f"{self.step},{t:.3f},{float(np.abs(P).max()):.3f},"
+                                f"{maxspeed:.3f},{maxstretch:.3f},{self.last_jump:.3f},"
+                                f"{len(self.adhered)},{self.rewinds},"
+                                f"{self.clamped},{self.disp_clamped}\n")
             if self.adhered and not self.frozen:
                 idx = np.fromiter(self.adhered, dtype=int)
                 lift = np.linalg.norm(pos[idx] - rest[idx], axis=1)
-                broken = idx[lift > self.break_lift]
+                sel = np.flatnonzero(lift > self.break_lift)
+                cand, cand_lift = idx[sel], lift[sel]
+                if PEEL_FRONT_ONLY and cand.size:
+                    if self.nbr is None:
+                        self._build_peel_adjacency()
+                    adh = self.adhered
+                    # Only spots at the edge of the still-bonded region may let go: either on
+                    # the mesh boundary, or with a neighbour that has already debonded.
+                    keep = [k for k, i in enumerate(cand.tolist())
+                            if i in self.boundary
+                            or any(int(j) not in adh for j in self.nbr[int(i)])]
+                    cand, cand_lift = cand[keep], cand_lift[keep]
+                if PEEL_RATE > 0 and cand.size > PEEL_RATE:
+                    # crack tip first: the most-lifted spots are the ones actually at the front
+                    order = np.argsort(-cand_lift)[:PEEL_RATE]
+                    cand = cand[order]
+                broken = cand
                 if broken.size:
                     self.adhered.difference_update(broken.tolist())
-                    # IMPORTANT: an EMPTY 'points' list makes RestShapeSpringsForceField
-                    # apply to ALL nodes, which would snap the whole membrane back onto
-                    # the lens. So when the last spot peels, kill the stiffness instead.
-                    if self.adhered:
-                        self.adhesion.points.value = sorted(self.adhered)
-                    else:
-                        self.adhesion.stiffness.value = [0.0]
+                    # Do NOT cut a broken node loose in one step (that releases its full
+                    # stored spring force as one impulse -> local twitch). Move it to the
+                    # fade-out set; _push_adhesion carries it at a decaying stiffness.
+                    for b in broken.tolist():
+                        self.peel_fade[int(b)] = ADHESION_STIFF * PEEL_FADE
+                    self._push_adhesion()
                     if t - self.last_log_t >= 0.5:
                         print(f"[Peel] t={t:.2f}s  {len(self.adhered)} spots still "
                               f"glued to the lens")
@@ -921,6 +1185,16 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                     lens = self.mo.getContext().getObject("LensObstacle")
                     if lens is not None:
                         lens.stiffness.value = 0.0
+
+            # Advance the peel fade-outs: decay each fading node's stiffness, drop it
+            # once negligible. Independent of the adhered set, so the tail of a full
+            # peel still fades cleanly.
+            if self.peel_fade and not self.frozen:
+                for nd in list(self.peel_fade):
+                    self.peel_fade[nd] *= PEEL_FADE
+                    if self.peel_fade[nd] < PEEL_FADE_MIN:
+                        del self.peel_fade[nd]
+                self._push_adhesion()
 
             # AUTOMATIC plasticity: the already-peeled part slowly adopts its current
             # shape as its rest shape, so letting go barely springs back. Nodes still
@@ -1191,7 +1465,7 @@ def createScene(root):
     bending = cap.addObject("TriangularBendingSprings", name="Bending",
                             stiffness=BEND_STIFFNESS)
     _damper = cap.addObject("UniformVelocityDampingForceField",
-                            dampingCoefficient=DAMPING)
+                            dampingCoefficient=DAMPING, implicit=DAMPING_IMPLICIT)
 
     # The lens as a SOLID obstacle: analytic ellipsoid repulsion pushes any membrane
     # node that dips inside back out, so the membrane folds UP over the lens instead of
