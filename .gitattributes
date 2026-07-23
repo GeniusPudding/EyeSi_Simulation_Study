@@ -1,0 +1,16 @@
+# Line-ending normalisation.
+#
+# This repo is worked on from both Windows and macOS. Without this file the two
+# machines committed the same content with different line endings, which showed up
+# as whole-file diffs on cap.obj / lens.obj / cap_membrane.py and hid the real
+# changes. Worse, run_cap.sh once got committed with CRLF, which makes macOS bash
+# fail with "/bin/bash^M: bad interpreter".
+#
+# text=auto  -> git detects text vs binary (PDFs in papers/ stay untouched)
+# eol=lf     -> text files are stored AND checked out as LF on every platform
+* text=auto eol=lf
+
+# PowerShell and batch scripts stay CRLF: that is what the Windows tooling expects.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf

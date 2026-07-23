@@ -13,7 +13,7 @@
 set -euo pipefail
 
 # --fem selects the co-rotational FEM membrane; default is the tuned mass-spring one.
-# Read by cap_membrane.py via CAP_MODE.
+# Read by cap_membrane.py via CAP_MODE; everything else in the scene is identical.
 export CAP_MODE="spring"
 ARGS=()
 for a in "$@"; do
