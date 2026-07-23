@@ -115,16 +115,9 @@ PEEL_FRONT_ONLY = os.environ.get("CAP_PEEL_FRONT", "1") == "1"
 PEEL_RATE = int(os.environ.get("CAP_PEEL_RATE", "9"))
 
 # --- scripted pull (demo without a mouse; off by default) ---------------------
-# Env-driven so a headless run can reproduce the SAME pull twice: CAP_SCRIPTED_PULL=1
-# with `runSofa -g batch -n N` gives deterministic A/B numbers (see diag_last.csv)
-# without a hand on the mouse, which is the only way to compare peel tuning honestly.
-SCRIPTED_PULL = os.environ.get("CAP_SCRIPTED_PULL", "0") == "1"
-# Both env-tunable so the harness can sweep from a gentle pull to a violent yank. A
-# mouse drag is far harsher than the 6 s default: the cursor can jump the target several
-# units in ONE step, which is what actually triggers the runaway peel.
-PULL_END_T = float(os.environ.get("CAP_PULL_END_T", "6.0"))
-PULL_MOVE = [float(v) for v in
-             os.environ.get("CAP_PULL_MOVE", "1.5,0.0,3.0").split(",")]  # +x rim up/out
+SCRIPTED_PULL = False
+PULL_END_T = 6.0
+PULL_MOVE = [1.5, 0.0, 3.0]   # lift the +x rim up and outward to peel
 
 ENABLE_MOUSE = True
 # Self-collision would let a folded flap rest ON the membrane instead of passing
@@ -348,7 +341,6 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.peel_fade = {}        # node -> decaying adhesion stiffness (peel fade-out)
             self.nbr = None            # per-node neighbours, for front-only peeling
             self.boundary = None       # mesh-boundary nodes = crack initiation sites
-            self.ang_bin = None        # per-node 10-deg sector, for the peel-spread metric
             # instance copies so the hotkeys can tune them live
             self.plastic_rate = PLASTIC_RATE
             self.break_force = BREAK_FORCE
@@ -913,7 +905,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                     # line-buffered, so closing the app mid-session loses no rows
                     self.diag = open(DIAG_PATH, "w", buffering=1)
                     self.diag.write("step,t,maxcoord,maxspeed,maxstretch,maxjump,glued,"
-                                    "rewinds,vclamped,dclamped,peelbins,arcs\n")
+                                    "rewinds,vclamped,dclamped\n")
                 P = np.asarray(pos)
                 V = np.asarray(self.mo.velocity.value)
                 if self.edges is None:
@@ -924,32 +916,10 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 else:
                     maxstretch = 1.0
                 maxspeed = float(np.linalg.norm(V, axis=1).max()) if len(V) else 0.0
-                # Peel SPREAD, not just peel count: how many of the 36 ten-degree sectors
-                # around the cap contain at least one debonded node. A real peel is a
-                # localised flap (a few sectors next to where you pull); the whole ring
-                # letting go at once shows up here as peelbins -> 36 while glued is still
-                # high, which no other column in this file can distinguish.
-                if self.ang_bin is None:
-                    Rp = np.asarray(rest)
-                    self.ang_bin = (((np.arctan2(Rp[:, 1], Rp[:, 0]) + np.pi)
-                                     / (2.0 * np.pi) * 36).astype(int) % 36)
-                freemask = np.ones(len(P), dtype=bool)
-                if self.adhered:
-                    freemask[np.fromiter(self.adhered, dtype=int)] = False
-                occ = np.zeros(36, dtype=bool)
-                if freemask.any():
-                    occ[self.ang_bin[freemask]] = True
-                peelbins = int(occ.sum())
-                # ...and how many SEPARATE arcs those sectors form (wrapping around 0/360).
-                # This is the number that answers the user-visible question: 1 arc = one
-                # flap peeling where you pull; several arcs = the bond letting go in
-                # unrelated places at once, which looks like the whole cap dropping off.
-                arcs = 0 if peelbins in (0, 36) else int(
-                    np.count_nonzero(occ & ~np.roll(occ, 1)))
                 self.diag.write(f"{self.step},{t:.3f},{float(np.abs(P).max()):.3f},"
                                 f"{maxspeed:.3f},{maxstretch:.3f},{self.last_jump:.3f},"
                                 f"{len(self.adhered)},{self.rewinds},"
-                                f"{self.clamped},{self.disp_clamped},{peelbins},{arcs}\n")
+                                f"{self.clamped},{self.disp_clamped}\n")
             if self.adhered and not self.frozen:
                 idx = np.fromiter(self.adhered, dtype=int)
                 lift = np.linalg.norm(pos[idx] - rest[idx], axis=1)
@@ -959,32 +929,11 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                     if self.nbr is None:
                         self._build_peel_adjacency()
                     adh = self.adhered
-                    # A spot may let go only by PROPAGATION: one of its neighbours has
-                    # already debonded, so it sits on an existing crack tip.
+                    # Only spots at the edge of the still-bonded region may let go:
+                    # on the mesh boundary, or with a neighbour already debonded.
                     keep = [k for k, i in enumerate(cand.tolist())
-                            if any(int(j) not in adh for j in self.nbr[int(i)])]
-                    if not keep and len(adh) == len(pos):
-                        # Nothing has debonded yet, so there is no crack tip to grow
-                        # from -- NUCLEATE the one and only crack, at the single
-                        # most-loaded free edge (rim or slit). Once it exists, every
-                        # later debond must propagate from it, so the peel stays ONE
-                        # continuous tear. That is also the clinical target: CCC is a
-                        # *continuous* curvilinear capsulorhexis, and a second tear
-                        # starting elsewhere is exactly the failure it must not model
-                        # away.
-                        #
-                        # Nucleation used to be "any boundary node past the threshold",
-                        # which was the bug behind the whole cap dropping off at once:
-                        # the ENTIRE rim is mesh boundary, so as soon as the near-
-                        # inextensible sheet lifted, every sector became free to start
-                        # its own crack independently. Measured on a violent scripted
-                        # yank, that gave 5 disjoint peel arcs and then all 36 sectors
-                        # peeling, with the PEEL_RATE limiter saturated at 9 spots/step
-                        # from start to finish -- i.e. the front rule constrained nothing
-                        # and the cap unglued completely in 6.5 s.
-                        bnd = [k for k, i in enumerate(cand.tolist())
-                               if i in self.boundary]
-                        keep = [max(bnd, key=lambda k: cand_lift[k])] if bnd else []
+                            if i in self.boundary
+                            or any(int(j) not in adh for j in self.nbr[int(i)])]
                     cand, cand_lift = cand[keep], cand_lift[keep]
                 if PEEL_RATE > 0 and cand.size > PEEL_RATE:
                     # crack tip first: the most-lifted spots are the ones at the front
