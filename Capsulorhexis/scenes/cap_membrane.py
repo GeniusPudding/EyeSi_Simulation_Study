@@ -173,24 +173,22 @@ STRESS_EVERY = 3         # steps between stress updates (O(triangles) numpy)
 STRESS_E = 1200.0        # E for sigma = C:eps
 STRESS_NU = 0.3
 
-# Live heatmap: colour every triangle by its sigma1 into fixed magnitude bands
-# (blue = relaxed -> red = peak), refreshed every STRESS_EVERY steps. Avoids the
-# DataDisplay path that SIGABRTs this build's GUI: instead each band is one flat-colour
-# OglModel and triangles are partitioned between them, so no per-vertex colour (which
-# this build's OglModel does not expose) is needed. Enable with CAP_HEATMAP=1
-# (run_cap.ps1 -Heatmap / run_cap.sh --heatmap).
-STRESS_HEATMAP = os.environ.get("CAP_HEATMAP", "0") == "1"
-# sigma1 mapped to the hottest band; above this saturates red. Pull-front sigma1 runs a
-# few hundred at normal drag, ~2000 on a violent yank -- 300 keeps the normal working
-# range spread across the bands. Tune with CAP_HEAT_MAX.
+# Live force-field UI (decoupled): with CAP_HEATMAP=1 the scene keeps its normal
+# deformation view UNCHANGED and additionally serves the sigma1 field over a tiny local
+# HTTP server (stdlib, background thread). A self-contained browser page (stress_viewer
+# .html, served at "/") polls it and draws a live heatmap of the UNDEFORMED reference
+# disc with hover tooltips (sigma1 / crack direction / crack class), a freeze toggle and
+# a colour scale. This lives OUTSIDE SofaImGui on purpose: SofaImGui cannot host custom
+# widgets, and doing the map in our own page is what makes hover/values possible. The
+# scene's physics and rendering are untouched -- this only reads and publishes.
+STRESS_UI = os.environ.get("CAP_HEATMAP", "0") == "1"
+STRESS_UI_PORT = int(os.environ.get("CAP_UI_PORT", "8790"))
+STRESS_UI_OPEN = os.environ.get("CAP_UI_OPEN", "1") == "1"   # auto-open the browser
+VIEWER_HTML = os.path.join(_HERE, "stress_viewer.html")
+# Default ceiling of the viewer's colour ramp (sigma1 -> red). The page auto-scales to
+# the live peak, but this is the starting/fallback scale. Pull-front sigma1 runs a few
+# hundred at normal drag, ~2000 on a violent yank. Tune with CAP_HEAT_MAX.
 STRESS_HEAT_MAX = float(os.environ.get("CAP_HEAT_MAX", "300"))
-HEAT_COLORS = [
-    [0.20, 0.30, 0.75, 1.0],   # blue   -- relaxed
-    [0.20, 0.70, 0.80, 1.0],   # cyan
-    [0.35, 0.80, 0.35, 1.0],   # green
-    [0.95, 0.75, 0.20, 1.0],   # amber
-    [0.90, 0.20, 0.15, 1.0],   # red    -- peak / crack would start here
-]
 
 # --- safety nets (all applied in onAnimateEnd, before the frame is drawn) ------
 # Layered by failure mode; each net is a hard geometric/kinematic bound that no
@@ -329,9 +327,72 @@ def principal_stress(pos, rest, tris, E=None, nu=None):
     return s1, d3, area_ratio
 
 
+# --- decoupled stress UI: a tiny local HTTP server the browser viewer polls -----------
+# Two module globals, swapped atomically (dict reference assignment is atomic under the
+# GIL, so the SOFA thread can publish while the server thread reads without a lock):
+#   _STRESS_GEOMETRY = the STATIC reference disc (rest-shape xy + triangles), sent once.
+#   _STRESS_LATEST   = the per-step field (sigma1, crack direction, area ratio, time).
+_STRESS_GEOMETRY = {"verts": [], "tris": []}
+_STRESS_LATEST = {"t": 0.0, "s1": [], "dir": [], "aratio": [], "smax": 0.0,
+                  "heatmax": 300.0}
+
+
+def _start_stress_server(port, open_browser):
+    """Serve the viewer page + the stress field on 127.0.0.1:port (daemon thread).
+
+    Routes: GET /          -> stress_viewer.html (the self-contained browser UI)
+            GET /geometry  -> the static reference disc (fetched once by the page)
+            GET /stress    -> the latest per-triangle sigma1 field (polled live)
+    Returns True if the server started. Failure (e.g. port in use) is non-fatal: the
+    scene keeps running, just without the UI feed.
+    """
+    import json, threading, http.server
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):        # silence per-request console spam
+            pass
+
+        def _send(self, body, ctype):
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            try:
+                if self.path.startswith("/stress"):
+                    self._send(json.dumps(_STRESS_LATEST).encode(), "application/json")
+                elif self.path.startswith("/geometry"):
+                    self._send(json.dumps(_STRESS_GEOMETRY).encode(), "application/json")
+                else:
+                    with open(VIEWER_HTML, "rb") as f:
+                        self._send(f.read(), "text/html; charset=utf-8")
+            except (BrokenPipeError, ConnectionResetError):
+                pass          # the browser closed the socket mid-write; ignore
+            except Exception as e:        # noqa: BLE001
+                self.send_error(500, str(e))
+
+    try:
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), _Handler)
+    except OSError as e:
+        print(f"[StressUI] could not bind 127.0.0.1:{port} ({e}); UI disabled")
+        return False
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{port}/"
+    print(f"[StressUI] live force field at {url}  (open it in a browser)")
+    if open_browser:
+        try:
+            import webbrowser
+            webbrowser.open(url)
+        except Exception:  # noqa: BLE001
+            pass
+    return True
+
+
 def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
-                     topo, display, camera, root, probe, stitch, central, lift,
-                     bands=None):
+                     topo, display, camera, root, probe, stitch, central, lift):
     import Sofa
     import numpy as np
 
@@ -366,7 +427,6 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.peel_fade = {}        # node -> decaying adhesion stiffness (peel fade-out)
             self.nbr = None            # per-node neighbours, for front-only peeling
             self.boundary = None       # mesh-boundary nodes = crack initiation sites
-            self.heat_bands = bands    # per-band OglModels for the live sigma1 heatmap
             # instance copies so the hotkeys can tune them live
             self.plastic_rate = PLASTIC_RATE
             self.break_force = BREAK_FORCE
@@ -703,23 +763,27 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                     pass
             return STRESS_E, STRESS_NU
 
-        def _update_heatmap(self, s1, aratio):
-            # Partition triangles into fixed sigma1 magnitude bands and hand each band's
-            # triangle list to its flat-colour OglModel (positions follow via the band's
-            # IdentityMapping, so only the topology is rewritten). Degenerate triangles
-            # (area ratio outside DEGEN_LO..DEGEN_HI = sigma1 not physical) are forced to
-            # the relaxed band so a spike in garbage geometry never paints red.
-            if self.heat_bands is None or self.tris is None or not len(self.tris):
-                return
-            nb = len(self.heat_bands)
-            thr = np.linspace(0.0, max(STRESS_HEAT_MAX, 1e-6), nb + 1)[1:-1]
-            band = np.digitize(s1, thr)                 # 0..nb-1
+        def _publish_stress(self, s1, sdir, aratio, t):
+            # Publish the per-triangle field for the browser viewer to poll. Only the
+            # DYNAMIC arrays go here (the static reference geometry is sent once, at
+            # scene build); floats are rounded to keep the JSON small on the 20 Hz poll.
+            # 'smax' is the healthy peak (degenerate triangles excluded) so the page can
+            # auto-scale its colour ramp; 'dir' is the crack-perpendicular sigma1
+            # direction in the disc's xy plane.
+            global _STRESS_LATEST
             bad = (aratio < DEGEN_LO) | (aratio > DEGEN_HI)
-            band[bad] = 0
-            tris = self.tris
-            for bi, ogl in enumerate(self.heat_bands):
-                sel = tris[band == bi]
-                ogl.triangles.value = sel.tolist() if len(sel) else []
+            smax = float(s1[~bad].max()) if (~bad).any() else 0.0
+            d2 = sdir[:, :2]
+            n = np.maximum(np.linalg.norm(d2, axis=1), 1e-12)
+            d2 = d2 / n[:, None]
+            _STRESS_LATEST = {
+                "t": round(float(t), 3),
+                "s1": [round(float(v), 1) for v in s1],
+                "dir": [[round(float(a), 3), round(float(b), 3)] for a, b in d2],
+                "aratio": [round(float(v), 2) for v in aratio],
+                "smax": round(smax, 1),
+                "heatmax": STRESS_HEAT_MAX,
+            }
 
         def onAnimateEndEvent(self, event):
             # Safety-net chain, in order, all BEFORE this frame is rendered:
@@ -1079,8 +1143,8 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                     self.sigma1_max = float(s1.max())
                     if self.display is not None:
                         self.display.triangleData.value = s1.tolist()
-                    if STRESS_HEATMAP:
-                        self._update_heatmap(s1, aratio)
+                    if STRESS_UI:
+                        self._publish_stress(s1, sdir, aratio, t)
 
                     # peak + direction is all a tear needs (crack runs perp to sigma1)
                     P = np.asarray(pos)
@@ -1368,32 +1432,37 @@ def createScene(root):
                       contactStiffness=CONTACT_STIFFNESS)
 
     _display = None
-    _bands = None
     if STRESS_COLOR:
         # per-triangle sigma1 colouring (crashes this build's GUI -- see STRESS_COLOR)
         _display = cap.addObject("DataDisplay", name="StressView", maximalRange=False)
         cap.addObject("OglColorMap", name="StressMap", colorScheme="HSV",
                       showLegend=True, legendTitle="sigma1")
-    elif STRESS_HEATMAP:
-        # Live sigma1 heatmap: one flat-colour OglModel per magnitude band. Each shares
-        # the cap's vertices through its own IdentityMapping and draws only the triangles
-        # the controller assigns to that band (empty until the first stress update). The
-        # union of bands covers every triangle, so together they ARE the surface (no
-        # separate beige visual). Wireframe from VisualStyle still overlays.
-        _bands = []
-        hv = cap.addChild("Heatmap")
-        for _bi, _col in enumerate(HEAT_COLORS):
-            _o = hv.addObject("OglModel", name=f"band{_bi}", color=_col)
-            hv.addObject("IdentityMapping", input="@../Mo", output=f"@band{_bi}")
-            _bands.append(_o)
     else:
+        # The membrane's normal deformation view -- UNCHANGED by the stress UI, which
+        # publishes over HTTP instead of drawing anything into this scene.
         visu = cap.addChild("Visual")
         visu.addObject("OglModel", name="visual", color=[0.92, 0.90, 0.82, 1.0])
         visu.addObject("IdentityMapping", input="@../Mo", output="@visual")
 
+    # Decoupled stress UI: publish the STATIC reference disc (rest-shape xy + triangles)
+    # once, then start the local server the browser page polls. Physics/rendering above
+    # are untouched. Geometry is taken from cap.obj so it needs no live SOFA state.
+    if STRESS_UI:
+        _verts, _tris = [], []
+        for _ln in open(CAP_OBJ):
+            if _ln.startswith("v "):
+                _p = _ln.split()[1:4]
+                _verts.append([round(float(_p[0]), 4), round(float(_p[1]), 4)])
+            elif _ln.startswith("f "):
+                _idx = [int(tok.split("/")[0]) - 1 for tok in _ln.split()[1:4]]
+                _tris.append(_idx)
+        global _STRESS_GEOMETRY
+        _STRESS_GEOMETRY = {"verts": _verts, "tris": _tris}
+        _start_stress_server(STRESS_UI_PORT, STRESS_UI_OPEN)
+
     cap.addObject(_make_controller(fem, springs, bending, mo, adhesion, pull,
                                    _mouse, _damper, topo, _display, _camera, root,
-                                   _probe, stitch, central, lift, _bands))
+                                   _probe, stitch, central, lift))
 
 
     print(f"""

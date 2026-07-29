@@ -147,15 +147,26 @@ ang = 0.5 * np.arctan2(2*σxy, np.maximum(σxx − σyy, 1e-12))   # ← 錯
 mass-spring 模式沒有連續體 E,退回固定 `STRESS_E/STRESS_NU` —— 此時數值只是**幾何應變比例尺**,
 但「哪裡受力最大」的空間分佈兩個模式一致。
 
-**即時熱圖**(`CAP_HEATMAP=1` / `run_cap.ps1 -Heatmap` / `run_cap.sh --heatmap`):把每個三角形
-依 σ₁ 分到固定量值 band(藍=鬆弛 → 紅=峰值,`STRESS_HEAT_MAX` 定紅色飽和點),拉動時整片即時
-上色。實作上**每個 band = 一個單色 `OglModel`**,三角形在它們之間分配、位置各自靠 `IdentityMapping`
-跟著走。
+**即時力場 UI(解耦式)**(`CAP_HEATMAP=1` / `run_cap.ps1 -Heatmap` / `run_cap.sh --heatmap`):
+SOFA 的**變形視窗完全不動**,另外把 σ₁ 場透過一個**極簡本機 HTTP 服務**(Python 標準庫、背景
+執行緒)推出去;一個自足的瀏覽器頁面 [`stress_viewer.html`](../../Capsulorhexis/scenes/stress_viewer.html)
+輪詢它,畫出**未變形參考圓盤**的即時熱圖,支援 **hover 浮現數值**(σ₁ / 裂縫方向 / 裂向分類)、
+**空白鍵定格**、色階條。
 
-> [補充] 用「多個單色 OglModel 分 band」而非官方 `DataDisplay`+`OglColorMap`,是因為後者在本
-> SOFA build(v25.12 Win64)的 imgui GUI 視覺初始化會 SIGABRT(batch 模式正常、GUI 死);
-> 且本 build 的 `OglModel` 未暴露逐頂點顏色欄位(只有 `material`),故走 band-partition 這條。
-> 退化三角形(area ratio 超出 `DEGEN_LO..DEGEN_HI`,σ₁ 非物理)強制歸藍,不會誤染紅。
+- **資料流**:controller 每 `STRESS_EVERY` 步把 σ₁/方向/area_ratio 更新到 `_STRESS_LATEST`
+  (dict 原子換參考,無鎖);背景 HTTP 服務三個路由 —— `/`(頁面)、`/geometry`(靜態參考圓盤,
+  只取一次)、`/stress`(逐三角形場,即時輪詢)。兩邊各有事件迴圈,互不阻塞。
+- **為何放在 SofaImGui 之外**:SofaImGui **無法讓場景注入自訂 widget**,所以 hover-tooltip
+  在 SOFA GUI 內做不到;把力場畫在**我們自己的頁面**裡,hover/數值/定格就全部可行。這也符合
+  本 repo 既有的 `docs/demo_*.html` canvas demo 慣例。
+- **裂向分類**:頁面端重現終端機邏輯 —— 裂縫 ⊥ σ₁(Rankine),量 σ₁ 方向與**徑向**的夾角:
+  <30° → 裂縫 CIRCUMFERENTIAL(good);>60° → RADIAL(runs to periphery);之間 → oblique。
+  退化三角形(area ratio 超出 `DEGEN_LO..DEGEN_HI`)標灰、σ₁ 非物理。
+
+> [補充] 早一版曾把熱圖直接畫在 SOFA 網格上(每個 band 一個單色 `OglModel` + `IdentityMapping`),
+> 但那會**蓋掉變形視圖**、且 hover 數值做不到;官方 `DataDisplay`+`OglColorMap` 又在本 build
+> (v25.12 Win64)的 imgui GUI 視覺初始化 SIGABRT(batch 正常、GUI 死),`OglModel` 也未暴露
+> 逐頂點顏色。故改走「SOFA 不動 + 解耦 HTTP + 瀏覽器頁面」這條,一併解掉遮擋與 hover 兩個問題。
 
 ---
 
