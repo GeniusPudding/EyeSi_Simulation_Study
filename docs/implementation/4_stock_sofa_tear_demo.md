@@ -163,7 +163,13 @@ SOFA 的**變形視窗完全不動**,另外把 σ₁ 場透過一個**極簡本�
   hover 查數值** —— 不必為了定格而放開滑鼠。空白鍵在 LIVE / 回放間切換。
 - **為何放在 SofaImGui 之外**:SofaImGui **無法讓場景注入自訂 widget**,所以 hover-tooltip
   在 SOFA GUI 內做不到;把力場畫在**我們自己的頁面**裡,hover/數值/回放就全部可行。這也符合
-  本 repo 既有的 `docs/demo_*.html` canvas demo 慣例。UI+錄製約耗 ~23% FPS(128→99,headless 實測)。
+  本 repo 既有的 `docs/demo_*.html` canvas demo 慣例。
+- **效能 / 穩定性連動**:每幀序列化 4166×3 值原本用 per-element Python 迴圈,**把 FPS 砍半**
+  (163→64);而 FPS 一低,即時滑鼠目標在兩步間跑得更遠 → `DISP_CLAMP` 飽和 → **整片彈開**,
+  所以這個序列化成本本身就是「扭曲彈開」不穩的來源之一,不只是延遲。修法:(a) numpy 向量化
+  `np.round(...).tolist()`(64→99);(b) `STRESS_EVERY` 預設 3→**6**(場更新頻率 ~8 Hz,足夠)
+  → **143 FPS(僅比關閉低 ~12%)**。背景執行緒**無效**(GIL 會把它與物理執行緒序列化,實測無改善)。
+  拉動仍覺重就把 `CAP_STRESS_EVERY` 調更大。
 - **裂向分類**:頁面端重現終端機邏輯 —— 裂縫 ⊥ σ₁(Rankine),量 σ₁ 方向與**徑向**的夾角:
   <30° → 裂縫 CIRCUMFERENTIAL(good);>60° → RADIAL(runs to periphery);之間 → oblique。
   退化三角形(area ratio 超出 `DEGEN_LO..DEGEN_HI`)標灰、σ₁ 非物理。

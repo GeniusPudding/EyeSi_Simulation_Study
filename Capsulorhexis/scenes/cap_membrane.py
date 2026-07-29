@@ -164,7 +164,12 @@ SHOW_STRESS = True       # compute sigma1 every STRESS_EVERY steps
 # DataDisplay colouring SIGABRTs this build's GUI at visual init (batch mode passes,
 # GUI dies) -- keep OFF until a safe visualisation exists.
 STRESS_COLOR = False
-STRESS_EVERY = 3         # steps between stress updates (O(triangles) numpy)
+# Steps between stress updates. This is the WHOLE cost of the stress observer + UI feed
+# (the O(triangles) numpy + serialisation), so it is the main FPS knob when the heatmap is
+# on. 6 = ~8 Hz of field at dt=0.02, smooth enough for the heatmap while keeping the loop
+# fast so the mouse-pull stays stable. Lower (3) = smoother field, more FPS cost; raise if
+# dragging still feels heavy. Tunable with CAP_STRESS_EVERY.
+STRESS_EVERY = int(os.environ.get("CAP_STRESS_EVERY", "6"))
 # Observer constitutive constants for sigma = C(E,nu):eps. Used ONLY in mass-spring
 # mode (no continuum E exists there, so these set a geometric-strain scale). In FEM
 # mode the observer instead reads the FEM's live youngModulus/poissonRatio, so the
@@ -350,6 +355,33 @@ _STRESS_LATEST = "{}"
 _STRESS_HISTORY = _collections.deque()
 _STRESS_TOTAL = 0                 # frames ever published (also the next frame's global index)
 _STRESS_LOG_FH = None
+
+
+def _stress_build_frame(i, step, t, s1, sdir, aratio):
+    """Serialise one frame to a JSON string. All per-triangle numpy work is VECTORISED
+    (np.round + one tolist) rather than a per-element Python loop -- the loop over 4166x3
+    values roughly halved the framerate, and a slower loop lets the real-time mouse target
+    jump further per step, so DISP_CLAMP saturates and the sheet snaps. So this cost was
+    itself a source of the 'distort and spring open' instability. A background thread does
+    NOT help: the GIL serialises it against the physics thread anyway (measured). The real
+    levers are this vectorisation and STRESS_EVERY (how often we do it)."""
+    import numpy as np
+    bad = (aratio < DEGEN_LO) | (aratio > DEGEN_HI)
+    good = s1[~bad]
+    smax = float(good.max()) if good.size else 0.0
+    # Robust colour-scale ceiling: a few near-degenerate triangles at the pull point reach
+    # sigma1 ~100x the bulk; scaling the ramp to the raw max washes the map blue. The 98th
+    # percentile of the loaded cells tracks the real working range (viewer auto-scales to it).
+    pos = good[good > 0.0]
+    sp98 = float(np.percentile(pos, 98)) if pos.size else 0.0
+    ang = np.degrees(np.arctan2(sdir[:, 1], sdir[:, 0]))
+    return _json.dumps({
+        "i": i, "step": int(step), "t": round(float(t), 3),
+        "s1": np.round(s1, 1).tolist(),
+        "ang": np.round(ang, 1).tolist(),
+        "aratio": np.round(aratio, 2).tolist(),
+        "smax": round(smax, 1), "sp98": round(sp98, 1), "heatmax": STRESS_HEAT_MAX,
+    })
 
 
 def _stress_record(js):
@@ -819,35 +851,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             return STRESS_E, STRESS_NU
 
         def _publish_stress(self, s1, sdir, aratio, t):
-            # Serialise one per-triangle field frame for the viewer + the log. Only the
-            # DYNAMIC arrays go here (the static reference geometry is sent once, at scene
-            # build). The sigma1 direction is stored as a single angle 'ang' (degrees in
-            # the disc's xy plane) rather than a 2-vector -- half the size, and the crack
-            # runs perpendicular to it. 'smax' is the healthy peak (degenerate triangles
-            # excluded) for the page's auto colour-scale. Floats are rounded to keep each
-            # frame small (it is both polled at ~18 Hz and written to the JSONL log).
-            bad = (aratio < DEGEN_LO) | (aratio > DEGEN_HI)
-            good = s1[~bad]
-            smax = float(good.max()) if good.size else 0.0
-            # Robust colour-scale ceiling: a handful of near-degenerate triangles at the
-            # mouse-pull point reach sigma1 ~100x the bulk, so scaling the ramp to the raw
-            # max washes the whole map blue. The 98th percentile of the loaded (positive)
-            # cells tracks the real working range; the viewer auto-scales to this instead.
-            pos = good[good > 0.0]
-            sp98 = float(np.percentile(pos, 98)) if pos.size else 0.0
-            ang = np.degrees(np.arctan2(sdir[:, 1], sdir[:, 0]))
-            frame = {
-                "i": _STRESS_TOTAL,
-                "step": int(self.step),
-                "t": round(float(t), 3),
-                "s1": [round(float(v), 1) for v in s1],
-                "ang": [round(float(a), 1) for a in ang],
-                "aratio": [round(float(v), 2) for v in aratio],
-                "smax": round(smax, 1),
-                "sp98": round(sp98, 1),
-                "heatmax": STRESS_HEAT_MAX,
-            }
-            _stress_record(_json.dumps(frame))
+            _stress_record(_stress_build_frame(_STRESS_TOTAL, self.step, t, s1, sdir, aratio))
 
         def onAnimateEndEvent(self, event):
             # Safety-net chain, in order, all BEFORE this frame is rendered:
