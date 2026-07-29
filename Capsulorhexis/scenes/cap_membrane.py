@@ -1512,6 +1512,21 @@ def createScene(root):
     # once, then start the local server the browser page polls. Physics/rendering above
     # are untouched. Geometry is taken from cap.obj so it needs no live SOFA state.
     if STRESS_UI:
+        # Reset any recording state carried over from a previous scene build -- SofaImGui's
+        # "reload scene" re-runs createScene in the SAME process, so without this the
+        # browser would see the old session's frames concatenated with the new one. The
+        # frame counter drops back to 0, which the page detects to reset itself (re-fetch
+        # geometry, clear its cache, return to LIVE). A fresh log run also re-backs-up .prev.
+        global _STRESS_GEOMETRY, _STRESS_HISTORY, _STRESS_TOTAL, _STRESS_LOG_FH, _STRESS_LATEST
+        _STRESS_HISTORY.clear()
+        _STRESS_TOTAL = 0
+        _STRESS_LATEST = "{}"
+        if _STRESS_LOG_FH is not None:
+            try:
+                _STRESS_LOG_FH.close()
+            except Exception:  # noqa: BLE001
+                pass
+            _STRESS_LOG_FH = None
         _verts, _tris = [], []
         for _ln in open(CAP_OBJ):
             if _ln.startswith("v "):
@@ -1520,7 +1535,6 @@ def createScene(root):
             elif _ln.startswith("f "):
                 _idx = [int(tok.split("/")[0]) - 1 for tok in _ln.split()[1:4]]
                 _tris.append(_idx)
-        global _STRESS_GEOMETRY
         _STRESS_GEOMETRY = _json.dumps({"verts": _verts, "tris": _tris})
         _start_stress_server(STRESS_UI_PORT, STRESS_UI_OPEN)
 

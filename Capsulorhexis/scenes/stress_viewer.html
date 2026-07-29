@@ -143,7 +143,7 @@ const seek=document.getElementById("seek"), tllab=document.getElementById("tllab
 let verts=null, tris=null, cents=null, radial=null, bounds=null;
 let cur=null;                    // the frame currently displayed {s1,ang,aratio,smax,heatmax,t,i,step}
 let meta={count:0,first:0,last:-1,n:0};
-let following=true, playing=false, curIdx=-1;
+let following=true, playing=false, curIdx=-1, prevCount=0;
 const cache=new Map();           // idx -> frame
 let scaleMode="auto", showWire=false, hover=-1, mouse=null, miss=0;
 let scaleTop=300, dpr=Math.min(window.devicePixelRatio||1,2), T=null;
@@ -263,6 +263,14 @@ async function tick(){
   // refresh meta (frame range) regularly
   try{ meta=await (await fetch("/meta",{cache:"no-store"})).json(); miss=0; deadEl.style.display="none"; }
   catch(e){ if(++miss>15) deadEl.style.display="grid"; }
+  // reset detection: the frame counter only grows within a session, so a DROP means the
+  // SOFA scene was reloaded/restarted. Re-fetch geometry (it may have changed), clear the
+  // frame cache, and snap back to LIVE -- the browser mirrors the SOFA reset automatically.
+  if(meta.count < prevCount){
+    try{ await loadGeometry(); }catch(e){}
+    cache.clear(); cur=null; following=true; playing=false; curIdx=-1;
+  }
+  prevCount=meta.count;
   if(following){
     try{ const f=await (await fetch("/stress",{cache:"no-store"})).json(); if(f&&f.s1){ cur=f; curIdx=f.i; } }catch(e){}
   } else {
