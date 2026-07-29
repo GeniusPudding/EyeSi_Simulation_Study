@@ -9,59 +9,127 @@
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: #0d1218; color: #dfe6ee;
                font: 13px/1.45 -apple-system, Segoe UI, Roboto, sans-serif; overflow: hidden; }
-  #wrap { position: fixed; inset: 0; }
-  canvas { display: block; width: 100%; height: 100%; }
-  #hud { position: fixed; top: 10px; left: 12px; padding: 9px 12px; border-radius: 8px;
-         background: rgba(10,16,22,.78); border: 1px solid #22303c; pointer-events: none;
-         white-space: pre; font-variant-numeric: tabular-nums; }
+  canvas#c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  .panel { background: rgba(10,16,22,.82); border: 1px solid #22303c; border-radius: 8px; }
+  #hud { position: fixed; top: 10px; left: 12px; padding: 9px 12px; white-space: pre;
+         font-variant-numeric: tabular-nums; pointer-events: none; }
   #hud b { color: #7fd1ff; font-weight: 600; }
+  #cap { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); padding: 6px 12px;
+         color: #9fb3c4; pointer-events: none; text-align: center; }
+  #cap b { color: #cfe0ee; }
   #ctrls { position: fixed; top: 10px; right: 12px; display: flex; gap: 8px; align-items: center; }
   #ctrls button { background: #16212c; color: #dfe6ee; border: 1px solid #2b3a49;
                   border-radius: 7px; padding: 6px 11px; cursor: pointer; font-size: 12px; }
   #ctrls button:hover { border-color: #4a6076; }
   #ctrls button.on { background: #2a4258; border-color: #4a6076; color: #bfe4ff; }
-  #frozenTag { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
-               font-size: 42px; font-weight: 700; color: rgba(127,209,255,.14);
-               letter-spacing: 6px; pointer-events: none; display: none; }
-  #frozenTag.show { display: block; }
-  #tip { position: fixed; pointer-events: none; display: none; z-index: 5;
-         background: rgba(8,13,18,.95); border: 1px solid #33475a; border-radius: 7px;
-         padding: 8px 10px; max-width: 260px; box-shadow: 0 6px 22px rgba(0,0,0,.5);
-         font-variant-numeric: tabular-nums; }
-  #tip .k { color: #8aa0b4; }
-  #tip .v { color: #eef4fa; font-weight: 600; }
-  #tip .cls { margin-top: 5px; padding-top: 5px; border-top: 1px solid #24333f; }
-  .good { color: #6ee69a; } .bad { color: #ff7d72; } .obl { color: #f2c14e; }
-  .degen { color: #8aa0b4; }
-  #legend { position: fixed; bottom: 14px; left: 12px; padding: 8px 10px; border-radius: 8px;
-            background: rgba(10,16,22,.78); border: 1px solid #22303c; }
-  #legend canvas { width: 190px; height: 12px; border-radius: 3px; }
+  /* timeline */
+  #tl { position: fixed; left: 12px; right: 12px; bottom: 12px; padding: 8px 12px 10px;
+        display: grid; grid-template-columns: auto auto 1fr auto; gap: 10px; align-items: center; }
+  #tl button { background: #16212c; color: #dfe6ee; border: 1px solid #2b3a49; border-radius: 6px;
+               width: 30px; height: 28px; cursor: pointer; font-size: 13px; }
+  #tl button:hover { border-color: #4a6076; }
+  #tl button.on { background: #2a4258; border-color: #4a6076; color: #bfe4ff; }
+  #seek { width: 100%; accent-color: #4aa3ff; }
+  #tllab { font-variant-numeric: tabular-nums; color: #9fb3c4; white-space: nowrap; min-width: 190px; }
+  #tllab b { color: #cfe0ee; }
+  #liveDot { color: #6ee69a; }
+  #reviewTag { color: #f2c14e; }
+  /* legend */
+  #legend { position: fixed; bottom: 66px; left: 12px; padding: 8px 10px; }
+  #legend canvas { width: 190px; height: 12px; border-radius: 3px; display: block; }
   #legend .lab { display: flex; justify-content: space-between; margin-top: 3px;
                  color: #8aa0b4; font-variant-numeric: tabular-nums; }
-  #hint { position: fixed; bottom: 14px; right: 12px; color: #607283; text-align: right; }
-  #dead { position: fixed; inset: 0; display: none; place-items: center; text-align: center;
-          background: rgba(8,12,16,.85); }
-  #dead div { max-width: 420px; }
+  #legend .cap2 { color: #8aa0b4; margin-bottom: 5px; }
+  /* tooltip */
+  #tip { position: fixed; pointer-events: none; display: none; z-index: 6; padding: 8px 10px;
+         max-width: 270px; box-shadow: 0 6px 22px rgba(0,0,0,.5); font-variant-numeric: tabular-nums; }
+  #tip .k { color: #8aa0b4; } #tip .v { color: #eef4fa; font-weight: 600; }
+  #tip .cls { margin-top: 5px; padding-top: 5px; border-top: 1px solid #24333f; }
+  .good { color: #6ee69a; } .bad { color: #ff7d72; } .obl { color: #f2c14e; } .degen { color: #8aa0b4; }
+  /* help overlay */
+  #help { position: fixed; inset: 0; background: rgba(6,10,14,.72); display: none;
+          place-items: center; z-index: 10; }
+  #help.show { display: grid; }
+  #help .box { max-width: 620px; max-height: 84vh; overflow: auto; padding: 22px 26px;
+               background: #0f1620; border: 1px solid #2b3a49; border-radius: 12px; }
+  #help h2 { margin: 0 0 6px; color: #bfe4ff; } #help h3 { color: #7fd1ff; margin: 16px 0 4px; }
+  #help p, #help li { color: #c7d3de; } #help small { color: #8aa0b4; }
+  #help .sw { display: inline-block; width: 11px; height: 11px; border-radius: 2px; vertical-align: middle; }
+  #help .x { float: right; cursor: pointer; color: #8aa0b4; border: 1px solid #2b3a49;
+             border-radius: 6px; padding: 2px 9px; }
   kbd { background: #1b2733; border: 1px solid #33475a; border-radius: 4px; padding: 1px 6px; }
+  #dead { position: fixed; inset: 0; display: none; place-items: center; text-align: center;
+          background: rgba(8,12,16,.85); z-index: 8; }
+  #dead div { max-width: 440px; }
 </style>
 </head>
 <body>
-<div id="wrap"><canvas id="c"></canvas></div>
+<canvas id="c"></canvas>
 
-<div id="hud">loading…</div>
+<div id="hud" class="panel">loading…</div>
+<div id="cap" class="panel">Undeformed <b>reference disc</b> — a MAP of the deforming membrane.
+Colour = <b>σ₁</b> (peak in-plane stress). Hover a triangle for details.</div>
+
 <div id="ctrls">
-  <button id="freezeBtn" title="Space">❚❚ Freeze</button>
-  <button id="scaleBtn"  title="colour-ramp scaling">Scale: auto</button>
-  <button id="wireBtn"   title="mesh edges">Wire</button>
+  <button id="scaleBtn" title="colour-ramp scaling">Scale: auto</button>
+  <button id="wireBtn"  title="mesh edges">Wire</button>
+  <button id="helpBtn"  title="what am I looking at?">? Help</button>
 </div>
-<div id="frozenTag">FROZEN</div>
-<div id="tip"></div>
-<div id="legend">
+
+<div id="legend" class="panel">
+  <div class="cap2">σ₁ colour scale</div>
   <canvas id="lg" width="190" height="12"></canvas>
   <div class="lab"><span>0</span><span id="lgMid"></span><span id="lgMax">σ₁</span></div>
 </div>
-<div id="hint">hover a triangle for σ₁ &amp; crack direction · <kbd>Space</kbd> freeze</div>
-<div id="dead"><div>
+
+<div id="tip" class="panel"></div>
+
+<div id="tl" class="panel">
+  <button id="liveBtn" class="on" title="follow the latest frame (Space)">◉</button>
+  <button id="playBtn" title="replay">▶</button>
+  <input id="seek" type="range" min="0" max="0" value="0" step="1">
+  <div id="tllab"><span id="liveDot">◉ LIVE</span></div>
+</div>
+
+<div id="help">
+  <div class="box panel">
+    <span class="x" id="helpClose">close ✕</span>
+    <h2>What this shows</h2>
+    <p>This is the <b>capsule membrane's stress field</b>, drawn on its <b>undeformed
+    (flat) reference shape</b>. It does NOT deform — think of it as a fixed <b>map</b>:
+    each triangle sits where that patch of membrane <i>starts</i>, and its colour tells you
+    how hard that patch is being stressed <i>right now</i> in the live SOFA simulation.</p>
+    <p>Watch the deformation in the SOFA window; watch <b>where the force concentrates</b>
+    here.</p>
+
+    <h3>Colour = σ₁ (max principal stress)</h3>
+    <p>σ₁ is the largest in-plane tension in that triangle.
+    <span class="sw" style="background:#2a4696"></span> blue = relaxed …
+    <span class="sw" style="background:#d92e26"></span> red = peak. The scale
+    (bottom-left) auto-fits the current peak; <b>Scale</b> switches to a fixed ceiling.
+    Grey = a degenerate triangle (collapsed/inverted) where σ₁ is not physical.</p>
+
+    <h3>Hover a triangle</h3>
+    <p>Shows σ₁, radius r, area ratio, the σ₁ direction, and the <b>crack class</b>. A crack
+    would run <b>perpendicular to σ₁</b> (Rankine). Comparing that to the radial direction:</p>
+    <ul>
+      <li><span class="good">CIRCUMFERENTIAL</span> — the good, curvilinear tear (stays a circle).</li>
+      <li><span class="bad">RADIAL</span> — the dangerous one that runs out to the periphery.</li>
+      <li><span class="obl">oblique</span> — in between.</li>
+    </ul>
+    <p>The hovered triangle draws its σ₁ line (white) and the crack line (dashed red).</p>
+
+    <h3>Timeline — drag freely, review after</h3>
+    <p>You don't have to watch while you drag. Every frame is recorded. The bar at the
+    bottom is <span id="liveDot2">◉ LIVE</span> by default (follows the newest frame).
+    <b>Drag the slider</b> or press <b>▶</b> to scrub back through history and hover any
+    past moment; <kbd>Space</kbd> or <b>◉</b> returns to live. <br>
+    <small>The full field is also written to <code>scenes/stress_log.jsonl</code>
+    (one JSON frame per line) for offline analysis.</small></p>
+  </div>
+</div>
+
+<div id="dead" class="panel"><div>
   <h3>Waiting for the simulation…</h3>
   <p style="color:#8aa0b4">Start the scene with <kbd>run_cap.ps1 -Heatmap</kbd> (or
   <kbd>--heatmap</kbd>). This page is served by that process; if it stopped, relaunch it.</p>
@@ -69,172 +137,162 @@
 
 <script>
 "use strict";
-const cv = document.getElementById("c"), ctx = cv.getContext("2d");
-const hud = document.getElementById("hud"), tip = document.getElementById("tip");
-const deadEl = document.getElementById("dead");
-let GEO = null, verts = null, tris = null, cents = null, radial = null;
-let bounds = null, field = null, lastGood = 0, miss = 0;
-let frozen = false, scaleMode = "auto", showWire = false, hover = -1, mouse = null;
-let scaleTop = 300, dpr = Math.min(window.devicePixelRatio || 1, 2);
+const cv=document.getElementById("c"), ctx=cv.getContext("2d");
+const hud=document.getElementById("hud"), tip=document.getElementById("tip"), deadEl=document.getElementById("dead");
+const seek=document.getElementById("seek"), tllab=document.getElementById("tllab");
+let verts=null, tris=null, cents=null, radial=null, bounds=null;
+let cur=null;                    // the frame currently displayed {s1,ang,aratio,smax,heatmax,t,i,step}
+let meta={count:0,first:0,last:-1,n:0};
+let following=true, playing=false, curIdx=-1;
+const cache=new Map();           // idx -> frame
+let scaleMode="auto", showWire=false, hover=-1, mouse=null, miss=0;
+let scaleTop=300, dpr=Math.min(window.devicePixelRatio||1,2), T=null;
 
-// blue -> teal -> green -> amber -> red
-const STOPS = [[42,70,150],[38,140,190],[70,185,115],[235,200,64],[217,46,38]];
-function ramp(u){
-  u = Math.max(0, Math.min(1, u));
-  const x = u * (STOPS.length - 1), i = Math.floor(x), f = x - i;
-  const a = STOPS[i], b = STOPS[Math.min(i + 1, STOPS.length - 1)];
-  return `rgb(${a[0]+(b[0]-a[0])*f|0},${a[1]+(b[1]-a[1])*f|0},${a[2]+(b[2]-a[2])*f|0})`;
-}
+const STOPS=[[42,70,150],[38,140,190],[70,185,115],[235,200,64],[217,46,38]];
+function ramp(u){ u=Math.max(0,Math.min(1,u)); const x=u*(STOPS.length-1),i=Math.floor(x),f=x-i;
+  const a=STOPS[i],b=STOPS[Math.min(i+1,STOPS.length-1)];
+  return `rgb(${a[0]+(b[0]-a[0])*f|0},${a[1]+(b[1]-a[1])*f|0},${a[2]+(b[2]-a[2])*f|0})`; }
 
 async function loadGeometry(){
-  const r = await fetch("/geometry"); GEO = await r.json();
-  verts = GEO.verts; tris = GEO.tris;
-  cents = new Array(tris.length); radial = new Array(tris.length);
+  const g=await (await fetch("/geometry")).json(); verts=g.verts; tris=g.tris;
+  cents=new Array(tris.length); radial=new Array(tris.length);
   let minx=1e9,maxx=-1e9,miny=1e9,maxy=-1e9;
-  for (const v of verts){ if(v[0]<minx)minx=v[0]; if(v[0]>maxx)maxx=v[0];
-                          if(v[1]<miny)miny=v[1]; if(v[1]>maxy)maxy=v[1]; }
-  bounds = {minx,maxx,miny,maxy};
-  for (let k=0;k<tris.length;k++){
-    const [a,b,c] = tris[k];
+  for(const v of verts){ if(v[0]<minx)minx=v[0]; if(v[0]>maxx)maxx=v[0]; if(v[1]<miny)miny=v[1]; if(v[1]>maxy)maxy=v[1]; }
+  bounds={minx,maxx,miny,maxy};
+  for(let k=0;k<tris.length;k++){ const [a,b,c]=tris[k];
     const cx=(verts[a][0]+verts[b][0]+verts[c][0])/3, cy=(verts[a][1]+verts[b][1]+verts[c][1])/3;
-    cents[k]=[cx,cy];
-    const rn=Math.hypot(cx,cy)||1; radial[k]=[cx/rn,cy/rn];
-  }
+    cents[k]=[cx,cy]; const rn=Math.hypot(cx,cy)||1; radial[k]=[cx/rn,cy/rn]; }
 }
-
-function fit(){
-  cv.width = innerWidth*dpr; cv.height = innerHeight*dpr;
-  const W=cv.width,H=cv.height, bw=bounds.maxx-bounds.minx, bh=bounds.maxy-bounds.miny;
-  const s = Math.min(W/bw, H/bh)*0.86;
-  const ox = (W - bw*s)/2 - bounds.minx*s, oy = (H + bh*s)/2 + bounds.miny*s;
-  return {s,ox,oy,W,H};
-}
-let T = null;
-function toScreen(x,y){ return [T.ox + x*T.s, T.oy - y*T.s]; }
-function toWorld(px,py){ return [(px*dpr - T.ox)/T.s, (T.oy - py*dpr)/T.s]; }
-
-function degenerate(ar){ return ar < 0.25 || ar > 4.0; }
+function fit(){ cv.width=innerWidth*dpr; cv.height=innerHeight*dpr;
+  const W=cv.width,H=cv.height,bw=bounds.maxx-bounds.minx,bh=bounds.maxy-bounds.miny;
+  const s=Math.min(W/bw,H/bh)*0.82;
+  return {s,ox:(W-bw*s)/2-bounds.minx*s,oy:(H+bh*s)/2+bounds.miny*s,W,H}; }
+function toScreen(x,y){ return [T.ox+x*T.s, T.oy-y*T.s]; }
+function toWorld(px,py){ return [(px*dpr-T.ox)/T.s,(T.oy-py*dpr)/T.s]; }
+function degenerate(ar){ return ar<0.25||ar>4.0; }
+function dirOf(k){ const a=cur.ang[k]*Math.PI/180; return [Math.cos(a),Math.sin(a)]; }
 
 function draw(){
-  if (!bounds){ return; }
-  T = fit();
-  ctx.clearRect(0,0,T.W,T.H);
-  if (!field || !field.s1.length){ return; }
-  const s1 = field.s1, ar = field.aratio;
-  scaleTop = scaleMode==="fixed" ? field.heatmax : Math.max(field.smax, 20);
-  for (let k=0;k<tris.length;k++){
-    const [a,b,c]=tris[k];
-    const A=toScreen(verts[a][0],verts[a][1]), B=toScreen(verts[b][0],verts[b][1]), C=toScreen(verts[c][0],verts[c][1]);
+  if(!bounds) return;
+  T=fit(); ctx.clearRect(0,0,T.W,T.H);
+  if(!cur||!cur.s1||!cur.s1.length) return;
+  const s1=cur.s1, ar=cur.aratio;
+  scaleTop = scaleMode==="fixed" ? cur.heatmax : Math.max(cur.smax,20);
+  for(let k=0;k<tris.length;k++){ const [a,b,c]=tris[k];
+    const A=toScreen(verts[a][0],verts[a][1]),B=toScreen(verts[b][0],verts[b][1]),C=toScreen(verts[c][0],verts[c][1]);
     ctx.beginPath(); ctx.moveTo(A[0],A[1]); ctx.lineTo(B[0],B[1]); ctx.lineTo(C[0],C[1]); ctx.closePath();
-    ctx.fillStyle = degenerate(ar[k]) ? "#38424c" : ramp(s1[k]/scaleTop);
-    ctx.fill();
-    if (showWire){ ctx.strokeStyle="rgba(0,0,0,.28)"; ctx.lineWidth=1; ctx.stroke(); }
-  }
-  if (hover>=0){
-    const [a,b,c]=tris[hover];
-    const A=toScreen(verts[a][0],verts[a][1]), B=toScreen(verts[b][0],verts[b][1]), C=toScreen(verts[c][0],verts[c][1]);
+    ctx.fillStyle = degenerate(ar[k]) ? "#38424c" : ramp(s1[k]/scaleTop); ctx.fill();
+    if(showWire){ ctx.strokeStyle="rgba(0,0,0,.28)"; ctx.lineWidth=1; ctx.stroke(); } }
+  if(hover>=0 && hover<tris.length){ const [a,b,c]=tris[hover];
+    const A=toScreen(verts[a][0],verts[a][1]),B=toScreen(verts[b][0],verts[b][1]),C=toScreen(verts[c][0],verts[c][1]);
     ctx.beginPath(); ctx.moveTo(A[0],A[1]); ctx.lineTo(B[0],B[1]); ctx.lineTo(C[0],C[1]); ctx.closePath();
-    ctx.strokeStyle="#ffffff"; ctx.lineWidth=2; ctx.stroke();
-    // sigma1 direction (white) and the crack, which runs perpendicular (dashed)
-    const ce=toScreen(cents[hover][0],cents[hover][1]);
-    const d=field.dir[hover], L=26*dpr;
+    ctx.strokeStyle="#fff"; ctx.lineWidth=2; ctx.stroke();
+    const ce=toScreen(cents[hover][0],cents[hover][1]),d=dirOf(hover),L=26*dpr;
     ctx.beginPath(); ctx.moveTo(ce[0]-d[0]*L,ce[1]+d[1]*L); ctx.lineTo(ce[0]+d[0]*L,ce[1]-d[1]*L);
-    ctx.strokeStyle="#ffffff"; ctx.lineWidth=2; ctx.stroke();
+    ctx.strokeStyle="#fff"; ctx.lineWidth=2; ctx.stroke();
     ctx.beginPath(); ctx.setLineDash([5,4]);
     ctx.moveTo(ce[0]+d[1]*L,ce[1]+d[0]*L); ctx.lineTo(ce[0]-d[1]*L,ce[1]-d[0]*L);
-    ctx.strokeStyle="#ff5b4d"; ctx.lineWidth=2; ctx.stroke(); ctx.setLineDash([]);
-  }
+    ctx.strokeStyle="#ff5b4d"; ctx.lineWidth=2; ctx.stroke(); ctx.setLineDash([]); }
   drawLegend();
 }
-
-function drawLegend(){
-  const lg=document.getElementById("lg"), g=lg.getContext("2d");
+function drawLegend(){ const lg=document.getElementById("lg"),g=lg.getContext("2d");
   for(let x=0;x<lg.width;x++){ g.fillStyle=ramp(x/(lg.width-1)); g.fillRect(x,0,1,lg.height); }
-  document.getElementById("lgMax").textContent = "σ₁ "+scaleTop.toFixed(0);
-  document.getElementById("lgMid").textContent = (scaleTop/2).toFixed(0);
-}
+  document.getElementById("lgMax").textContent="σ₁ "+scaleTop.toFixed(0);
+  document.getElementById("lgMid").textContent=(scaleTop/2).toFixed(0); }
 
 function pointInTri(px,py,a,b,c){
   const d1=(px-b[0])*(a[1]-b[1])-(a[0]-b[0])*(py-b[1]);
   const d2=(px-c[0])*(b[1]-c[1])-(b[0]-c[0])*(py-c[1]);
   const d3=(px-a[0])*(c[1]-a[1])-(c[0]-a[0])*(py-a[1]);
-  const neg=(d1<0)||(d2<0)||(d3<0), pos=(d1>0)||(d2>0)||(d3>0);
-  return !(neg&&pos);
-}
-function hitTest(){
-  if (!mouse || !verts){ hover=-1; return; }
+  return !(((d1<0)||(d2<0)||(d3<0))&&((d1>0)||(d2>0)||(d3>0))); }
+function hitTest(){ if(!mouse||!verts){ hover=-1; return; }
   const [wx,wy]=toWorld(mouse[0],mouse[1]); hover=-1;
-  for (let k=0;k<tris.length;k++){
-    const [a,b,c]=tris[k];
-    if (pointInTri(wx,wy,verts[a],verts[b],verts[c])){ hover=k; break; }
-  }
-}
+  for(let k=0;k<tris.length;k++){ const [a,b,c]=tris[k];
+    if(pointInTri(wx,wy,verts[a],verts[b],verts[c])){ hover=k; break; } } }
 function showTip(){
-  if (hover<0 || !field || !field.s1.length){ tip.style.display="none"; return; }
-  const k=hover, v=field.s1[k], ar=field.aratio[k], d=field.dir[k];
-  const rr=Math.hypot(cents[k][0],cents[k][1]);
-  let cls, body;
-  if (degenerate(ar)){
-    cls = `<span class="degen">degenerate (σ₁ not physical)</span>`;
-  } else {
-    // crack runs PERPENDICULAR to sigma1 (Rankine). Angle of sigma1 vs the radial dir.
-    const rad=radial[k]; let dot=Math.abs(d[0]*rad[0]+d[1]*rad[1]); dot=Math.min(1,dot);
+  if(hover<0||!cur||!cur.s1||!cur.s1.length){ tip.style.display="none"; return; }
+  const k=hover,v=cur.s1[k],ar=cur.aratio[k],d=dirOf(k),rr=Math.hypot(cents[k][0],cents[k][1]);
+  let cls;
+  if(degenerate(ar)){ cls=`<span class="degen">degenerate — σ₁ not physical</span>`; }
+  else { const rad=radial[k]; let dot=Math.min(1,Math.abs(d[0]*rad[0]+d[1]*rad[1]));
     const ang=Math.acos(dot)*180/Math.PI;
-    if (ang<30) cls=`<span class="good">crack: CIRCUMFERENTIAL (good, curvilinear)</span>`;
-    else if (ang>60) cls=`<span class="bad">crack: RADIAL (runs to periphery!)</span>`;
-    else cls=`<span class="obl">crack: oblique (${ang.toFixed(0)}° off radial)</span>`;
-  }
-  const angDeg=(Math.atan2(d[1],d[0])*180/Math.PI).toFixed(0);
+    cls = ang<30 ? `<span class="good">crack: CIRCUMFERENTIAL (good)</span>`
+        : ang>60 ? `<span class="bad">crack: RADIAL (runs to periphery!)</span>`
+        : `<span class="obl">crack: oblique (${ang.toFixed(0)}° off radial)</span>`; }
   tip.innerHTML =
-    `<span class="k">σ₁ </span><span class="v">${v.toFixed(1)}</span>`+
-    `  <span class="k">r </span><span class="v">${rr.toFixed(2)}</span>`+
-    `  <span class="k">areaRatio </span><span class="v">${ar.toFixed(2)}</span><br>`+
-    `<span class="k">σ₁ dir </span><span class="v">${angDeg}°</span> `+
-    `<span class="k">tri</span> ${k}`+
-    `<div class="cls">${cls}</div>`;
+    `<span class="k">σ₁ </span><span class="v">${v.toFixed(1)}</span>  `+
+    `<span class="k">r </span><span class="v">${rr.toFixed(2)}</span>  `+
+    `<span class="k">areaRatio </span><span class="v">${ar.toFixed(2)}</span><br>`+
+    `<span class="k">σ₁ dir </span><span class="v">${cur.ang[k].toFixed(0)}°</span>  `+
+    `<span class="k">tri</span> ${k}<div class="cls">${cls}</div>`;
   tip.style.display="block";
-  let tx=mouse[0]+14, ty=mouse[1]+14;
-  if (tx+tip.offsetWidth>innerWidth) tx=mouse[0]-tip.offsetWidth-14;
-  if (ty+tip.offsetHeight>innerHeight) ty=mouse[1]-tip.offsetHeight-14;
+  let tx=mouse[0]+14,ty=mouse[1]+14;
+  if(tx+tip.offsetWidth>innerWidth) tx=mouse[0]-tip.offsetWidth-14;
+  if(ty+tip.offsetHeight>innerHeight) ty=mouse[1]-tip.offsetHeight-14;
   tip.style.left=tx+"px"; tip.style.top=ty+"px";
 }
-
 function updateHud(){
-  if (!field){ hud.textContent="waiting for stress data…"; return; }
+  if(!cur){ hud.textContent="waiting for stress data…"; return; }
   hud.innerHTML =
-    `t        <b>${(field.t).toFixed(2)}</b> s\n`+
-    `peak σ₁  <b>${field.smax.toFixed(1)}</b>\n`+
+    `t        <b>${(cur.t).toFixed(2)}</b> s   step <b>${cur.step}</b>\n`+
+    `peak σ₁  <b>${cur.smax.toFixed(1)}</b>\n`+
     `scale    0 … <b>${scaleTop.toFixed(0)}</b>  (${scaleMode})\n`+
-    `tris     <b>${tris?tris.length:0}</b>`+
-    (frozen? `\n<b>— FROZEN —</b>`:``);
+    `frame    <b>${cur.i}</b> / ${meta.last}`;
+}
+function updateTimeline(){
+  seek.min=meta.first; seek.max=Math.max(meta.first,meta.last);
+  if(following) seek.value=meta.last;
+  const shown = cur? cur.i : meta.last;
+  if(following){ tllab.innerHTML=`<span id="liveDot">◉ LIVE</span>  ·  frame <b>${shown}</b>  t <b>${cur?cur.t.toFixed(2):"--"}</b>s`; }
+  else { tllab.innerHTML=`<span id="reviewTag">❚❚ REVIEW</span>  ·  frame <b>${shown}</b> / ${meta.last}  t <b>${cur?cur.t.toFixed(2):"--"}</b>s`; }
+  document.getElementById("liveBtn").classList.toggle("on",following);
+  document.getElementById("playBtn").textContent=playing?"❚❚":"▶";
 }
 
-async function poll(){
-  if (!frozen){
-    try {
-      const r = await fetch("/stress", {cache:"no-store"});
-      field = await r.json(); miss=0; deadEl.style.display="none";
-    } catch(e){ if (++miss>15) deadEl.style.display="grid"; }
+async function fetchFrame(i){
+  if(cache.has(i)) return cache.get(i);
+  try{ const f=await (await fetch("/frame?i="+i,{cache:"no-store"})).json();
+    if(f&&f.s1){ cache.set(i,f); if(cache.size>400){ const first=cache.keys().next().value; cache.delete(first); } return f; } }
+  catch(e){}
+  return null;
+}
+async function tick(){
+  // refresh meta (frame range) regularly
+  try{ meta=await (await fetch("/meta",{cache:"no-store"})).json(); miss=0; deadEl.style.display="none"; }
+  catch(e){ if(++miss>15) deadEl.style.display="grid"; }
+  if(following){
+    try{ const f=await (await fetch("/stress",{cache:"no-store"})).json(); if(f&&f.s1){ cur=f; curIdx=f.i; } }catch(e){}
+  } else {
+    if(playing){ curIdx++; if(curIdx>meta.last){ curIdx=meta.last; playing=false; } }
+    if(curIdx<meta.first) curIdx=meta.first;
+    const f=await fetchFrame(curIdx); if(f) cur=f;
   }
-  hitTest(); draw(); showTip(); updateHud();
-  setTimeout(poll, 55);
+  hitTest(); draw(); showTip(); updateHud(); updateTimeline();
+  setTimeout(tick, 55);
 }
 
-// --- interaction ---
-cv.addEventListener("mousemove", e=>{ const r=cv.getBoundingClientRect(); mouse=[e.clientX-r.left,e.clientY-r.top]; });
-cv.addEventListener("mouseleave", ()=>{ mouse=null; hover=-1; tip.style.display="none"; });
-function setFrozen(f){ frozen=f;
-  document.getElementById("freezeBtn").classList.toggle("on",f);
-  document.getElementById("frozenTag").classList.toggle("show",f);
-  document.getElementById("freezeBtn").textContent = f? "▶ Resume":"❚❚ Freeze"; }
-document.getElementById("freezeBtn").onclick=()=>setFrozen(!frozen);
-document.getElementById("scaleBtn").onclick=e=>{ scaleMode = scaleMode==="auto"?"fixed":"auto";
-  e.target.textContent = "Scale: "+scaleMode; };
+// interaction
+cv.addEventListener("mousemove",e=>{ const r=cv.getBoundingClientRect(); mouse=[e.clientX-r.left,e.clientY-r.top]; });
+cv.addEventListener("mouseleave",()=>{ mouse=null; hover=-1; tip.style.display="none"; });
+function goLive(){ following=true; playing=false; }
+function goReview(i){ following=false; curIdx=Math.max(meta.first,Math.min(meta.last,i)); }
+document.getElementById("liveBtn").onclick=()=>{ following?goReview(meta.last):goLive(); };
+document.getElementById("playBtn").onclick=()=>{ if(following) goReview(meta.first); playing=!playing; };
+seek.addEventListener("input",()=>{ goReview(parseInt(seek.value)); });
+document.getElementById("scaleBtn").onclick=e=>{ scaleMode=scaleMode==="auto"?"fixed":"auto"; e.target.textContent="Scale: "+scaleMode; };
 document.getElementById("wireBtn").onclick=e=>{ showWire=!showWire; e.target.classList.toggle("on",showWire); };
-addEventListener("keydown", e=>{ if (e.code==="Space"){ e.preventDefault(); setFrozen(!frozen); } });
-addEventListener("resize", ()=>{ dpr=Math.min(window.devicePixelRatio||1,2); });
+document.getElementById("helpBtn").onclick=()=>document.getElementById("help").classList.add("show");
+document.getElementById("helpClose").onclick=()=>document.getElementById("help").classList.remove("show");
+document.getElementById("help").onclick=e=>{ if(e.target.id==="help") e.target.classList.remove("show"); };
+addEventListener("keydown",e=>{
+  if(e.code==="Space"){ e.preventDefault(); following?goReview(meta.last):goLive(); }
+  else if(e.code==="ArrowLeft"){ goReview((following?meta.last:curIdx)-1); }
+  else if(e.code==="ArrowRight"){ goReview((following?meta.last:curIdx)+1); }
+  else if(e.key==="?"||e.key==="/") document.getElementById("help").classList.toggle("show");
+});
+addEventListener("resize",()=>{ dpr=Math.min(window.devicePixelRatio||1,2); });
 
-(async ()=>{ try { await loadGeometry(); } catch(e){ deadEl.style.display="grid"; } poll(); })();
+(async()=>{ try{ await loadGeometry(); }catch(e){ deadEl.style.display="grid"; } tick(); })();
 </script>
 </body>
 </html>

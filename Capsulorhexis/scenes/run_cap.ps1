@@ -19,8 +19,10 @@ param(
     # Read by cap_membrane.py via CAP_MODE; everything else in the scene is identical.
     [switch]$Fem,
     # -Heatmap leaves the SOFA deformation view unchanged and additionally serves a live
-    # sigma1 force-field map at http://127.0.0.1:8790/ (auto-opened in your browser):
-    # hover a triangle for its stress + crack direction, Space to freeze. Via CAP_HEATMAP.
+    # sigma1 force-field map at http://127.0.0.1:8790/ (auto-opened in your browser): hover
+    # a triangle for stress + crack direction; every frame is recorded, so drag freely and
+    # scrub the timeline to review any past moment (Space = live/replay). The full field is
+    # also logged to scenes/stress_log.jsonl for offline analysis. Via CAP_HEATMAP.
     [switch]$Heatmap,
     # -NoLog skips the Tee-Object mirror of stdout. PowerShell 5.1's Tee processes the stream
     # object-by-object, which costs real FPS on a chatty scene -- and FPS matters here beyond

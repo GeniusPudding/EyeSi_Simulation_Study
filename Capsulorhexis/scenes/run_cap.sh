@@ -15,8 +15,9 @@ set -euo pipefail
 
 # --fem selects the co-rotational FEM membrane; default is the tuned mass-spring one.
 # --heatmap leaves the deformation view unchanged and additionally serves a live sigma1
-# force-field map at http://127.0.0.1:8790/ (hover for stress + crack direction, Space to
-# freeze). Both read by cap_membrane.py via CAP_MODE / CAP_HEATMAP; the physics is identical.
+# force-field map at http://127.0.0.1:8790/ (hover for stress + crack direction; every frame
+# is recorded, so drag freely and scrub the timeline to review; full field logged to
+# scenes/stress_log.jsonl). Both via CAP_MODE / CAP_HEATMAP; the physics is identical.
 export CAP_MODE="spring"
 export CAP_HEATMAP="0"
 ARGS=()

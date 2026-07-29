@@ -189,6 +189,13 @@ VIEWER_HTML = os.path.join(_HERE, "stress_viewer.html")
 # the live peak, but this is the starting/fallback scale. Pull-front sigma1 runs a few
 # hundred at normal drag, ~2000 on a violent yank. Tune with CAP_HEAT_MAX.
 STRESS_HEAT_MAX = float(os.environ.get("CAP_HEAT_MAX", "300"))
+# Recording: every published frame is appended to a JSONL log (one frame per line: t,
+# step, per-triangle sigma1 + crack angle + area ratio) for offline analysis, AND kept
+# in a capped in-memory ring the viewer's timeline can scrub -- so you can drag freely
+# without watching, then review any past moment. Log is overwritten each run.
+STRESS_LOG = os.environ.get("CAP_STRESS_LOG", "1") == "1"
+STRESS_LOG_PATH = os.path.join(_HERE, "stress_log.jsonl")
+STRESS_HISTORY = int(os.environ.get("CAP_STRESS_HISTORY", "1500"))   # frames kept for scrub
 
 # --- safety nets (all applied in onAnimateEnd, before the frame is drawn) ------
 # Layered by failure mode; each net is a hard geometric/kinematic bound that no
@@ -328,13 +335,38 @@ def principal_stress(pos, rest, tris, E=None, nu=None):
 
 
 # --- decoupled stress UI: a tiny local HTTP server the browser viewer polls -----------
-# Two module globals, swapped atomically (dict reference assignment is atomic under the
-# GIL, so the SOFA thread can publish while the server thread reads without a lock):
+# Everything the SOFA thread publishes is a pre-serialized JSON string, swapped/appended
+# atomically (GIL), so the server thread reads without a lock:
 #   _STRESS_GEOMETRY = the STATIC reference disc (rest-shape xy + triangles), sent once.
-#   _STRESS_LATEST   = the per-step field (sigma1, crack direction, area ratio, time).
-_STRESS_GEOMETRY = {"verts": [], "tris": []}
-_STRESS_LATEST = {"t": 0.0, "s1": [], "dir": [], "aratio": [], "smax": 0.0,
-                  "heatmax": 300.0}
+#   _STRESS_LATEST   = the newest per-step frame (sigma1, crack angle, area ratio, time).
+#   _STRESS_HISTORY  = a capped deque of recent frames, for the viewer's timeline scrubber
+#                      (review a moment AFTER dragging -- no need to watch it live).
+#   _STRESS_LOG_FH   = append-only JSONL of EVERY frame for offline analysis (full record).
+import json as _json
+import collections as _collections
+
+_STRESS_GEOMETRY = "{}"
+_STRESS_LATEST = "{}"
+_STRESS_HISTORY = _collections.deque()
+_STRESS_TOTAL = 0                 # frames ever published (also the next frame's global index)
+_STRESS_LOG_FH = None
+
+
+def _stress_record(js):
+    """Store one serialized frame: newest pointer + capped history + disk log."""
+    global _STRESS_LATEST, _STRESS_TOTAL, _STRESS_LOG_FH
+    _STRESS_LATEST = js
+    _STRESS_HISTORY.append(js)
+    while len(_STRESS_HISTORY) > STRESS_HISTORY:
+        _STRESS_HISTORY.popleft()
+    if STRESS_LOG:
+        try:
+            if _STRESS_LOG_FH is None:
+                _STRESS_LOG_FH = open(STRESS_LOG_PATH, "w", buffering=1)
+            _STRESS_LOG_FH.write(js + "\n")
+        except Exception:  # noqa: BLE001
+            pass           # a disk hiccup must never take down the sim
+    _STRESS_TOTAL += 1
 
 
 def _start_stress_server(port, open_browser):
@@ -342,11 +374,14 @@ def _start_stress_server(port, open_browser):
 
     Routes: GET /          -> stress_viewer.html (the self-contained browser UI)
             GET /geometry  -> the static reference disc (fetched once by the page)
-            GET /stress    -> the latest per-triangle sigma1 field (polled live)
+            GET /stress    -> the newest per-triangle sigma1 frame (polled live)
+            GET /meta      -> {count, first, last, n}: how many frames are buffered
+            GET /frame?i=N -> the buffered frame with global index N (timeline scrubber)
     Returns True if the server started. Failure (e.g. port in use) is non-fatal: the
     scene keeps running, just without the UI feed.
     """
-    import json, threading, http.server
+    import threading, http.server
+    from urllib.parse import urlparse, parse_qs
 
     class _Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a):        # silence per-request console spam
@@ -363,9 +398,22 @@ def _start_stress_server(port, open_browser):
         def do_GET(self):
             try:
                 if self.path.startswith("/stress"):
-                    self._send(json.dumps(_STRESS_LATEST).encode(), "application/json")
+                    self._send(_STRESS_LATEST.encode(), "application/json")
+                elif self.path.startswith("/meta"):
+                    n = len(_STRESS_HISTORY)
+                    meta = {"count": _STRESS_TOTAL, "n": n,
+                            "first": _STRESS_TOTAL - n, "last": _STRESS_TOTAL - 1}
+                    self._send(_json.dumps(meta).encode(), "application/json")
+                elif self.path.startswith("/frame"):
+                    q = parse_qs(urlparse(self.path).query)
+                    i = int(q.get("i", ["-1"])[0])
+                    pos = i - (_STRESS_TOTAL - len(_STRESS_HISTORY))
+                    if 0 <= pos < len(_STRESS_HISTORY):
+                        self._send(_STRESS_HISTORY[pos].encode(), "application/json")
+                    else:
+                        self._send(b"{}", "application/json")
                 elif self.path.startswith("/geometry"):
-                    self._send(json.dumps(_STRESS_GEOMETRY).encode(), "application/json")
+                    self._send(_STRESS_GEOMETRY.encode(), "application/json")
                 else:
                     with open(VIEWER_HTML, "rb") as f:
                         self._send(f.read(), "text/html; charset=utf-8")
@@ -764,26 +812,27 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             return STRESS_E, STRESS_NU
 
         def _publish_stress(self, s1, sdir, aratio, t):
-            # Publish the per-triangle field for the browser viewer to poll. Only the
-            # DYNAMIC arrays go here (the static reference geometry is sent once, at
-            # scene build); floats are rounded to keep the JSON small on the 20 Hz poll.
-            # 'smax' is the healthy peak (degenerate triangles excluded) so the page can
-            # auto-scale its colour ramp; 'dir' is the crack-perpendicular sigma1
-            # direction in the disc's xy plane.
-            global _STRESS_LATEST
+            # Serialise one per-triangle field frame for the viewer + the log. Only the
+            # DYNAMIC arrays go here (the static reference geometry is sent once, at scene
+            # build). The sigma1 direction is stored as a single angle 'ang' (degrees in
+            # the disc's xy plane) rather than a 2-vector -- half the size, and the crack
+            # runs perpendicular to it. 'smax' is the healthy peak (degenerate triangles
+            # excluded) for the page's auto colour-scale. Floats are rounded to keep each
+            # frame small (it is both polled at ~18 Hz and written to the JSONL log).
             bad = (aratio < DEGEN_LO) | (aratio > DEGEN_HI)
             smax = float(s1[~bad].max()) if (~bad).any() else 0.0
-            d2 = sdir[:, :2]
-            n = np.maximum(np.linalg.norm(d2, axis=1), 1e-12)
-            d2 = d2 / n[:, None]
-            _STRESS_LATEST = {
+            ang = np.degrees(np.arctan2(sdir[:, 1], sdir[:, 0]))
+            frame = {
+                "i": _STRESS_TOTAL,
+                "step": int(self.step),
                 "t": round(float(t), 3),
                 "s1": [round(float(v), 1) for v in s1],
-                "dir": [[round(float(a), 3), round(float(b), 3)] for a, b in d2],
+                "ang": [round(float(a), 1) for a in ang],
                 "aratio": [round(float(v), 2) for v in aratio],
                 "smax": round(smax, 1),
                 "heatmax": STRESS_HEAT_MAX,
             }
+            _stress_record(_json.dumps(frame))
 
         def onAnimateEndEvent(self, event):
             # Safety-net chain, in order, all BEFORE this frame is rendered:
@@ -1457,7 +1506,7 @@ def createScene(root):
                 _idx = [int(tok.split("/")[0]) - 1 for tok in _ln.split()[1:4]]
                 _tris.append(_idx)
         global _STRESS_GEOMETRY
-        _STRESS_GEOMETRY = {"verts": _verts, "tris": _tris}
+        _STRESS_GEOMETRY = _json.dumps({"verts": _verts, "tris": _tris})
         _start_stress_server(STRESS_UI_PORT, STRESS_UI_OPEN)
 
     cap.addObject(_make_controller(fem, springs, bending, mo, adhesion, pull,

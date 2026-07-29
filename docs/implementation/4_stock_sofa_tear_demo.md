@@ -150,18 +150,25 @@ mass-spring 模式沒有連續體 E,退回固定 `STRESS_E/STRESS_NU` —— 此
 **即時力場 UI(解耦式)**(`CAP_HEATMAP=1` / `run_cap.ps1 -Heatmap` / `run_cap.sh --heatmap`):
 SOFA 的**變形視窗完全不動**,另外把 σ₁ 場透過一個**極簡本機 HTTP 服務**(Python 標準庫、背景
 執行緒)推出去;一個自足的瀏覽器頁面 [`stress_viewer.html`](../../Capsulorhexis/scenes/stress_viewer.html)
-輪詢它,畫出**未變形參考圓盤**的即時熱圖,支援 **hover 浮現數值**(σ₁ / 裂縫方向 / 裂向分類)、
-**空白鍵定格**、色階條。
+輪詢它,畫出**未變形參考圓盤**(= 變形膜的一張材料空間「地圖」)的即時熱圖,支援 **hover 浮現數值**
+(σ₁ / 裂縫方向 / 裂向分類)、**時間軸回放**、色階條、說明面板(`?`)。
 
-- **資料流**:controller 每 `STRESS_EVERY` 步把 σ₁/方向/area_ratio 更新到 `_STRESS_LATEST`
-  (dict 原子換參考,無鎖);背景 HTTP 服務三個路由 —— `/`(頁面)、`/geometry`(靜態參考圓盤,
-  只取一次)、`/stress`(逐三角形場,即時輪詢)。兩邊各有事件迴圈,互不阻塞。
+- **資料流**:controller 每 `STRESS_EVERY` 步把一幀(σ₁ / 裂縫角 ang / area_ratio,逐三角形)
+  序列化成 JSON 字串。背景 HTTP 服務五個路由 —— `/`(頁面)、`/geometry`(靜態參考圓盤,只取一次)、
+  `/stress`(最新幀,即時輪詢)、`/meta`(緩衝幀範圍)、`/frame?i=N`(第 N 幀,供拖桿回放)。
+  字串換參考/append 都在 GIL 下原子完成,server 執行緒讀取無鎖;兩邊各有事件迴圈,互不阻塞。
+- **錄製 + 回放(解單螢幕痛點)**:每幀同時 (a) 進一個**上限環形緩衝**(`CAP_STRESS_HISTORY`,
+  預設 1500 幀)供頁面**時間軸拖桿/播放**即時回看,(b) append 到 **`scenes/stress_log.jsonl`**
+  (每行一幀完整場,已 gitignore)供離線分析。所以**可以先自由拉、不用盯著看,事後再拖回任一時刻
+  hover 查數值** —— 不必為了定格而放開滑鼠。空白鍵在 LIVE / 回放間切換。
 - **為何放在 SofaImGui 之外**:SofaImGui **無法讓場景注入自訂 widget**,所以 hover-tooltip
-  在 SOFA GUI 內做不到;把力場畫在**我們自己的頁面**裡,hover/數值/定格就全部可行。這也符合
-  本 repo 既有的 `docs/demo_*.html` canvas demo 慣例。
+  在 SOFA GUI 內做不到;把力場畫在**我們自己的頁面**裡,hover/數值/回放就全部可行。這也符合
+  本 repo 既有的 `docs/demo_*.html` canvas demo 慣例。UI+錄製約耗 ~23% FPS(128→99,headless 實測)。
 - **裂向分類**:頁面端重現終端機邏輯 —— 裂縫 ⊥ σ₁(Rankine),量 σ₁ 方向與**徑向**的夾角:
   <30° → 裂縫 CIRCUMFERENTIAL(good);>60° → RADIAL(runs to periphery);之間 → oblique。
   退化三角形(area ratio 超出 `DEGEN_LO..DEGEN_HI`)標灰、σ₁ 非物理。
+- **log 格式**(`stress_log.jsonl`,每行一 JSON):`{i, step, t, s1[Ntri], ang[Ntri], aratio[Ntri],
+  smax, heatmax}`;三角形拓樸與參考座標見 `/geometry`(或 `cap.obj`)。numpy 逐行 `json.loads` 即可分析。
 
 > [補充] 早一版曾把熱圖直接畫在 SOFA 網格上(每個 band 一個單色 `OglModel` + `IdentityMapping`),
 > 但那會**蓋掉變形視圖**、且 hover 數值做不到;官方 `DataDisplay`+`OglColorMap` 又在本 build
