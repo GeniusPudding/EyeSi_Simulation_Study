@@ -9,18 +9,22 @@
 #
 # Usage:  ./scenes/run_cap.sh              # mass-spring (default, tuned)
 #         ./scenes/run_cap.sh --fem        # co-rotational FEM
+#         ./scenes/run_cap.sh --heatmap    # colour the membrane by live sigma1
 #         ./scenes/run_cap.sh [scene.py]
 set -euo pipefail
 
 # --fem selects the co-rotational FEM membrane; default is the tuned mass-spring one.
-# Read by cap_membrane.py via CAP_MODE; everything else in the scene is identical.
+# --heatmap paints every triangle by its principal stress (blue relaxed -> red peak).
+# Both read by cap_membrane.py via CAP_MODE / CAP_HEATMAP; the physics is identical.
 export CAP_MODE="spring"
+export CAP_HEATMAP="0"
 ARGS=()
 for a in "$@"; do
   case "$a" in
-    --fem)    export CAP_MODE="fem" ;;
-    --spring) export CAP_MODE="spring" ;;
-    *)        ARGS+=("$a") ;;
+    --fem)     export CAP_MODE="fem" ;;
+    --spring)  export CAP_MODE="spring" ;;
+    --heatmap) export CAP_HEATMAP="1" ;;
+    *)         ARGS+=("$a") ;;
   esac
 done
 SCENE="${ARGS[0]:-cap_membrane.py}"

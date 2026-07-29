@@ -134,6 +134,29 @@ ang = 0.5 * np.arctan2(2*σxy, np.maximum(σxx − σyy, 1e-12))   # ← 錯
 ```
 你拉的地方 σ₁=137,但傳到 1.9 之外的裂尖只剩 10 —— **判據沒錯,是力傳不到裂尖**。
 
+### 4.1 `cap_membrane.py` 的即時應力觀測器 + 熱圖
+
+`cap_membrane.py` 的 `principal_stress()` 是一個**幾何觀測器**:每 `STRESS_EVERY` 步,從
+靜止 vs 當前幾何算 F → Green 應變 ε = ½(FᵀF−I) → 平面應力 σ = C(E,ν):ε → σ₁ 與方向。
+它**只讀不施力**,和用 FEM 或 mass-spring 無關(ε 純幾何)。
+
+**觀測器 = FEM 真實應力(小應變下)**:FEM 內部也是用同一個 F、同一條 σ=C:ε 產生力,唯一
+自由參數是 E、ν。所以 `_stress_material()` 讓觀測器在 FEM 模式**直接讀 FEM 的 live
+`youngModulus`/`poissonRatio`**(會跟著 cloth→paper 在 SWITCH_T 的 ramp 走),回報的 σ₁
+就等於 FEM 實際施力用的應力(小應變精確;大應變因觀測器用 Green、FEM 用共旋線性而略有差異)。
+mass-spring 模式沒有連續體 E,退回固定 `STRESS_E/STRESS_NU` —— 此時數值只是**幾何應變比例尺**,
+但「哪裡受力最大」的空間分佈兩個模式一致。
+
+**即時熱圖**(`CAP_HEATMAP=1` / `run_cap.ps1 -Heatmap` / `run_cap.sh --heatmap`):把每個三角形
+依 σ₁ 分到固定量值 band(藍=鬆弛 → 紅=峰值,`STRESS_HEAT_MAX` 定紅色飽和點),拉動時整片即時
+上色。實作上**每個 band = 一個單色 `OglModel`**,三角形在它們之間分配、位置各自靠 `IdentityMapping`
+跟著走。
+
+> [補充] 用「多個單色 OglModel 分 band」而非官方 `DataDisplay`+`OglColorMap`,是因為後者在本
+> SOFA build(v25.12 Win64)的 imgui GUI 視覺初始化會 SIGABRT(batch 模式正常、GUI 死);
+> 且本 build 的 `OglModel` 未暴露逐頂點顏色欄位(只有 `material`),故走 band-partition 這條。
+> 退化三角形(area ratio 超出 `DEGEN_LO..DEGEN_HI`,σ₁ 非物理)強制歸藍,不會誤染紅。
+
 ---
 
 ## 5. 做不到什麼、為什麼(這是重點)

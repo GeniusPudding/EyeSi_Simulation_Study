@@ -165,8 +165,32 @@ SHOW_STRESS = True       # compute sigma1 every STRESS_EVERY steps
 # GUI dies) -- keep OFF until a safe visualisation exists.
 STRESS_COLOR = False
 STRESS_EVERY = 3         # steps between stress updates (O(triangles) numpy)
+# Observer constitutive constants for sigma = C(E,nu):eps. Used ONLY in mass-spring
+# mode (no continuum E exists there, so these set a geometric-strain scale). In FEM
+# mode the observer instead reads the FEM's live youngModulus/poissonRatio, so the
+# reported sigma1 equals the stress the FEM is actually using to make force (they share
+# the same F and constitutive law) -- see _stress_material().
 STRESS_E = 1200.0        # E for sigma = C:eps
 STRESS_NU = 0.3
+
+# Live heatmap: colour every triangle by its sigma1 into fixed magnitude bands
+# (blue = relaxed -> red = peak), refreshed every STRESS_EVERY steps. Avoids the
+# DataDisplay path that SIGABRTs this build's GUI: instead each band is one flat-colour
+# OglModel and triangles are partitioned between them, so no per-vertex colour (which
+# this build's OglModel does not expose) is needed. Enable with CAP_HEATMAP=1
+# (run_cap.ps1 -Heatmap / run_cap.sh --heatmap).
+STRESS_HEATMAP = os.environ.get("CAP_HEATMAP", "0") == "1"
+# sigma1 mapped to the hottest band; above this saturates red. Pull-front sigma1 runs a
+# few hundred at normal drag, ~2000 on a violent yank -- 300 keeps the normal working
+# range spread across the bands. Tune with CAP_HEAT_MAX.
+STRESS_HEAT_MAX = float(os.environ.get("CAP_HEAT_MAX", "300"))
+HEAT_COLORS = [
+    [0.20, 0.30, 0.75, 1.0],   # blue   -- relaxed
+    [0.20, 0.70, 0.80, 1.0],   # cyan
+    [0.35, 0.80, 0.35, 1.0],   # green
+    [0.95, 0.75, 0.20, 1.0],   # amber
+    [0.90, 0.20, 0.15, 1.0],   # red    -- peak / crack would start here
+]
 
 # --- safety nets (all applied in onAnimateEnd, before the frame is drawn) ------
 # Layered by failure mode; each net is a hard geometric/kinematic bound that no
@@ -306,7 +330,8 @@ def principal_stress(pos, rest, tris, E=None, nu=None):
 
 
 def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
-                     topo, display, camera, root, probe, stitch, central, lift):
+                     topo, display, camera, root, probe, stitch, central, lift,
+                     bands=None):
     import Sofa
     import numpy as np
 
@@ -341,6 +366,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.peel_fade = {}        # node -> decaying adhesion stiffness (peel fade-out)
             self.nbr = None            # per-node neighbours, for front-only peeling
             self.boundary = None       # mesh-boundary nodes = crack initiation sites
+            self.heat_bands = bands    # per-band OglModels for the live sigma1 heatmap
             # instance copies so the hotkeys can tune them live
             self.plastic_rate = PLASTIC_RATE
             self.break_force = BREAK_FORCE
@@ -654,6 +680,46 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             elif k in ("V", "v"):                       # toggle orbit lock manually
                 self.cam_lock = not self.cam_lock
                 print(f"[Camera] orbit {'LOCKED' if self.cam_lock else 'free'}")
+
+        def _stress_material(self):
+            # Constitutive constants (E, nu) the stress observer should use so its
+            # sigma1 matches the force actually acting on the sheet:
+            #  - FEM mode: read the FEM's live youngModulus/poissonRatio. The observer
+            #    and the FEM build sigma from the SAME deformation gradient F and the
+            #    SAME plane-stress law sigma = C(E,nu):eps, so with matched (E, nu) the
+            #    reported value IS the FEM's stress (exactly at small strain; the
+            #    observer's Green strain and the FEM's co-rotational linear strain
+            #    diverge slightly at large strain). This also tracks the cloth->paper
+            #    ramp, since youngModulus changes at SWITCH_T.
+            #  - mass-spring mode: no continuum E exists, so keep STRESS_E/STRESS_NU as a
+            #    fixed geometric-strain scale (magnitudes are a proxy; the spatial
+            #    pattern of where sigma1 concentrates is identical either way).
+            if self.fem is not None:
+                try:
+                    E = float(np.ravel(self.fem.youngModulus.value)[0])
+                    nu = float(np.ravel(self.fem.poissonRatio.value)[0])
+                    return E, nu
+                except Exception:  # noqa: BLE001
+                    pass
+            return STRESS_E, STRESS_NU
+
+        def _update_heatmap(self, s1, aratio):
+            # Partition triangles into fixed sigma1 magnitude bands and hand each band's
+            # triangle list to its flat-colour OglModel (positions follow via the band's
+            # IdentityMapping, so only the topology is rewritten). Degenerate triangles
+            # (area ratio outside DEGEN_LO..DEGEN_HI = sigma1 not physical) are forced to
+            # the relaxed band so a spike in garbage geometry never paints red.
+            if self.heat_bands is None or self.tris is None or not len(self.tris):
+                return
+            nb = len(self.heat_bands)
+            thr = np.linspace(0.0, max(STRESS_HEAT_MAX, 1e-6), nb + 1)[1:-1]
+            band = np.digitize(s1, thr)                 # 0..nb-1
+            bad = (aratio < DEGEN_LO) | (aratio > DEGEN_HI)
+            band[bad] = 0
+            tris = self.tris
+            for bi, ogl in enumerate(self.heat_bands):
+                sel = tris[band == bi]
+                ogl.triangles.value = sel.tolist() if len(sel) else []
 
         def onAnimateEndEvent(self, event):
             # Safety-net chain, in order, all BEFORE this frame is rendered:
@@ -1006,11 +1072,15 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 if self.tris is None:
                     self.tris = np.array(self.topo.triangles.value)
                 if len(self.tris):
+                    E_obs, nu_obs = self._stress_material()
                     s1, sdir, aratio = principal_stress(np.asarray(pos),
-                                                       np.asarray(rest), self.tris)
+                                                       np.asarray(rest), self.tris,
+                                                       E=E_obs, nu=nu_obs)
                     self.sigma1_max = float(s1.max())
                     if self.display is not None:
                         self.display.triangleData.value = s1.tolist()
+                    if STRESS_HEATMAP:
+                        self._update_heatmap(s1, aratio)
 
                     # peak + direction is all a tear needs (crack runs perp to sigma1)
                     P = np.asarray(pos)
@@ -1298,19 +1368,32 @@ def createScene(root):
                       contactStiffness=CONTACT_STIFFNESS)
 
     _display = None
+    _bands = None
     if STRESS_COLOR:
         # per-triangle sigma1 colouring (crashes this build's GUI -- see STRESS_COLOR)
         _display = cap.addObject("DataDisplay", name="StressView", maximalRange=False)
         cap.addObject("OglColorMap", name="StressMap", colorScheme="HSV",
                       showLegend=True, legendTitle="sigma1")
-    if not STRESS_COLOR:
+    elif STRESS_HEATMAP:
+        # Live sigma1 heatmap: one flat-colour OglModel per magnitude band. Each shares
+        # the cap's vertices through its own IdentityMapping and draws only the triangles
+        # the controller assigns to that band (empty until the first stress update). The
+        # union of bands covers every triangle, so together they ARE the surface (no
+        # separate beige visual). Wireframe from VisualStyle still overlays.
+        _bands = []
+        hv = cap.addChild("Heatmap")
+        for _bi, _col in enumerate(HEAT_COLORS):
+            _o = hv.addObject("OglModel", name=f"band{_bi}", color=_col)
+            hv.addObject("IdentityMapping", input="@../Mo", output=f"@band{_bi}")
+            _bands.append(_o)
+    else:
         visu = cap.addChild("Visual")
         visu.addObject("OglModel", name="visual", color=[0.92, 0.90, 0.82, 1.0])
         visu.addObject("IdentityMapping", input="@../Mo", output="@visual")
 
     cap.addObject(_make_controller(fem, springs, bending, mo, adhesion, pull,
                                    _mouse, _damper, topo, _display, _camera, root,
-                                   _probe, stitch, central, lift))
+                                   _probe, stitch, central, lift, _bands))
 
 
     print(f"""

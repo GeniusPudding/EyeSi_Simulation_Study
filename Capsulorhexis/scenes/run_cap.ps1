@@ -9,6 +9,7 @@
 
     Usage:  ./scenes/run_cap.ps1            # mass-spring (default, tuned)
             ./scenes/run_cap.ps1 -Fem       # co-rotational FEM
+            ./scenes/run_cap.ps1 -Heatmap   # colour the membrane by live sigma1
             ./scenes/run_cap.ps1 -NoLog     # no stdout tee (max FPS, best for judging feel)
 #>
 [CmdletBinding()]
@@ -17,6 +18,9 @@ param(
     # -Fem runs the membrane with the co-rotational FEM instead of the default mass-spring.
     # Read by cap_membrane.py via CAP_MODE; everything else in the scene is identical.
     [switch]$Fem,
+    # -Heatmap paints every triangle by its principal stress sigma1 (blue relaxed ->
+    # red peak), refreshed live. Read by cap_membrane.py via CAP_HEATMAP.
+    [switch]$Heatmap,
     # -NoLog skips the Tee-Object mirror of stdout. PowerShell 5.1's Tee processes the stream
     # object-by-object, which costs real FPS on a chatty scene -- and FPS matters here beyond
     # smoothness: DISP_CLAMP limits per-STEP displacement while the mouse target moves in REAL
@@ -25,6 +29,7 @@ param(
     [switch]$NoLog
 )
 if ($Fem) { $env:CAP_MODE = "fem" } else { $env:CAP_MODE = "spring" }
+if ($Heatmap) { $env:CAP_HEATMAP = "1" } else { $env:CAP_HEATMAP = "0" }
 
 $ErrorActionPreference = "Stop"
 if (-not $env:SOFA_ROOT) { $env:SOFA_ROOT = "C:\SOFA\SOFA_v25.12.00_Win64" }
