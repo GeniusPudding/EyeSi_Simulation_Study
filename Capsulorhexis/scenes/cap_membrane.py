@@ -56,7 +56,9 @@ PAPER_YOUNG = 1200.0      # FEM-only: stiffened at SWITCH_T; 4000+ risks blow-up
 SWITCH_T = 1.0            # [s] cloth -> paper transition
 EDGE_STIFFNESS = 2500.0   # per-edge in-plane stiffness = THE membrane stiffness in
                           # mass-spring mode (raise if the sheet feels too soft)
-DAMPING = 2.0             # global viscosity
+DAMPING = float(os.environ.get("CAP_DAMPING", "2.0"))   # global viscosity; lower = snappier
+                          # (mesh responds to the pull faster), higher = calmer but more
+                          # sluggish. Implicit, so any value is stable. Try CAP_DAMPING=1.0.
 # Damping must be implicit: an explicit -c*v force is only stable for c*dt/m < 2,
 # already violated at c=2 on the lightest nodes (and 18-100x violated when the
 # full-peel ramp sets c=60). Implicit damping is unconditionally stable.
@@ -131,11 +133,14 @@ CONTACT_STIFFNESS = 200.0   # penalty contact strength (also used by the mouse p
 ALARM_DISTANCE = 0.40 * G.EDGE_LEN
 CONTACT_DISTANCE = 0.20 * G.EDGE_LEN
 
-# Mouse-pull spring (F = stiffness * drag distance past the node). Must beat
-# BREAK_FORCE to peel anything; raising it does NOT improve stability (a hard flick
-# is a huge one-step impulse at any stiffness -- the clamps below handle that).
-# 400 gives low recoil; drag smoothly rather than flicking.
-MOUSE_STIFFNESS = 400.0
+# Mouse-pull spring (F = stiffness * drag distance past the node). Must beat BREAK_FORCE
+# to peel anything. Higher = the mesh follows the cursor sooner and the drag arrow stays
+# SHORT (less "drag miles before it moves"); the per-step impulse is bounded by DISP_CLAMP
+# / MAX_SPEED / MAX_STRETCH regardless, so raising it mainly costs a little more recoil,
+# not stability. Tune live in the GUI (AttachBodyButtonSetting > stiffness, then Enter)
+# or up front with CAP_MOUSE_STIFF. 400 was the old cautious default; 600 grabs noticeably
+# better -- push to 800-1200 if it still feels heavy, drop it if recoil bothers you.
+MOUSE_STIFFNESS = float(os.environ.get("CAP_MOUSE_STIFF", "600"))
 
 # --- camera -------------------------------------------------------------------
 # SofaGLFW hard-codes left-drag = orbit (not remappable from the scene), so pulling
@@ -1545,6 +1550,7 @@ def createScene(root):
     cap.addObject(_make_controller(fem, springs, bending, mo, adhesion, pull,
                                    _mouse, _damper, topo, _display, _camera, root,
                                    _probe, stitch, central, lift))
+
 
 
     print(f"""
