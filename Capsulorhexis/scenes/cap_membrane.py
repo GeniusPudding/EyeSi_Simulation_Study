@@ -362,6 +362,13 @@ def _stress_record(js):
     if STRESS_LOG:
         try:
             if _STRESS_LOG_FH is None:
+                # keep the previous run's recording as .prev so a relaunch never silently
+                # destroys a session you wanted to analyse (the log is otherwise truncated)
+                if os.path.exists(STRESS_LOG_PATH):
+                    try:
+                        os.replace(STRESS_LOG_PATH, STRESS_LOG_PATH + ".prev")
+                    except OSError:
+                        pass
                 _STRESS_LOG_FH = open(STRESS_LOG_PATH, "w", buffering=1)
             _STRESS_LOG_FH.write(js + "\n")
         except Exception:  # noqa: BLE001
@@ -820,7 +827,14 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             # excluded) for the page's auto colour-scale. Floats are rounded to keep each
             # frame small (it is both polled at ~18 Hz and written to the JSONL log).
             bad = (aratio < DEGEN_LO) | (aratio > DEGEN_HI)
-            smax = float(s1[~bad].max()) if (~bad).any() else 0.0
+            good = s1[~bad]
+            smax = float(good.max()) if good.size else 0.0
+            # Robust colour-scale ceiling: a handful of near-degenerate triangles at the
+            # mouse-pull point reach sigma1 ~100x the bulk, so scaling the ramp to the raw
+            # max washes the whole map blue. The 98th percentile of the loaded (positive)
+            # cells tracks the real working range; the viewer auto-scales to this instead.
+            pos = good[good > 0.0]
+            sp98 = float(np.percentile(pos, 98)) if pos.size else 0.0
             ang = np.degrees(np.arctan2(sdir[:, 1], sdir[:, 0]))
             frame = {
                 "i": _STRESS_TOTAL,
@@ -830,6 +844,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 "ang": [round(float(a), 1) for a in ang],
                 "aratio": [round(float(v), 2) for v in aratio],
                 "smax": round(smax, 1),
+                "sp98": round(sp98, 1),
                 "heatmax": STRESS_HEAT_MAX,
             }
             _stress_record(_json.dumps(frame))

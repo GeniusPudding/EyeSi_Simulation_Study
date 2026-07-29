@@ -177,7 +177,10 @@ function draw(){
   T=fit(); ctx.clearRect(0,0,T.W,T.H);
   if(!cur||!cur.s1||!cur.s1.length) return;
   const s1=cur.s1, ar=cur.aratio;
-  scaleTop = scaleMode==="fixed" ? cur.heatmax : Math.max(cur.smax,20);
+  // Auto scale to the 98th percentile (not the raw max): a few near-degenerate triangles
+  // at the pull point sit ~100x above the bulk and would wash the whole map blue.
+  const autoTop = Math.max(cur.sp98!=null?cur.sp98:cur.smax, 20);
+  scaleTop = scaleMode==="fixed" ? cur.heatmax : autoTop;
   for(let k=0;k<tris.length;k++){ const [a,b,c]=tris[k];
     const A=toScreen(verts[a][0],verts[a][1]),B=toScreen(verts[b][0],verts[b][1]),C=toScreen(verts[c][0],verts[c][1]);
     ctx.beginPath(); ctx.moveTo(A[0],A[1]); ctx.lineTo(B[0],B[1]); ctx.lineTo(C[0],C[1]); ctx.closePath();
@@ -235,8 +238,8 @@ function updateHud(){
   if(!cur){ hud.textContent="waiting for stress data…"; return; }
   hud.innerHTML =
     `t        <b>${(cur.t).toFixed(2)}</b> s   step <b>${cur.step}</b>\n`+
-    `peak σ₁  <b>${cur.smax.toFixed(1)}</b>\n`+
-    `scale    0 … <b>${scaleTop.toFixed(0)}</b>  (${scaleMode})\n`+
+    `peak σ₁  <b>${cur.smax.toFixed(1)}</b>  (p98 <b>${(cur.sp98!=null?cur.sp98:cur.smax).toFixed(0)}</b>)\n`+
+    `scale    0 … <b>${scaleTop.toFixed(0)}</b>  (${scaleMode==="fixed"?"fixed":"auto=p98"})\n`+
     `frame    <b>${cur.i}</b> / ${meta.last}`;
 }
 function updateTimeline(){

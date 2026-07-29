@@ -167,6 +167,14 @@ SOFA 的**變形視窗完全不動**,另外把 σ₁ 場透過一個**極簡本�
 - **裂向分類**:頁面端重現終端機邏輯 —— 裂縫 ⊥ σ₁(Rankine),量 σ₁ 方向與**徑向**的夾角:
   <30° → 裂縫 CIRCUMFERENTIAL(good);>60° → RADIAL(runs to periphery);之間 → oblique。
   退化三角形(area ratio 超出 `DEGEN_LO..DEGEN_HI`)標灰、σ₁ 非物理。
+- **色階用 p98,不用 max**:滑鼠拉點附近少數「近退化但仍合法」(area ratio 逼近 4.0)的三角形
+  σ₁ 可達整體 ~100 倍(實測某次拉動峰值 32370,主體僅數百),用 max 當色階上限會把整張圖壓成藍。
+  故自動色階取**載荷格的第 98 百分位**(frame 的 `sp98`),峰值仍以飽和紅呈現、但主體分佈看得出來;
+  HUD 同時顯示 `peak`(max)與 `p98`。`Scale` 鈕可切固定上限 `STRESS_HEAT_MAX`。
+- **預切圈預設關閉**:`generate_cap.py` 的 `TEAR_ENABLE` 改為 env 控制、預設 off(`CAP_PRESLIT=1`
+  才開)。它的重合雙頂點環會在膜上呈現一條 seam、並在熱圖 r≈`TEAR_RADIUS` 產生假應力環;做 scripted
+  tear 那一階再開。
+- **錄製檔保護**:每次啟動會先把上一份 `stress_log.jsonl` 更名為 `.prev`,重跑不會靜默毀掉想分析的紀錄。
 - **log 格式**(`stress_log.jsonl`,每行一 JSON):`{i, step, t, s1[Ntri], ang[Ntri], aratio[Ntri],
   smax, heatmax}`;三角形拓樸與參考座標見 `/geometry`(或 `cap.obj`)。numpy 逐行 `json.loads` 即可分析。
 

@@ -32,7 +32,11 @@ TARGET_EDGE = 0.30     # desired triangle edge length -> THE resolution knob
 MIN_SEG = 6            # minimum segments on the innermost ring
 
 # --- pre-slit tear circle ---------------------------------------------------
-TEAR_ENABLE = True
+# OFF by default: the doubled-vertex ring at TEAR_RADIUS is a pre-designed capsulorhexis
+# tear circle, but its coincident copies read as a visible seam/crack in the membrane and
+# show up as a spurious stress ring near r=TEAR_RADIUS in the heatmap. Re-enable with
+# CAP_PRESLIT=1 when working on the scripted-tear rung (SCRIPTED_TEAR in cap_membrane.py).
+TEAR_ENABLE = os.environ.get("CAP_PRESLIT", "0") == "1"
 TEAR_RADIUS = 5.0      # the ring nearest this planar radius becomes the tear circle
 
 # base mesh tessellation (fine, so the membrane sits flush with no faceting gap)
