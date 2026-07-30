@@ -7,10 +7,12 @@
     Shift+left-drag the RIM, lift it and FOLD IT OVER. Pull gently and the adhesion
     holds; pull harder and that spot peels off. It prints [Peel]/[ClothToPaper] lines.
 
-    Usage:  ./scenes/run_cap.ps1            # mass-spring (default, tuned)
-            ./scenes/run_cap.ps1 -Fem       # co-rotational FEM
-            ./scenes/run_cap.ps1 -Heatmap   # + live force-field UI in the browser
-            ./scenes/run_cap.ps1 -NoLog     # no stdout tee (max FPS, best for judging feel)
+    Usage:  ./scenes/run_cap.ps1                    # mass-spring (default, tuned)
+            ./scenes/run_cap.ps1 -Fem              # co-rotational FEM
+            ./scenes/run_cap.ps1 -Heatmap          # + live force-field UI in the browser
+            ./scenes/run_cap.ps1 -SofaHeatmap -Gui qt   # SOFA's OWN heatmap (DataDisplay),
+                                                        # in the Qt GUI (imgui crashes it)
+            ./scenes/run_cap.ps1 -NoLog            # no stdout tee (max FPS, best for feel)
 #>
 [CmdletBinding()]
 param(
@@ -24,6 +26,13 @@ param(
     # scrub the timeline to review any past moment (Space = live/replay). The full field is
     # also logged to scenes/stress_log.jsonl for offline analysis. Via CAP_HEATMAP.
     [switch]$Heatmap,
+    # -SofaHeatmap turns on SOFA's built-in DataDisplay + OglColorMap, colouring the
+    # DEFORMING 3D mesh by sigma1 (CAP_STRESS_COLOR). It SIGABRTs the imgui GUI, so pair it
+    # with -Gui qt (or glfw). This is the in-SOFA counterpart to the browser -Heatmap.
+    [switch]$SofaHeatmap,
+    # -Gui picks the GUI backend: imgui (default), qt, or glfw. imgui is the tuned one but
+    # cannot render DataDisplay; qt/glfw can.
+    [string]$Gui = "imgui",
     # -NoLog skips the Tee-Object mirror of stdout. PowerShell 5.1's Tee processes the stream
     # object-by-object, which costs real FPS on a chatty scene -- and FPS matters here beyond
     # smoothness: DISP_CLAMP limits per-STEP displacement while the mouse target moves in REAL
@@ -33,6 +42,15 @@ param(
 )
 if ($Fem) { $env:CAP_MODE = "fem" } else { $env:CAP_MODE = "spring" }
 if ($Heatmap) { $env:CAP_HEATMAP = "1" } else { $env:CAP_HEATMAP = "0" }
+if ($SofaHeatmap) { $env:CAP_STRESS_COLOR = "1" } else { $env:CAP_STRESS_COLOR = "0" }
+if ($SofaHeatmap -and $Gui -eq "imgui") {
+    Write-Host "NOTE: SOFA's DataDisplay heatmap crashes the imgui GUI; switching -Gui glfw." -ForegroundColor Yellow
+    $Gui = "glfw"
+}
+# Plugins to load. SofaPython3 is always needed to run the .py scene; the Qt GUI lives in a
+# plugin that is NOT auto-registered, so load it when asked (glfw/imgui are built in).
+$PluginArgs = @("-l", "SofaPython3")
+if ($Gui -eq "qt") { $PluginArgs += @("-l", "Sofa.Qt") }
 
 $ErrorActionPreference = "Stop"
 if (-not $env:SOFA_ROOT) { $env:SOFA_ROOT = "C:\SOFA\SOFA_v25.12.00_Win64" }
@@ -70,12 +88,12 @@ $prevEAP = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 try {
     if ($NoLog) {
-        & $runSofa -l SofaPython3 -g imgui -a (Join-Path $ScenesDir $Scene)
+        & $runSofa @PluginArgs -g $Gui -a (Join-Path $ScenesDir $Scene)
     } else {
     # NOTE: do NOT add -Encoding here. Windows PowerShell 5.1's Tee-Object has no -Encoding
     # parameter (it only gained one in PowerShell 6), so passing it aborts the launch. The log
     # therefore lands as UTF-16; read it with a decoder rather than plain grep.
-        & $runSofa -l SofaPython3 -g imgui -a (Join-Path $ScenesDir $Scene) |
+        & $runSofa @PluginArgs -g $Gui -a (Join-Path $ScenesDir $Scene) |
             Tee-Object -FilePath $LogPath
     }
 } finally {

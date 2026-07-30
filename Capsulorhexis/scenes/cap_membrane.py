@@ -166,9 +166,14 @@ DEGEN_LO, DEGEN_HI = 0.25, 4.0   # area_ratio outside this = degenerate, sigma1 
 STRESS_LOG_EVERY = 1.0   # [s] between terminal reports
 STRESS_HOT_FRAC = 0.5    # 'loaded' = above this fraction of the peak
 SHOW_STRESS = True       # compute sigma1 every STRESS_EVERY steps
-# DataDisplay colouring SIGABRTs this build's GUI at visual init (batch mode passes,
-# GUI dies) -- keep OFF until a safe visualisation exists.
-STRESS_COLOR = False
+# SOFA's OWN heatmap: DataDisplay + OglColorMap colour the DEFORMING 3D mesh by sigma1
+# (fed from the controller). It SIGABRTs this build's imgui GUI at visual init (batch
+# passes, GUI dies) -- which is why the decoupled browser UI exists. But that crash is
+# imgui-specific: the Qt / GLFW backends may render it fine. Enable with CAP_STRESS_COLOR=1
+# and launch a non-imgui GUI (run_cap.ps1 -SofaHeatmap -Gui qt) to try it and compare.
+# Note: this colours the ACTUAL deforming membrane in 3D, whereas the browser UI shows the
+# flat undeformed reference disc -- two different, complementary views.
+STRESS_COLOR = os.environ.get("CAP_STRESS_COLOR", "0") == "1"
 # Steps between stress updates. This is the WHOLE cost of the stress observer + UI feed
 # (the O(triangles) numpy + serialisation), so it is the main FPS knob when the heatmap is
 # on. 6 = ~8 Hz of field at dt=0.02, smooth enough for the heatmap while keeping the loop
@@ -1517,10 +1522,19 @@ def createScene(root):
 
     _display = None
     if STRESS_COLOR:
-        # per-triangle sigma1 colouring (crashes this build's GUI -- see STRESS_COLOR)
-        _display = cap.addObject("DataDisplay", name="StressView", maximalRange=False)
-        cap.addObject("OglColorMap", name="StressMap", colorScheme="HSV",
-                      showLegend=True, legendTitle="sigma1")
+        # SOFA's OWN per-triangle sigma1 heatmap, colouring the DEFORMING 3D mesh. Placed in
+        # a CHILD node with an IdentityMapping (the pattern from SOFA's own DataDisplay.scn /
+        # AreaMapping.scn) -- adding DataDisplay directly to the Cap node clashed with its
+        # MechanicalObject ("only one BaseState per node", behavior undefined). The
+        # controller writes StressView.triangleData each step; OglColorMap auto-ranges off
+        # the DataDisplay's currentMin/currentMax. Crashes the imgui GUI -> use qt/glfw.
+        scv = cap.addChild("StressColor")
+        scv.addObject("VisualStyle", displayFlags="hideWireframe")
+        _display = scv.addObject("DataDisplay", name="StressView", maximalRange=False)
+        scv.addObject("OglColorMap", name="StressMap", colorScheme="HSV", showLegend=True,
+                      legendTitle="sigma1",
+                      min="@StressView.currentMin", max="@StressView.currentMax")
+        scv.addObject("IdentityMapping", input="@../Mo", output="@StressView")
     else:
         # The membrane's normal deformation view -- UNCHANGED by the stress UI, which
         # publishes over HTTP instead of drawing anything into this scene.
