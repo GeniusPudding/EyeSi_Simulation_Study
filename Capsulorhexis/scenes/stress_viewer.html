@@ -67,8 +67,12 @@
 <canvas id="c"></canvas>
 
 <div id="hud" class="panel">loading…</div>
-<div id="cap" class="panel">Undeformed <b>reference disc</b> — a MAP of the deforming membrane.
-Colour = <b>σ₁</b> (peak in-plane stress). Hover a triangle for details.</div>
+<div id="cap" class="panel">
+  <div>Undeformed <b>reference disc</b> — a MAP of the deforming membrane. Colour = each
+  triangle's <b>σ₁</b> (peak in-plane stress). Hover for details.</div>
+  <div style="color:#93a7ba;margin-top:2px">未變形<b>參考圓盤</b>(變形膜的「地圖」)。顏色 =
+  每個<b>三角形</b>的 <b>σ₁</b>(最大主應力)。滑鼠移上去看數值。</div>
+</div>
 
 <div id="ctrls">
   <button id="scaleBtn" title="colour-ramp scaling">Scale: auto</button>
@@ -93,39 +97,60 @@ Colour = <b>σ₁</b> (peak in-plane stress). Hover a triangle for details.</div
 
 <div id="help">
   <div class="box panel">
-    <span class="x" id="helpClose">close ✕</span>
-    <h2>What this shows</h2>
+    <span class="x" id="helpClose">close ✕ 關閉</span>
+    <h2>What this shows · 這是什麼</h2>
     <p>This is the <b>capsule membrane's stress field</b>, drawn on its <b>undeformed
     (flat) reference shape</b>. It does NOT deform — think of it as a fixed <b>map</b>:
     each triangle sits where that patch of membrane <i>starts</i>, and its colour tells you
     how hard that patch is being stressed <i>right now</i> in the live SOFA simulation.</p>
-    <p>Watch the deformation in the SOFA window; watch <b>where the force concentrates</b>
-    here.</p>
+    <p lang="zh">這是<b>囊膜的應力場</b>,畫在它的<b>未變形(平坦)參考形狀</b>上。它不會變形 ——
+    把它想成一張固定的<b>地圖</b>:每個三角形待在那塊膜「起始」的位置,顏色告訴你那塊膜
+    <i>此刻</i>在 SOFA 模擬裡受多大應力。變形在 SOFA 視窗看,受力集中在哪在這裡看。</p>
 
-    <h3>Colour = σ₁ (max principal stress)</h3>
+    <h3>Where the numbers come from · 數值哪裡來</h3>
+    <p>The value is <b>per triangle (per element), not per node</b> — one colour per
+    triangle. It is <b>not read out of SOFA's FEM</b> (SOFA computes stress in C++ but does
+    not expose it to Python). Instead our own numpy code (<code>principal_stress()</code>)
+    <b>re-derives it from geometry</b>: rest vs current triangle → deformation gradient F →
+    Green strain ε = ½(FᵀF−I) → plane stress σ = C·ε → its largest principal value <b>σ₁</b>
+    and direction. In FEM mode with matched E/ν this equals SOFA's own FEM stress at small
+    strain; in mass-spring mode there is no continuum E, so σ₁ is a geometric-strain scale
+    (the <i>pattern</i> of where it is high is the same either way).</p>
+    <p lang="zh"><b>逐「三角形」(element),不是節點</b> —— 每個三角形一個顏色。它<b>不是 SOFA
+    FEM 吐出來的</b>(SOFA 在 C++ 內部有算應力,但沒開放給 Python),而是我們自己的 numpy
+    (<code>principal_stress()</code>)<b>用幾何重算</b>:靜止 vs 當前三角形 → 形變梯度 F →
+    Green 應變 ε = ½(FᵀF−I) → 平面應力 σ = C·ε → 取最大主值 <b>σ₁</b> 與方向。FEM 模式且 E/ν
+    對齊時,小應變下等於 SOFA FEM 的應力;mass-spring 模式沒有真 E,σ₁ 是幾何比例尺(但「哪裡最緊」的分佈一樣)。</p>
+
+    <h3>Colour = σ₁ (max principal stress) · 顏色 = σ₁(最大主應力)</h3>
     <p>σ₁ is the largest in-plane tension in that triangle.
     <span class="sw" style="background:#2a4696"></span> blue = relaxed …
     <span class="sw" style="background:#d92e26"></span> red = peak. The scale
     (bottom-left) auto-fits the current peak; <b>Scale</b> switches to a fixed ceiling.
     Grey = a degenerate triangle (collapsed/inverted) where σ₁ is not physical.</p>
+    <p lang="zh">σ₁ = 該三角形內最大的面內張應力。<span class="sw" style="background:#2a4696"></span>
+    藍 = 鬆弛 … <span class="sw" style="background:#d92e26"></span> 紅 = 峰值。色階(左下)自動
+    對到目前峰值;按 <b>Scale</b> 切成固定上限。灰色 = 退化三角形(塌陷/翻面),σ₁ 不可信。</p>
 
-    <h3>Hover a triangle</h3>
+    <h3>Hover a triangle · 滑鼠移到三角形上</h3>
     <p>Shows σ₁, radius r, area ratio, the σ₁ direction, and the <b>crack class</b>. A crack
     would run <b>perpendicular to σ₁</b> (Rankine). Comparing that to the radial direction:</p>
     <ul>
-      <li><span class="good">CIRCUMFERENTIAL</span> — the good, curvilinear tear (stays a circle).</li>
-      <li><span class="bad">RADIAL</span> — the dangerous one that runs out to the periphery.</li>
-      <li><span class="obl">oblique</span> — in between.</li>
+      <li><span class="good">CIRCUMFERENTIAL</span> — the good, curvilinear tear (stays a circle). 圓周向,好的圓弧撕。</li>
+      <li><span class="bad">RADIAL</span> — the dangerous one that runs out to the periphery. 徑向,危險(裂到周邊)。</li>
+      <li><span class="obl">oblique</span> — in between. 斜向,介於之間。</li>
     </ul>
-    <p>The hovered triangle draws its σ₁ line (white) and the crack line (dashed red).</p>
+    <p lang="zh">顯示 σ₁、半徑 r、面積比、σ₁ 方向、以及<b>裂向分類</b>。裂縫會<b>垂直於 σ₁</b>
+    (Rankine);拿它跟徑向比:上面三類。被指的三角形會畫出白線=σ₁ 方向、紅虛線=裂縫方向。</p>
 
-    <h3>Timeline — drag freely, review after</h3>
+    <h3>Timeline — drag freely, review after · 時間軸 — 先拉,事後回看</h3>
     <p>You don't have to watch while you drag. Every frame is recorded. The bar at the
     bottom is <span id="liveDot2">◉ LIVE</span> by default (follows the newest frame).
     <b>Drag the slider</b> or press <b>▶</b> to scrub back through history and hover any
-    past moment; <kbd>Space</kbd> or <b>◉</b> returns to live. <br>
-    <small>The full field is also written to <code>scenes/stress_log.jsonl</code>
-    (one JSON frame per line) for offline analysis.</small></p>
+    past moment; <kbd>Space</kbd> or <b>◉</b> returns to live.</p>
+    <p lang="zh">不用邊拉邊看。每一幀都錄下來。底部預設 <span id="liveDot2">◉ LIVE</span>(跟著最新)。
+    <b>拖拉桿</b>或按 <b>▶</b> 回放歷史、滑到任一過去時刻查數值;<kbd>Space</kbd> 或 <b>◉</b> 回到即時。
+    <br><small>完整場也寫進 <code>scenes/stress_log.jsonl</code>(每行一 JSON 幀)供離線分析。</small></p>
   </div>
 </div>
 
@@ -153,8 +178,17 @@ function ramp(u){ u=Math.max(0,Math.min(1,u)); const x=u*(STOPS.length-1),i=Math
   const a=STOPS[i],b=STOPS[Math.min(i+1,STOPS.length-1)];
   return `rgb(${a[0]+(b[0]-a[0])*f|0},${a[1]+(b[1]-a[1])*f|0},${a[2]+(b[2]-a[2])*f|0})`; }
 
+// fetch + JSON with a hard timeout, so a slow/starved server can never HANG the loop
+// (the physics thread and the server share the GIL; under a heavy pull the server can
+// stall for a moment). AbortController turns that into a catchable reject, not a freeze.
+async function jfetch(url, ms=4000){
+  const ctl=new AbortController(), to=setTimeout(()=>ctl.abort(), ms);
+  try{ const r=await fetch(url,{cache:"no-store",signal:ctl.signal}); return await r.json(); }
+  finally{ clearTimeout(to); }
+}
 async function loadGeometry(){
-  const g=await (await fetch("/geometry")).json(); verts=g.verts; tris=g.tris;
+  const g=await jfetch("/geometry"); if(!g||!g.verts||!g.verts.length) throw new Error("no geometry");
+  verts=g.verts; tris=g.tris;
   cents=new Array(tris.length); radial=new Array(tris.length);
   let minx=1e9,maxx=-1e9,miny=1e9,maxy=-1e9;
   for(const v of verts){ if(v[0]<minx)minx=v[0]; if(v[0]>maxx)maxx=v[0]; if(v[1]<miny)miny=v[1]; if(v[1]>maxy)maxy=v[1]; }
@@ -235,7 +269,7 @@ function showTip(){
   tip.style.left=tx+"px"; tip.style.top=ty+"px";
 }
 function updateHud(){
-  if(!cur){ hud.textContent="waiting for stress data…"; return; }
+  if(!cur){ hud.textContent="connected — waiting for a pull…\n已連線 — 等待拉動…"; return; }
   hud.innerHTML =
     `t        <b>${(cur.t).toFixed(2)}</b> s   step <b>${cur.step}</b>\n`+
     `peak σ₁  <b>${cur.smax.toFixed(1)}</b>  (p98 <b>${(cur.sp98!=null?cur.sp98:cur.smax).toFixed(0)}</b>)\n`+
@@ -254,25 +288,34 @@ function updateTimeline(){
 
 async function fetchFrame(i){
   if(cache.has(i)) return cache.get(i);
-  try{ const f=await (await fetch("/frame?i="+i,{cache:"no-store"})).json();
+  try{ const f=await jfetch("/frame?i="+i);
     if(f&&f.s1){ cache.set(i,f); if(cache.size>400){ const first=cache.keys().next().value; cache.delete(first); } return f; } }
   catch(e){}
   return null;
 }
 async function tick(){
-  // refresh meta (frame range) regularly
-  try{ meta=await (await fetch("/meta",{cache:"no-store"})).json(); miss=0; deadEl.style.display="none"; }
-  catch(e){ if(++miss>15) deadEl.style.display="grid"; }
+  // (1) Ensure geometry FIRST, retrying every tick -- the page no longer blocks on a
+  // single startup fetch, so a server that is slow, still starting, or briefly stalled
+  // just shows "waiting" and heals itself the moment it responds (this was the
+  // stuck-on-"loading..." bug). Nothing draws until the reference disc is loaded.
+  if(!verts){
+    try{ await loadGeometry(); deadEl.style.display="none"; }
+    catch(e){ deadEl.style.display="grid";
+      hud.textContent="waiting for the simulation…\n等待模擬啟動…"; setTimeout(tick, 500); return; }
+  }
+  // (2) meta (frame range)
+  try{ meta=await jfetch("/meta"); miss=0; deadEl.style.display="none"; }
+  catch(e){ if(++miss>6) deadEl.style.display="grid"; setTimeout(tick, 400); return; }
   // reset detection: the frame counter only grows within a session, so a DROP means the
-  // SOFA scene was reloaded/restarted. Re-fetch geometry (it may have changed), clear the
-  // frame cache, and snap back to LIVE -- the browser mirrors the SOFA reset automatically.
+  // SOFA scene was reloaded/restarted -> re-fetch geometry, clear cache, snap back to LIVE.
   if(meta.count < prevCount){
-    try{ await loadGeometry(); }catch(e){}
-    cache.clear(); cur=null; following=true; playing=false; curIdx=-1;
+    verts=null; cache.clear(); cur=null; following=true; playing=false; curIdx=-1;
+    prevCount=0; setTimeout(tick, 30); return;      // reload geometry on the next tick
   }
   prevCount=meta.count;
+  // (3) the frame to show
   if(following){
-    try{ const f=await (await fetch("/stress",{cache:"no-store"})).json(); if(f&&f.s1){ cur=f; curIdx=f.i; } }catch(e){}
+    try{ const f=await jfetch("/stress"); if(f&&f.s1){ cur=f; curIdx=f.i; } }catch(e){}
   } else {
     if(playing){ curIdx++; if(curIdx>meta.last){ curIdx=meta.last; playing=false; } }
     if(curIdx<meta.first) curIdx=meta.first;
@@ -303,7 +346,7 @@ addEventListener("keydown",e=>{
 });
 addEventListener("resize",()=>{ dpr=Math.min(window.devicePixelRatio||1,2); });
 
-(async()=>{ try{ await loadGeometry(); }catch(e){ deadEl.style.display="grid"; } tick(); })();
+tick();   // non-blocking: tick() loads the geometry itself and retries until the server answers
 </script>
 </body>
 </html>
