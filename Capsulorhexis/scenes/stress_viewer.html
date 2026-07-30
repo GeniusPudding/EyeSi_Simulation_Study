@@ -207,19 +207,26 @@ function degenerate(ar){ return ar<0.25||ar>4.0; }
 function dirOf(k){ const a=cur.ang[k]*Math.PI/180; return [Math.cos(a),Math.sin(a)]; }
 
 function draw(){
-  if(!bounds) return;
+  if(!bounds||!verts) return;
   T=fit(); ctx.clearRect(0,0,T.W,T.H);
-  if(!cur||!cur.s1||!cur.s1.length) return;
-  const s1=cur.s1, ar=cur.aratio;
-  // Auto scale to the 98th percentile (not the raw max): a few near-degenerate triangles
-  // at the pull point sit ~100x above the bulk and would wash the whole map blue.
-  const autoTop = Math.max(cur.sp98!=null?cur.sp98:cur.smax, 20);
-  scaleTop = scaleMode==="fixed" ? cur.heatmax : autoTop;
+  // Draw the reference disc AS SOON AS geometry is loaded -- even before any stress frame
+  // arrives (idle, or the sim just started). Without data every triangle is drawn in a
+  // neutral colour with the mesh outline, so you always SEE the disc; once a frame arrives
+  // it is coloured by sigma1. (Previously draw() returned here with no cur -> blank canvas.)
+  const have = !!(cur&&cur.s1&&cur.s1.length===tris.length);
+  const s1=have?cur.s1:null, ar=have?cur.aratio:null;
+  if(have){
+    // Auto scale to the 98th percentile (not the raw max): a few near-degenerate triangles
+    // at the pull point sit ~100x above the bulk and would wash the whole map blue.
+    const autoTop = Math.max(cur.sp98!=null?cur.sp98:cur.smax, 20);
+    scaleTop = scaleMode==="fixed" ? cur.heatmax : autoTop;
+  }
   for(let k=0;k<tris.length;k++){ const [a,b,c]=tris[k];
     const A=toScreen(verts[a][0],verts[a][1]),B=toScreen(verts[b][0],verts[b][1]),C=toScreen(verts[c][0],verts[c][1]);
     ctx.beginPath(); ctx.moveTo(A[0],A[1]); ctx.lineTo(B[0],B[1]); ctx.lineTo(C[0],C[1]); ctx.closePath();
-    ctx.fillStyle = degenerate(ar[k]) ? "#38424c" : ramp(s1[k]/scaleTop); ctx.fill();
-    if(showWire){ ctx.strokeStyle="rgba(0,0,0,.28)"; ctx.lineWidth=1; ctx.stroke(); } }
+    ctx.fillStyle = !have ? "#22303c" : (degenerate(ar[k]) ? "#38424c" : ramp(s1[k]/scaleTop)); ctx.fill();
+    if(showWire||!have){ ctx.strokeStyle=have?"rgba(0,0,0,.28)":"rgba(150,170,190,.35)"; ctx.lineWidth=1; ctx.stroke(); } }
+  if(!have) return;
   if(hover>=0 && hover<tris.length){ const [a,b,c]=tris[hover];
     const A=toScreen(verts[a][0],verts[a][1]),B=toScreen(verts[b][0],verts[b][1]),C=toScreen(verts[c][0],verts[c][1]);
     ctx.beginPath(); ctx.moveTo(A[0],A[1]); ctx.lineTo(B[0],B[1]); ctx.lineTo(C[0],C[1]); ctx.closePath();
@@ -242,7 +249,7 @@ function pointInTri(px,py,a,b,c){
   const d2=(px-c[0])*(b[1]-c[1])-(b[0]-c[0])*(py-c[1]);
   const d3=(px-a[0])*(c[1]-a[1])-(c[0]-a[0])*(py-a[1]);
   return !(((d1<0)||(d2<0)||(d3<0))&&((d1>0)||(d2>0)||(d3>0))); }
-function hitTest(){ if(!mouse||!verts){ hover=-1; return; }
+function hitTest(){ if(!mouse||!verts||!T){ hover=-1; return; }   // T not set until first draw()
   const [wx,wy]=toWorld(mouse[0],mouse[1]); hover=-1;
   for(let k=0;k<tris.length;k++){ const [a,b,c]=tris[k];
     if(pointInTri(wx,wy,verts[a],verts[b],verts[c])){ hover=k; break; } } }
@@ -321,7 +328,10 @@ async function tick(){
     if(curIdx<meta.first) curIdx=meta.first;
     const f=await fetchFrame(curIdx); if(f) cur=f;
   }
-  hitTest(); draw(); showTip(); updateHud(); updateTimeline();
+  // Never let a render error kill the loop (that is what left the page stuck on
+  // "loading..."): draw first so the transform exists, then hit-test, all guarded.
+  try{ draw(); hitTest(); showTip(); updateHud(); updateTimeline(); }
+  catch(e){ console.error("render error (loop keeps going):", e); }
   setTimeout(tick, 55);
 }
 

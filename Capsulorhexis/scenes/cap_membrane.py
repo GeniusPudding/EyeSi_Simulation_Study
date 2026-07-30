@@ -461,10 +461,21 @@ def _start_stress_server(port, open_browser):
                 else:
                     with open(VIEWER_HTML, "rb") as f:
                         self._send(f.read(), "text/html; charset=utf-8")
-            except (BrokenPipeError, ConnectionResetError):
-                pass          # the browser closed the socket mid-write; ignore
-            except Exception as e:        # noqa: BLE001
-                self.send_error(500, str(e))
+            except (BrokenPipeError, ConnectionResetError,
+                    ConnectionAbortedError, OSError):
+                pass          # browser hung up mid-response (fetch timeout / reload /
+                              # tab close) -- normal for a polled feed, ignore. NOTE:
+                              # ConnectionAbortedError is the Windows case (WinError 10053)
+                              # and MUST be caught here, else it falls through below.
+            except Exception:  # noqa: BLE001
+                # send_error puts the message in the HTTP status line, which is latin-1
+                # only -- a localised (e.g. Chinese) OS error string would itself raise
+                # UnicodeEncodeError. Use the default ASCII reason phrase, and never let
+                # the error handler crash the request thread.
+                try:
+                    self.send_error(500)
+                except Exception:  # noqa: BLE001
+                    pass
 
     try:
         srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), _Handler)
