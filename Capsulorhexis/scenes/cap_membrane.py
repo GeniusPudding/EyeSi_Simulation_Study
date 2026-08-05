@@ -1431,6 +1431,15 @@ def createScene(root):
     if not USE_MASS_SPRING:
         fem = cap.addObject("TriangularFEMForceFieldOptim", name="FEM", method="large",
                             youngModulus=CLOTH_YOUNG, poissonRatio=0.3)
+        # SOFA's OWN principal-stress calc + vectors: an INDEPENDENT method to compare with
+        # our geometric observer. computePrincipalStress turns it on; showStressVector draws
+        # a per-triangle line along the FEM's principal-stress direction (so you get
+        # direction, in 3D on the deforming mesh). Enable with CAP_FEM_STRESS_VIZ=1 (FEM
+        # mode only). This is the true cross-check: same physics, two different stress
+        # computations -- the hot regions and directions should agree.
+        if os.environ.get("CAP_FEM_STRESS_VIZ", "0") == "1":
+            fem.computePrincipalStress.value = True
+            fem.showStressVector.value = True
     springs = cap.addObject("MeshSpringForceField", name="EdgeSprings",
                             linesStiffness=EDGE_STIFFNESS, linesDamping=1.0)
     bending = cap.addObject("TriangularBendingSprings", name="Bending",
