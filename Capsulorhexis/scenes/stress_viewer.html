@@ -588,7 +588,12 @@ function hitTest(){ if(!mouse||!verts||!T){ hover=-1; return; }   // T not set u
   const [wx,wy]=toWorld(mouse[0],mouse[1]); hover=-1;
   for(let k=0;k<tris.length;k++){ const [a,b,c]=tris[k];
     if(pointInTri(wx,wy,verts[a],verts[b],verts[c])){ hover=k; break; } } }
-function shownTri(){ return pinned>=0 ? pinned : hover; }   // pinned wins over hover
+// Which element the inspector shows. A PINNED element wins; otherwise the last element the
+// cursor was actually over. It deliberately does NOT clear when the cursor leaves the disc --
+// the panel emptying itself the moment you move away made it unreadable and impossible to
+// screenshot. Click to pin (locks it until you click another one).
+let lastHover=-1;
+function shownTri(){ if(pinned>=0) return pinned; if(hover>=0) lastHover=hover; return lastHover; }
 function updateInsp(){
   const head=`<h4>🔍 element inspector · 元素檢視</h4>`;
   const k=shownTri();
@@ -779,10 +784,9 @@ async function tick(){
 // interaction
 cv.addEventListener("mousemove",e=>{ const r=cv.getBoundingClientRect(); mouse=[e.clientX-r.left,e.clientY-r.top]; });
 cv.addEventListener("mouseleave",()=>{ mouse=null; hover=-1; });   // pinned survives leaving
-cv.addEventListener("click",()=>{                                   // click = pin / unpin
-  if(hover>=0) pinned = (pinned===hover ? -1 : hover);
-  else pinned = -1;                                                 // click empty space clears
-});
+cv.addEventListener("click",()=>{        // click a triangle = pin it (click it again to unpin)
+  if(hover>=0){ pinned = (pinned===hover ? -1 : hover); lastHover=hover; }
+});                                       // clicking empty space leaves the panel as it is
 function goLive(){ viewTake=-1; following=true; playing=false;
   const s=document.getElementById("takeSel"); if(s) s.value="-1"; }
 function goReview(i){ const r=takeRange();

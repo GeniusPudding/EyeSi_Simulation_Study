@@ -645,6 +645,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.nbr = None            # per-node neighbours, for front-only peeling
             self.boundary = None       # mesh-boundary nodes = crack initiation sites
             self.dup_of = {}           # duplicate vertex -> the lip it was split from
+            self._visual = None        # rendered skin; must be re-pushed after every split
             self.crack = None          # vertex path of the tear; last entry is the live tip
             self.crack_dir = None      # current heading (unit xy), for the Eq.2 turn limit
             self.vtris = None          # vertex -> [triangle ids], rebuilt on topology change
@@ -1130,6 +1131,25 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                     self._push_adhesion()
             return nv
 
+        def _push_visual(self):
+            """Push the new topology to the rendered skin.
+
+            THIS is why a tear was invisible in the SOFA window: OglModel keeps its OWN copy
+            of the triangle list from load time and does not follow runtime topology changes.
+            Measured after a tear -- topo triangles referenced vertices up to 2230 while the
+            visual still indexed only up to 2155 with 2156 positions, i.e. the window was
+            faithfully rendering the ORIGINAL intact mesh over an already-torn simulation.
+            The positions must be resized first, or the new triangle indices would be out of
+            range for the visual's own position array."""
+            if self._visual is None:
+                return
+            try:
+                P = np.array(self.mo.position.value)
+                self._visual.position.value = P.tolist()
+                self._visual.triangles.value = np.array(self.topo.triangles.value).tolist()
+            except Exception as e:  # noqa: BLE001
+                print(f"[Tear] visual update failed: {type(e).__name__}: {e}")
+
         def _tear_reinit(self):
             """Rebuild everything that caches the topology after a split."""
             for comp in (self.springs, self.bending):
@@ -1137,6 +1157,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                     comp.reinit()
                 except Exception:  # noqa: BLE001
                     pass
+            self._push_visual()
             self._build_vtris()
             self.edges = self.edge_rest = None      # strain clamp rebuilds
             self.tri_idx = self.tri_rest_area = None
@@ -1191,6 +1212,11 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
         def _tear_update(self, t):
             """One tearing opportunity: evaluate the criterion at the tip and advance."""
             P = np.array(self.mo.position.value)
+            if self._visual is None:
+                try:
+                    self._visual = self.mo.getContext().getChild("Visual").getObject("visual")
+                except Exception:  # noqa: BLE001
+                    self._visual = None
             if self.crack is None:
                 self._tear_seed(P)
                 self._tear_reinit()
