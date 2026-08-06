@@ -201,13 +201,57 @@ SOFA 的**變形視窗完全不動**,另外把 σ₁ 場透過一個**極簡本�
   才開)。它的重合雙頂點環會在膜上呈現一條 seam、並在熱圖 r≈`TEAR_RADIUS` 產生假應力環;做 scripted
   tear 那一階再開。
 - **錄製檔保護**:每次啟動會先把上一份 `stress_log.jsonl` 更名為 `.prev`,重跑不會靜默毀掉想分析的紀錄。
-- **log 格式**(`stress_log.jsonl`,每行一 JSON):`{i, step, t, s1[Ntri], ang[Ntri], aratio[Ntri],
+- **log 格式**(`stress_log.jsonl`,每行一 JSON):`{i, step, t, s1[Ntri], s2[Ntri], ang[Ntri], aratio[Ntri],
   smax, heatmax}`;三角形拓樸與參考座標見 `/geometry`(或 `cap.obj`)。numpy 逐行 `json.loads` 即可分析。
 
 > [補充] 早一版曾把熱圖直接畫在 SOFA 網格上(每個 band 一個單色 `OglModel` + `IdentityMapping`),
 > 但那會**蓋掉變形視圖**、且 hover 數值做不到;官方 `DataDisplay`+`OglColorMap` 又在本 build
 > (v25.12 Win64)的 imgui GUI 視覺初始化 SIGABRT(batch 正常、GUI 死),`OglModel` 也未暴露
 > 逐頂點顏色。故改走「SOFA 不動 + 解耦 HTTP + 瀏覽器頁面」這條,一併解掉遮擋與 hover 兩個問題。
+
+### 4.2 INRIA argmax-c 判據:即時試算(瀏覽器)+ 數值驗證
+
+在熱圖頁的撕裂門檻面板加了 **criterion 切換**:`Rankine ⊥σ₁`(各向同性)↔ **`INRIA argmax-c`**
+(纖維各向異性,Dequidt 2013 Eq.1–4 的**成核形式**,H=1)。實作(`stress_viewer.html` 的
+`inriaC()`;numpy 參考實作 + 驗證在 [`verify_stress.py`](../../Capsulorhexis/scenes/verify_stress.py)
+的 `inria_c()`):
+
+```
+對每個元素、每個候選裂向 d(0–180°,5° 步):
+  u = d + 90°                        (開裂法向:垂直裂縫、把裂縫「拉開」的方向)
+  σ_u = σ₁·cos²ψ + σ₂·sin²ψ         (Eq.3 改寫到主軸座標;ψ = u 與 σ₁ 方向的夾角)
+  σ̄_u = σ̄_T + (σ̄_L−σ̄_T)·(1 − fold(u,f)/90°)^α     (Eq.4;f = 纖維方向)
+  c(d) = σ_u / σ̄_u                   (σ_u ≤ 0 壓應力不開裂 → c=0)
+撕裂 ⟺ max_d c ≥ 1;裂向 = argmax_d c              (Eq.1–2,成核 H=1)
+```
+
+- **σ₂ 需要新增**:重建任意方向的 σ_u 需要**兩個**主值。觀測器本來就算了(`mid−dev`),
+  現在 `principal_stress()` 回傳 4-tuple、frame/log 多 `s2` 欄。
+- **纖維場 f 解析可得**:囊膜纖維是**同心圓**(Dequidt:每 0.5mm 一圈)→ 每個元素的 f =
+  質心方位角 + 90°(切線),`loadGeometry` 時預算。
+- **能即時算**:c ≤ σ₁/σ̄_T(σ_u≤σ₁、σ̄_u≥σ̄_T),所以只有 σ₁ ≥ σ̄_T 的元素可能撕 →
+  先用這個上界過濾,36 方向搜尋只跑熱區,60fps 無壓力。
+- **驗證**(`py -3.12 scenes/verify_stress.py`):
+  1. **各向同性特例 = Rankine**(論文明述的等價):σ̄_L=σ̄_T 時,5000 隨機應力態的 argmax
+     裂向與 ⊥σ₁ 差 ≤ 搜尋步長、c 與 σ₁/σ̄_T 差在**離散化理論上界**(6.1e-4)內 → OK。
+  2. **跨纖維抑制**:單軸拉伸沿纖維(Rankine 裂向的 u ∥ f)→ σ̄_L/σ̄_T=4 時 c 從 5.0 壓到
+     1.61,argmax 裂向從 90° 轉向 61°(被纖維帶偏)。
+  3. **同心纖維 → 圓周撕**:σ₁ 徑向 + 纖維切向(囊膜情境)→ 200 個元素 argmax 裂向與纖維
+     夾角 ≤0.5° → **裂縫沿圓周 = CCC 維持圓弧的機制**,數值重現。
+
+**參數可得性(「還缺什麼拿不到」的正面回答)**:
+
+| 公式需要 | 來源 | 狀態 |
+|---|---|---|
+| σ 張量(σ₁、σ₂、θ₁) | 幾何觀測器 | ✅(本次補 σ₂) |
+| 纖維方向 f | 同心圓解析(切線) | ✅ 幾何導出 |
+| **σ̄_T、σ̄_L、α** | **論文未給數值**(原文:門檻依外科醫師回饋調出) | ❌ **不可得 → 滑桿即時調** |
+| p、θ_P(Eq.2 的 H 項) | 需要**裂尖追蹤**(上一步裂向) | 下一階段(成核先 H=1) |
+| 裂尖鄰域加權應力 | 需要裂尖位置 | 下一階段 |
+
+> [補充] 單位也是「拿不到」的一部分:模擬應力是 sim-unit(E=1200 非 Pa),文獻的囊膜強度
+> (MPa 級)無法直接代入 —— 調參是誠實做法,與論文相同。`stress_log.jsonl` 已含 `s2`,
+> 離線可對任何錄製重算 c 場。
 
 ---
 

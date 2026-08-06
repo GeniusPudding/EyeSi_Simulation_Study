@@ -334,6 +334,11 @@ def principal_stress(pos, rest, tris, E=None, nu=None):
     mid = 0.5 * (sxx + syy)
     dev = np.sqrt(np.maximum(((sxx - syy) * 0.5) ** 2 + sxy ** 2, 0.0))
     s1 = mid + dev
+    # SECOND principal stress: with (s1, s2, principal angle) the FULL tensor can be
+    # rebuilt, so the normal stress along ANY direction u is sigma_u = s1 cos^2(psi) +
+    # s2 sin^2(psi), psi = angle(u, sigma1-dir). That is exactly what the INRIA
+    # anisotropic tear criterion (Dequidt 2013 Eq.3) needs -- s1 alone is not enough.
+    s2 = mid - dev
     area_ratio = np.abs(np.linalg.det(F))     # 1.0 = undeformed area
     # principal direction (2D angle) mapped back into 3D via the current frame
     # NO np.maximum guard on the denominator. arctan2(y, x) takes the QUADRANT from the
@@ -346,7 +351,7 @@ def principal_stress(pos, rest, tris, E=None, nu=None):
     # pointless: arctan2 does no division and handles x = 0 (and x = y = 0) itself.
     ang = 0.5 * np.arctan2(2.0 * sxy, sxx - syy)
     d3 = np.cos(ang)[:, None] * xc + np.sin(ang)[:, None] * yc
-    return s1, d3, area_ratio
+    return s1, s2, d3, area_ratio
 
 
 # --- decoupled stress UI: a tiny local HTTP server the browser viewer polls -----------
@@ -367,7 +372,7 @@ _STRESS_TOTAL = 0                 # frames ever published (also the next frame's
 _STRESS_LOG_FH = None
 
 
-def _stress_build_frame(i, step, t, s1, sdir, aratio):
+def _stress_build_frame(i, step, t, s1, s2, sdir, aratio):
     """Serialise one frame to a JSON string. All per-triangle numpy work is VECTORISED
     (np.round + one tolist) rather than a per-element Python loop -- the loop over 4166x3
     values roughly halved the framerate, and a slower loop lets the real-time mouse target
@@ -388,6 +393,7 @@ def _stress_build_frame(i, step, t, s1, sdir, aratio):
     return _json.dumps({
         "i": i, "step": int(step), "t": round(float(t), 3),
         "s1": np.round(s1, 1).tolist(),
+        "s2": np.round(s2, 1).tolist(),
         "ang": np.round(ang, 1).tolist(),
         "aratio": np.round(aratio, 2).tolist(),
         "smax": round(smax, 1), "sp98": round(sp98, 1), "heatmax": STRESS_HEAT_MAX,
@@ -871,8 +877,8 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                     pass
             return STRESS_E, STRESS_NU
 
-        def _publish_stress(self, s1, sdir, aratio, t):
-            _stress_record(_stress_build_frame(_STRESS_TOTAL, self.step, t, s1, sdir, aratio))
+        def _publish_stress(self, s1, s2, sdir, aratio, t):
+            _stress_record(_stress_build_frame(_STRESS_TOTAL, self.step, t, s1, s2, sdir, aratio))
 
         def onAnimateEndEvent(self, event):
             # Safety-net chain, in order, all BEFORE this frame is rendered:
@@ -1226,14 +1232,14 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                     self.tris = np.array(self.topo.triangles.value)
                 if len(self.tris):
                     E_obs, nu_obs = self._stress_material()
-                    s1, sdir, aratio = principal_stress(np.asarray(pos),
-                                                       np.asarray(rest), self.tris,
-                                                       E=E_obs, nu=nu_obs)
+                    s1, s2, sdir, aratio = principal_stress(np.asarray(pos),
+                                                            np.asarray(rest), self.tris,
+                                                            E=E_obs, nu=nu_obs)
                     self.sigma1_max = float(s1.max())
                     if self.display is not None:
                         self.display.triangleData.value = s1.tolist()
                     if STRESS_UI:
-                        self._publish_stress(s1, sdir, aratio, t)
+                        self._publish_stress(s1, s2, sdir, aratio, t)
 
                     # peak + direction is all a tear needs (crack runs perp to sigma1)
                     P = np.asarray(pos)
