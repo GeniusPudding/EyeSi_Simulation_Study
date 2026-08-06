@@ -133,6 +133,13 @@ LENS_REPULSION = 2000.0
 # --- adhesion of the membrane to the lens ------------------------------------
 ADHESION_STIFF = 120.0    # spring pulling each glued node to its rest spot
 BREAK_FORCE = 60.0        # pull force at which a spot peels off
+if CAP_TEAR:
+    # Capsulorhexis is done on a flap that LIFTS off the lens as it is torn, but the default
+    # adhesion glues every node down hard (measured mid-tear: 1711 of 2156 spots still glued),
+    # so the flap barely moved and the tear felt like fighting glue. Tear mode therefore peels
+    # more readily. Override with CAP_ADHESION / CAP_BREAK to go back to the stiff capsule.
+    ADHESION_STIFF = float(os.environ.get("CAP_ADHESION", "60"))
+    BREAK_FORCE = float(os.environ.get("CAP_BREAK", "22"))
 # Peel fade: a just-broken node's adhesion decays by PEEL_FADE per step (dropped
 # below PEEL_FADE_MIN) instead of vanishing at once -- releasing the stored ~60
 # units of force in one step is a visible local twitch (~40 units/s impulse).
@@ -463,19 +470,35 @@ _STRESS_GEOM_VER = 0
 _TEAR_STATE = {"on": False, "len": 0, "c": 0.0, "thr": 0.0, "tipr": 0.0, "why": "off"}
 
 
+_GEOM_PENDING = None      # (rest, tris) waiting to be serialised on demand
+
+
 def _publish_geometry(rest, tris):
     """(Re)publish the reference disc the browser draws on. Tearing changes the topology at
-    runtime, so this is called again after every split with a bumped version -- the viewer
-    watches the version and refetches, otherwise it would keep drawing the OLD triangle list
-    while the stress arrays already describe the NEW one (silently mismatched, worse than
-    blank). Positions are the REST shape, so the map stays undeformed as designed."""
-    global _STRESS_GEOMETRY, _STRESS_GEOM_VER
+    runtime, so the version is bumped on every split -- the viewer watches it and refetches,
+    otherwise it would keep drawing the OLD triangle list while the stress arrays already
+    describe the NEW one (silently mismatched, worse than blank).
+
+    LAZY on purpose: serialising ~2200 vertices + 4166 triangles to JSON on every split ran
+    on the physics thread and was pure waste, since the browser only fetches /geometry when
+    the version actually changes. Store the arrays, bump the version, and encode later."""
+    global _GEOM_PENDING, _STRESS_GEOM_VER
     _STRESS_GEOM_VER += 1
-    _STRESS_GEOMETRY = _json.dumps({
-        "ver": _STRESS_GEOM_VER,
-        "verts": [[round(float(p[0]), 4), round(float(p[1]), 4)] for p in rest],
-        "tris": [[int(a), int(b), int(c)] for a, b, c in tris],
-    })
+    _GEOM_PENDING = (rest, tris)      # kept as-is; encoded later on the HTTP thread
+
+
+def _geometry_json():
+    """Serialise the pending reference disc (called from the HTTP thread, not physics)."""
+    global _STRESS_GEOMETRY, _GEOM_PENDING
+    if _GEOM_PENDING is not None:
+        rest, tris = _GEOM_PENDING
+        _GEOM_PENDING = None
+        _STRESS_GEOMETRY = _json.dumps({
+            "ver": _STRESS_GEOM_VER,
+            "verts": [[round(float(p[0]), 4), round(float(p[1]), 4)] for p in rest],
+            "tris": [[int(a), int(b), int(c)] for a, b, c in tris],
+        })
+    return _STRESS_GEOMETRY
 
 
 def _stress_record(js):
@@ -571,7 +594,7 @@ def _start_stress_server(port, open_browser):
                     else:
                         self._send(b"{}", "application/json")
                 elif self.path.startswith("/geometry"):
-                    self._send(_STRESS_GEOMETRY.encode(), "application/json")
+                    self._send(_geometry_json().encode(), "application/json")
                 else:
                     with open(VIEWER_HTML, "rb") as f:
                         self._send(f.read(), "text/html; charset=utf-8")
@@ -646,6 +669,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.boundary = None       # mesh-boundary nodes = crack initiation sites
             self.dup_of = {}           # duplicate vertex -> the lip it was split from
             self._visual = None        # rendered skin; must be re-pushed after every split
+            self._rest_cache = None    # (step, rest array) so a step re-reads it once
             self.rest0 = None          # PRISTINE rest shape for the reference disc. NOT
                                        # rest_position: plasticity creeps that toward the
                                        # deformed shape, which was warping the "undeformed"
@@ -1016,6 +1040,14 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                             {w for (u, w), k in ecount.items() if k == 1}
             self.tris = T
 
+        def _rest_now(self):
+            """rest_position as an array, cached per step: it is read several times per
+            advance and the SOFA Data -> numpy conversion is not free."""
+            if (self._rest_cache is None or self._rest_cache[0] != self.step
+                    or len(self._rest_cache[1]) != len(self.mo.position.value)):
+                self._rest_cache = (self.step, np.array(self.mo.rest_position.value))
+            return self._rest_cache[1]
+
         def _tip_stress(self, P, x, y, radius=None):
             """Crack-tip neighbourhood average (Dequidt section 4.3), returned as principal
             values + angle. Averaging the TENSOR COMPONENTS, not the principal values: the
@@ -1026,22 +1058,27 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             rad = TEAR_TIP_RADIUS if radius is None else radius
             cen = P[self.tris][:, :, :2].mean(axis=1)
             d2 = (cen[:, 0] - x) ** 2 + (cen[:, 1] - y) ** 2
-            m = d2 <= rad ** 2
-            if not m.any():
+            m = np.flatnonzero(d2 <= rad ** 2)
+            if not m.size:
                 return None
+            # Select FIRST, then solve. This used to run principal_stress over all ~4166
+            # triangles and throw away everything outside the disc -- twice per advance, in a
+            # loop -- which was the bulk of the tearing cost in the GUI. The neighbourhood is
+            # typically a few dozen elements.
             E_obs, nu_obs = self._stress_material()
-            s1, s2, sdir, ar = principal_stress(P, np.asarray(self.mo.rest_position.value),
-                                                self.tris, E=E_obs, nu=nu_obs)
-            good = m & (ar >= DEGEN_LO) & (ar <= DEGEN_HI)
-            if not good.any():
+            s1, s2, sdir, ar = principal_stress(P, self._rest_now(), self.tris[m],
+                                                E=E_obs, nu=nu_obs)
+            keep = (ar >= DEGEN_LO) & (ar <= DEGEN_HI)
+            if not keep.any():
                 return None
-            th = np.arctan2(sdir[good][:, 1], sdir[good][:, 0])
+            s1, s2, sdir = s1[keep], s2[keep], sdir[keep]
+            th = np.arctan2(sdir[:, 1], sdir[:, 0])
             c, s = np.cos(th), np.sin(th)
-            w = 1.0 / (1.0 + np.sqrt(d2[good]) / max(rad, 1e-9))
+            w = 1.0 / (1.0 + np.sqrt(d2[m][keep]) / max(rad, 1e-9))
             ws = w.sum()
-            sxx = float((w * (s1[good] * c * c + s2[good] * s * s)).sum() / ws)
-            syy = float((w * (s1[good] * s * s + s2[good] * c * c)).sum() / ws)
-            sxy = float((w * ((s1[good] - s2[good]) * s * c)).sum() / ws)
+            sxx = float((w * (s1 * c * c + s2 * s * s)).sum() / ws)
+            syy = float((w * (s1 * s * s + s2 * c * c)).sum() / ws)
+            sxy = float((w * ((s1 - s2) * s * c)).sum() / ws)
             mid = 0.5 * (sxx + syy)
             dev = float(np.hypot((sxx - syy) * 0.5, sxy))
             return mid + dev, mid - dev, np.degrees(0.5 * np.arctan2(2 * sxy, sxx - syy))
