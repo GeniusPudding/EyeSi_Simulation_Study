@@ -69,6 +69,17 @@ TEAR_TURN_MAX = float(os.environ.get("CAP_TEAR_TURN", "70"))     # theta_P, max 
 TEAR_EVERY = int(os.environ.get("CAP_TEAR_EVERY", "3"))          # steps between advances
 TEAR_TIP_RADIUS = float(os.environ.get("CAP_TEAR_RADIUS", "0.6"))    # tip neighbourhood
 TEAR_MAX_ADVANCE = int(os.environ.get("CAP_TEAR_MAXADV", "1"))   # edges per advance (speed cap)
+# Crack-tip stress concentration. A real crack tip carries an r^(-1/2) singularity; linear
+# FEM on a mesh with 0.3-unit elements cannot represent it, so the tip-neighbourhood average
+# UNDER-estimates the driving stress badly -- measured live, the pull zone read sigma1 ~760
+# while the tip 2 units away averaged ~4. Without a correction the criterion never fires
+# unless you grab exactly on the tip. This is the standard coarse-mesh fix (the same reason
+# the earlier demo needed TIP_STRESS_GAIN, see docs/implementation/4 section 5.3).
+TEAR_TIP_GAIN = float(os.environ.get("CAP_TEAR_TIPGAIN", "3.0"))
+# How far from the tip the pull still drives the crack. The membrane is glued down almost
+# everywhere, so stress does not travel; sampling only a 0.6-unit disc means a hand pulling
+# 2 units away is invisible to the tip. This widens the sampling for the DRIVING term only.
+TEAR_REACH = float(os.environ.get("CAP_TEAR_REACH", "2.5"))
 # The initial nick: capsulorhexis starts with a cystotome puncture near the centre, and
 # without one there is no crack tip to push -- the membrane would just stretch. This seeds a
 # short radial slit of this many edges starting at radius TEAR_START_R.
@@ -1000,16 +1011,17 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                             {w for (u, w), k in ecount.items() if k == 1}
             self.tris = T
 
-        def _tip_stress(self, P, x, y):
+        def _tip_stress(self, P, x, y, radius=None):
             """Crack-tip neighbourhood average (Dequidt section 4.3), returned as principal
             values + angle. Averaging the TENSOR COMPONENTS, not the principal values: the
             neighbours have different principal axes, so averaging s1/s2 would invent
             anisotropy (two states 90 deg apart average to isotropic, not to the larger)."""
             if self.tris is None or not len(self.tris):
                 return None
+            rad = TEAR_TIP_RADIUS if radius is None else radius
             cen = P[self.tris][:, :, :2].mean(axis=1)
             d2 = (cen[:, 0] - x) ** 2 + (cen[:, 1] - y) ** 2
-            m = d2 <= TEAR_TIP_RADIUS ** 2
+            m = d2 <= rad ** 2
             if not m.any():
                 return None
             E_obs, nu_obs = self._stress_material()
@@ -1020,7 +1032,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 return None
             th = np.arctan2(sdir[good][:, 1], sdir[good][:, 0])
             c, s = np.cos(th), np.sin(th)
-            w = 1.0 / (1.0 + np.sqrt(d2[good]) / max(TEAR_TIP_RADIUS, 1e-9))
+            w = 1.0 / (1.0 + np.sqrt(d2[good]) / max(rad, 1e-9))
             ws = w.sum()
             sxx = float((w * (s1[good] * c * c + s2[good] * s * s)).sum() / ws)
             syy = float((w * (s1[good] * s * s + s2[good] * c * c)).sum() / ws)
@@ -1192,6 +1204,15 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 if S is None:
                     return
                 S1, S2, th1 = S
+                # Coarse-mesh tip correction, plus a wider "reach": if the hand is pulling
+                # further away than the tip disc, use the strongest loaded patch within
+                # TEAR_REACH to drive the crack. Without this the tear only responds when you
+                # grab exactly on the tip, which is not how the flap is held in surgery.
+                far = self._tip_stress(P, P[tip][0], P[tip][1], radius=TEAR_REACH)
+                if far is not None and far[0] > S1:
+                    S1, S2 = far[0], far[1]
+                S1 *= TEAR_TIP_GAIN
+                S2 *= TEAR_TIP_GAIN
                 fib = np.degrees(np.arctan2(P[tip][1], P[tip][0])) + 90.0   # concentric fibers
                 c, d = self._argmax_c(S1, S2, th1, fib, self.crack_dir)
                 _TEAR_STATE.update(on=True, len=len(self.crack), c=round(float(c), 2),
