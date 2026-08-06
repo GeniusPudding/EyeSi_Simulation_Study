@@ -62,7 +62,7 @@ CAP_TEAR = os.environ.get("CAP_TEAR", "0") == "1"
 # peaks the heatmap shows at the pull front). Sweep with a hand-like pull: 150 and 30 never
 # tear at all, 10 propagates the crack from the centre to the rim (4 -> 67 vertices), 5 and 2
 # behave the same. So 8 is a responsive default; raise it to make the capsule tougher.
-TEAR_THRESH = float(os.environ.get("CAP_TEAR_THRESH", "8"))
+TEAR_THRESH = float(os.environ.get("CAP_TEAR_THRESH", "220"))
 TEAR_FIB_RATIO = float(os.environ.get("CAP_TEAR_FIBRATIO", "2.5"))   # sigma_bar_L / sigma_bar_T
 TEAR_FIB_ALPHA = float(os.environ.get("CAP_TEAR_ALPHA", "2.0"))      # Eq.4 steepness
 TEAR_TURN_MAX = float(os.environ.get("CAP_TEAR_TURN", "70"))     # theta_P, max turn per advance
@@ -79,7 +79,7 @@ TEAR_MAX_ADVANCE = int(os.environ.get("CAP_TEAR_MAXADV", "4"))
 # while the tip 2 units away averaged ~4. Without a correction the criterion never fires
 # unless you grab exactly on the tip. This is the standard coarse-mesh fix (the same reason
 # the earlier demo needed TIP_STRESS_GAIN, see docs/implementation/4 section 5.3).
-TEAR_TIP_GAIN = float(os.environ.get("CAP_TEAR_TIPGAIN", "3.0"))
+TEAR_TIP_GAIN = float(os.environ.get("CAP_TEAR_TIPGAIN", "1.5"))
 # How far from the tip the pull still drives the crack. The membrane is glued down almost
 # everywhere, so stress does not travel; sampling only a 0.6-unit disc means a hand pulling
 # 2 units away is invisible to the tip. This widens the sampling for the DRIVING term only.
@@ -1060,6 +1060,32 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 self._rest_cache = (self.step, np.array(self.mo.rest_position.value))
             return self._rest_cache[1]
 
+        def _reach_drive(self, P, x, y):
+            """Strongest load within reach of the tip, attenuated by distance.
+
+            This must be a distance-weighted MAX, not a mean. It was implemented as a mean
+            over a disc of radius TEAR_REACH, which dilutes the very thing it is looking for:
+            most of that disc is unloaded, so a hand pulling hard nearby averaged away to
+            almost nothing. Measured consequence -- while the field's p98 was 163-235 the tip
+            saw only 4-9, a 20-50x gap, so the criterion sat at c ~ 0.5 and the capsule had to
+            be yanked until the mesh degenerated (12.5% bad elements) before anything tore."""
+            if self.tris is None or not len(self.tris):
+                return None
+            cen = P[self.tris][:, :, :2].mean(axis=1)
+            d = np.hypot(cen[:, 0] - x, cen[:, 1] - y)
+            m = np.flatnonzero(d <= TEAR_REACH)
+            if not m.size:
+                return None
+            E_obs, nu_obs = self._stress_material()
+            s1, _s2, _sd, ar = principal_stress(P, self._rest_now(), self.tris[m],
+                                                E=E_obs, nu=nu_obs)
+            keep = (ar >= DEGEN_LO) & (ar <= DEGEN_HI)
+            if not keep.any():
+                return None
+            # linear falloff: a load at the tip counts fully, one at the reach limit not at all
+            w = 1.0 - d[m][keep] / max(TEAR_REACH, 1e-9)
+            return float(np.max(s1[keep] * w))
+
         def _tip_stress(self, P, x, y, radius=None):
             """Crack-tip neighbourhood average (Dequidt section 4.3), returned as principal
             values + angle. Averaging the TENSOR COMPONENTS, not the principal values: the
@@ -1310,9 +1336,9 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 # further away than the tip disc, use the strongest loaded patch within
                 # TEAR_REACH to drive the crack. Without this the tear only responds when you
                 # grab exactly on the tip, which is not how the flap is held in surgery.
-                far = self._tip_stress(P, P[tip][0], P[tip][1], radius=TEAR_REACH)
-                if far is not None and far[0] > S1:
-                    S1, S2 = far[0], far[1]
+                far = self._reach_drive(P, P[tip][0], P[tip][1])
+                if far is not None and far > S1:
+                    S1 = far
                 S1 *= TEAR_TIP_GAIN
                 S2 *= TEAR_TIP_GAIN
                 fib = np.degrees(np.arctan2(P[tip][1], P[tip][0])) + 90.0   # concentric fibers
