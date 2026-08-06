@@ -50,6 +50,26 @@ LENS_OBJ = os.path.join(_HERE, "lens.obj")  # the flattened (oblate) base it sti
 # giving back the real continuum stress tensor and citable E/nu.
 USE_MASS_SPRING = os.environ.get("CAP_MODE", "spring").lower() != "fem"
 
+# --- real tearing (CAP_TEAR=1 / run_cap.ps1 -Tear) -----------------------------------
+# Built on THIS scene's stress observer, not on any plugin: the crack advances along the
+# INRIA argmax-c direction (Dequidt Eq.1-4) evaluated on the crack-tip neighbourhood, and
+# the mesh is opened by duplicating the vertices behind the tip and rewiring the triangles
+# on one side onto the duplicates. Nothing about the pull mechanics changes -- the membrane
+# is still the tuned mass-spring, the rim is NOT anchored, and the mouse spring is untouched.
+CAP_TEAR = os.environ.get("CAP_TEAR", "0") == "1"
+TEAR_THRESH = float(os.environ.get("CAP_TEAR_THRESH", "150"))    # sigma_bar_T
+TEAR_FIB_RATIO = float(os.environ.get("CAP_TEAR_FIBRATIO", "2.5"))   # sigma_bar_L / sigma_bar_T
+TEAR_FIB_ALPHA = float(os.environ.get("CAP_TEAR_ALPHA", "2.0"))      # Eq.4 steepness
+TEAR_TURN_MAX = float(os.environ.get("CAP_TEAR_TURN", "70"))     # theta_P, max turn per advance
+TEAR_EVERY = int(os.environ.get("CAP_TEAR_EVERY", "3"))          # steps between advances
+TEAR_TIP_RADIUS = float(os.environ.get("CAP_TEAR_RADIUS", "0.6"))    # tip neighbourhood
+TEAR_MAX_ADVANCE = int(os.environ.get("CAP_TEAR_MAXADV", "1"))   # edges per advance (speed cap)
+# The initial nick: capsulorhexis starts with a cystotome puncture near the centre, and
+# without one there is no crack tip to push -- the membrane would just stretch. This seeds a
+# short radial slit of this many edges starting at radius TEAR_START_R.
+TEAR_START_R = float(os.environ.get("CAP_TEAR_START_R", "1.0"))
+TEAR_START_LEN = int(os.environ.get("CAP_TEAR_START_LEN", "3"))
+
 # --- material ----------------------------------------------------------------
 CLOTH_YOUNG = 120.0       # FEM-only: soft opening phase
 PAPER_YOUNG = 1200.0      # FEM-only: stiffened at SWITCH_T; 4000+ risks blow-up
@@ -410,11 +430,30 @@ def _stress_build_frame(i, step, t, s1, s2, sdir, aratio):
     ang = np.degrees(np.arctan2(sdir[:, 1], sdir[:, 0]))
     return _json.dumps({
         "i": i, "step": int(step), "t": round(float(t), 3),
+        "gver": _STRESS_GEOM_VER,        # topology version these arrays belong to
         "s1": np.round(s1, 1).tolist(),
         "s2": np.round(s2, 1).tolist(),
         "ang": np.round(ang, 1).tolist(),
         "aratio": np.round(aratio, 2).tolist(),
         "smax": round(smax, 1), "sp98": round(sp98, 1), "heatmax": STRESS_HEAT_MAX,
+    })
+
+
+_STRESS_GEOM_VER = 0
+
+
+def _publish_geometry(rest, tris):
+    """(Re)publish the reference disc the browser draws on. Tearing changes the topology at
+    runtime, so this is called again after every split with a bumped version -- the viewer
+    watches the version and refetches, otherwise it would keep drawing the OLD triangle list
+    while the stress arrays already describe the NEW one (silently mismatched, worse than
+    blank). Positions are the REST shape, so the map stays undeformed as designed."""
+    global _STRESS_GEOMETRY, _STRESS_GEOM_VER
+    _STRESS_GEOM_VER += 1
+    _STRESS_GEOMETRY = _json.dumps({
+        "ver": _STRESS_GEOM_VER,
+        "verts": [[round(float(p[0]), 4), round(float(p[1]), 4)] for p in rest],
+        "tris": [[int(a), int(b), int(c)] for a, b, c in tris],
     })
 
 
@@ -584,6 +623,10 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.peel_fade = {}        # node -> decaying adhesion stiffness (peel fade-out)
             self.nbr = None            # per-node neighbours, for front-only peeling
             self.boundary = None       # mesh-boundary nodes = crack initiation sites
+            self.crack = None          # vertex path of the tear; last entry is the live tip
+            self.crack_dir = None      # current heading (unit xy), for the Eq.2 turn limit
+            self.vtris = None          # vertex -> [triangle ids], rebuilt on topology change
+            self.tear_log_t = -1.0
             # instance copies so the hotkeys can tune them live
             self.plastic_rate = PLASTIC_RATE
             self.break_force = BREAK_FORCE
@@ -923,6 +966,219 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
         def _publish_stress(self, s1, s2, sdir, aratio, t):
             _stress_record(_stress_build_frame(_STRESS_TOTAL, self.step, t, s1, s2, sdir, aratio))
 
+        # ---------------- real tearing (CAP_TEAR) ---------------------------------------
+        def _build_vtris(self):
+            """vertex -> triangles map, and the neighbour map, for the current topology."""
+            T = np.array(self.topo.triangles.value)
+            n = len(self.mo.position.value)
+            self.vtris = [[] for _ in range(n)]
+            nbr = [set() for _ in range(n)]
+            from collections import Counter
+            ecount = Counter()
+            for ti, (a, b, c) in enumerate(T.tolist()):
+                for v in (a, b, c):
+                    self.vtris[v].append(ti)
+                nbr[a].update((b, c)); nbr[b].update((a, c)); nbr[c].update((a, b))
+                for u, w in ((a, b), (b, c), (c, a)):
+                    ecount[(u, w) if u < w else (w, u)] += 1
+            self.nbr = [np.fromiter(x, dtype=int) for x in nbr]
+            # boundary must be rebuilt together with nbr: the peel logic guards only on
+            # self.nbr, so leaving boundary stale/None here made it fail with a TypeError
+            # on every step after the first split.
+            self.boundary = {u for (u, w), k in ecount.items() if k == 1} | \
+                            {w for (u, w), k in ecount.items() if k == 1}
+            self.tris = T
+
+        def _tip_stress(self, P, x, y):
+            """Crack-tip neighbourhood average (Dequidt section 4.3), returned as principal
+            values + angle. Averaging the TENSOR COMPONENTS, not the principal values: the
+            neighbours have different principal axes, so averaging s1/s2 would invent
+            anisotropy (two states 90 deg apart average to isotropic, not to the larger)."""
+            if self.tris is None or not len(self.tris):
+                return None
+            cen = P[self.tris][:, :, :2].mean(axis=1)
+            d2 = (cen[:, 0] - x) ** 2 + (cen[:, 1] - y) ** 2
+            m = d2 <= TEAR_TIP_RADIUS ** 2
+            if not m.any():
+                return None
+            E_obs, nu_obs = self._stress_material()
+            s1, s2, sdir, ar = principal_stress(P, np.asarray(self.mo.rest_position.value),
+                                                self.tris, E=E_obs, nu=nu_obs)
+            good = m & (ar >= DEGEN_LO) & (ar <= DEGEN_HI)
+            if not good.any():
+                return None
+            th = np.arctan2(sdir[good][:, 1], sdir[good][:, 0])
+            c, s = np.cos(th), np.sin(th)
+            w = 1.0 / (1.0 + np.sqrt(d2[good]) / max(TEAR_TIP_RADIUS, 1e-9))
+            ws = w.sum()
+            sxx = float((w * (s1[good] * c * c + s2[good] * s * s)).sum() / ws)
+            syy = float((w * (s1[good] * s * s + s2[good] * c * c)).sum() / ws)
+            sxy = float((w * ((s1[good] - s2[good]) * s * c)).sum() / ws)
+            mid = 0.5 * (sxx + syy)
+            dev = float(np.hypot((sxx - syy) * 0.5, sxy))
+            return mid + dev, mid - dev, np.degrees(0.5 * np.arctan2(2 * sxy, sxx - syy))
+
+        def _argmax_c(self, S1, S2, th1_deg, fib_deg, heading):
+            """INRIA criterion (Eq.1-4). Returns (c, unit direction) for the crack direction
+            that maximises c, restricted to turns within TEAR_TURN_MAX of the heading
+            (Eq.2's H term -- this is what stops the tear doubling back on itself)."""
+            sT, sL = TEAR_THRESH, TEAR_THRESH * TEAR_FIB_RATIO
+
+            def c_of(a):
+                thu = a + 90.0
+                cp = np.cos(np.radians(thu - th1_deg))
+                su = S1 * cp * cp + S2 * (1.0 - cp * cp)
+                if su <= 0.0:
+                    return -1.0
+                df = abs(thu - fib_deg) % 180.0
+                if df > 90.0:
+                    df = 180.0 - df
+                return su / (sT + (sL - sT) * (1.0 - df / 90.0) ** TEAR_FIB_ALPHA)
+
+            def vec(a):
+                v = np.array([np.cos(np.radians(a)), np.sin(np.radians(a))])
+                return -v if (heading is not None and v @ heading < 0) else v
+
+            def allowed(a):
+                if heading is None:
+                    return True
+                return np.degrees(np.arccos(np.clip(vec(a) @ heading, -1, 1))) <= TEAR_TURN_MAX
+
+            best, ba = -1.0, 0.0
+            for a in np.arange(0.0, 180.0, 3.0):
+                if allowed(a):
+                    cc = c_of(a)
+                    if cc > best:
+                        best, ba = cc, a
+            half = 3.0                       # bisection refine (c(d) has a kink at the fiber)
+            for _ in range(6):
+                half *= 0.5
+                for a in (ba - half, ba + half):
+                    if allowed(a):
+                        cc = c_of(a)
+                        if cc > best:
+                            best, ba = cc, a
+            return best, vec(ba)
+
+        def _split_vertex(self, v, P, R):
+            """Open the mesh at vertex v: duplicate it and move the triangles on ONE side of
+            the crack line onto the duplicate. The two copies start coincident, so the tear
+            is invisible until the springs pull the lips apart -- which is exactly how a real
+            cut behaves. Returns the new vertex id (or None if the fan cannot be split)."""
+            if self.crack_dir is None:
+                return None
+            tl = self.vtris[v]
+            if len(tl) < 2:
+                return None
+            d = self.crack_dir
+            pv = P[v][:2]
+            side = []
+            for ti in tl:
+                cen = P[self.tris[ti]][:, :2].mean(axis=0)
+                side.append(d[0] * (cen[1] - pv[1]) - d[1] * (cen[0] - pv[0]))
+            neg = [ti for ti, s in zip(tl, side) if s < 0]
+            if not neg or len(neg) == len(tl):
+                return None                  # crack line misses the fan: nothing to open
+            nv = len(P)
+            self.mo.position.value = np.vstack([P, P[v]]).tolist()
+            self.mo.rest_position.value = np.vstack([R, R[v]]).tolist()
+            V = np.array(self.mo.velocity.value)
+            if len(V) == nv:
+                self.mo.velocity.value = np.vstack([V, V[v]]).tolist()
+            T = self.tris.copy()
+            for ti in neg:
+                T[ti][T[ti] == v] = nv
+            self.topo.triangles.value = T.tolist()
+            return nv
+
+        def _tear_reinit(self):
+            """Rebuild everything that caches the topology after a split."""
+            for comp in (self.springs, self.bending):
+                try:
+                    comp.reinit()
+                except Exception:  # noqa: BLE001
+                    pass
+            self._build_vtris()
+            self.edges = self.edge_rest = None      # strain clamp rebuilds
+            self.tri_idx = self.tri_rest_area = None
+            self.last_good = self.last_good_rest = None
+            self.prev_pos = None
+            _publish_geometry(np.array(self.mo.rest_position.value),
+                              np.array(self.topo.triangles.value))
+
+        def _tear_seed(self, P):
+            """Cystotome puncture: a short radial slit near the centre. Without an initial
+            crack there is no tip to drive and the membrane would only stretch."""
+            self._build_vtris()
+            r = np.hypot(P[:, 0], P[:, 1])
+            start = int(np.argmin(np.abs(r - TEAR_START_R)))
+            self.crack = [start]
+            ang = np.arctan2(P[start][1], P[start][0])
+            self.crack_dir = np.array([np.cos(ang), np.sin(ang)])   # outward, radial
+            for _ in range(max(1, TEAR_START_LEN)):
+                if not self._advance_to_best_neighbour(P, forced=True):
+                    break
+                P = np.array(self.mo.position.value)
+            print(f"[Tear] initial nick: {len(self.crack)} vertices from r={TEAR_START_R:g}")
+
+        def _advance_to_best_neighbour(self, P, forced=False):
+            """Move the tip one edge along self.crack_dir, splitting the vertex left behind."""
+            tip = self.crack[-1]
+            cand = [int(j) for j in self.nbr[tip] if j not in self.crack]
+            if not cand:
+                return False
+            pv = P[tip][:2]
+            best, bj = -2.0, -1
+            for j in cand:
+                e = P[j][:2] - pv
+                n = np.linalg.norm(e)
+                if n < 1e-9:
+                    continue
+                dot = float(e @ self.crack_dir / n)
+                if dot > best:
+                    best, bj = dot, j
+            if bj < 0:
+                return False
+            if not forced and np.degrees(np.arccos(np.clip(best, -1, 1))) > TEAR_TURN_MAX:
+                return False
+            R = np.array(self.mo.rest_position.value)
+            self._split_vertex(tip, P, R)          # the old tip is now behind the front
+            e = P[bj][:2] - pv
+            self.crack_dir = e / max(np.linalg.norm(e), 1e-9)
+            self.crack.append(bj)
+            self._tear_reinit()
+            return True
+
+        def _tear_update(self, t):
+            """One tearing opportunity: evaluate the criterion at the tip and advance."""
+            P = np.array(self.mo.position.value)
+            if self.crack is None:
+                self._tear_seed(P)
+                self._tear_reinit()
+                return
+            if self.vtris is None or len(self.vtris) != len(P):
+                self._build_vtris()
+            for _ in range(max(1, TEAR_MAX_ADVANCE)):
+                P = np.array(self.mo.position.value)
+                tip = self.crack[-1]
+                S = self._tip_stress(P, P[tip][0], P[tip][1])
+                if S is None:
+                    return
+                S1, S2, th1 = S
+                fib = np.degrees(np.arctan2(P[tip][1], P[tip][0])) + 90.0   # concentric fibers
+                c, d = self._argmax_c(S1, S2, th1, fib, self.crack_dir)
+                if c < 1.0:
+                    return                                   # not tearing right now
+                self.crack_dir = d
+                if not self._advance_to_best_neighbour(P):
+                    return
+                if t - self.tear_log_t >= 0.5:
+                    self.tear_log_t = t
+                    tp = self.crack[-1]
+                    print(f"[Tear] t={t:.2f}s len={len(self.crack)} c={c:.2f} "
+                          f"tip r={np.hypot(P[tp][0], P[tp][1]):.2f} "
+                          f"verts={len(self.mo.position.value)}")
+
         def onAnimateEndEvent(self, event):
             # Safety-net chain, in order, all BEFORE this frame is rendered:
             #   (0) NaN / runaway rewind  (0b) per-step displacement clamp
@@ -935,7 +1191,11 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             P0 = np.array(self.mo.position.value)
             runaway = (MAX_COORD > 0.0 and P0.size > 0
                        and np.isfinite(P0).all() and np.abs(P0).max() > MAX_COORD)
-            if not np.isfinite(P0).all() or runaway:
+            # A rewind restores a snapshot; after a split the snapshot has the OLD vertex
+            # count, so restoring it would undo the tear (and mis-size every array). Only
+            # rewind when the snapshot still matches the current mesh.
+            if (not np.isfinite(P0).all() or runaway) and (
+                    self.last_good is None or len(self.last_good) == len(P0)):
                 if runaway and self.step % 15 == 0:
                     print(f"[Runaway] a node passed |coord|>{MAX_COORD:g} "
                           f"(max {float(np.abs(P0).max()):.1f}) -> rewound before it "
@@ -979,7 +1239,10 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
 
             # (2) Strain clamp: project over-stretched edges back to MAX_STRETCH x rest
             # (a few relaxation passes; rest lengths cached once).
-            if MAX_STRETCH > 0.0:
+            # In tear mode the strain clamp is skipped: it would pull a just-opened cut shut
+            # (the two lips are coincident at birth, and every edge across the crack has a
+            # rest length it must NOT be projected back to).
+            if MAX_STRETCH > 0.0 and not CAP_TEAR:
                 if self.edges is None:
                     self._build_edges()
                 if len(self.edges):
@@ -1039,7 +1302,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             # near-collinear triangles, or rewind the sheet if a whole cluster
             # collapsed at once / repair failed.
             degenerate_after = None       # None = not yet known
-            if MIN_AREA_FRAC > 0.0 and not USE_MASS_SPRING:
+            if MIN_AREA_FRAC > 0.0 and not USE_MASS_SPRING and not CAP_TEAR:
                 if self.tri_idx is None:
                     self._build_tri_areas()
                 tris = self.tri_idx
@@ -1269,9 +1532,23 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                     self.camera.activated.value = want_active
                     self.cam_active = want_active
 
+            # --- real tearing: advance the crack from its tip -----------------------
+            if CAP_TEAR and not self.frozen and self.step % TEAR_EVERY == 0:
+                try:
+                    self._tear_update(t)
+                except Exception as e:  # noqa: BLE001
+                    print(f"[Tear] skipped this step: {type(e).__name__}: {e}")
+                # A split GROWS the position/rest arrays, and pos/rest were captured at the
+                # top of this handler -- everything below (the stress observer, the peel
+                # logic) must use the new ones or it indexes the new triangle list with the
+                # old vertex arrays.
+                pos = self.mo.position.value
+                rest = self.mo.rest_position.value
+
             # --- stress observer (foundation for the tear criterion) ----------------
             if SHOW_STRESS and self.step % STRESS_EVERY == 0:
-                if self.tris is None:
+                # a split changes the triangle count, so the cached list must follow it
+                if self.tris is None or len(self.tris) != len(self.topo.triangles.value):
                     self.tris = np.array(self.topo.triangles.value)
                 if len(self.tris):
                     E_obs, nu_obs = self._stress_material()
@@ -1649,7 +1926,7 @@ def createScene(root):
             elif _ln.startswith("f "):
                 _idx = [int(tok.split("/")[0]) - 1 for tok in _ln.split()[1:4]]
                 _tris.append(_idx)
-        _STRESS_GEOMETRY = _json.dumps({"verts": _verts, "tris": _tris})
+        _publish_geometry(_verts, _tris)      # versioned; republished after every tear split
         _start_stress_server(STRESS_UI_PORT, STRESS_UI_OPEN)
 
     cap.addObject(_make_controller(fem, springs, bending, mo, adhesion, pull,

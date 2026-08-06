@@ -26,6 +26,12 @@ param(
     # scrub the timeline to review any past moment (Space = live/replay). The full field is
     # also logged to scenes/stress_log.jsonl for offline analysis. Via CAP_HEATMAP.
     [switch]$Heatmap,
+    # -Tear enables real mesh tearing: a cystotome nick is seeded near the centre and the
+    # crack advances from its tip along the INRIA argmax-c direction as you pull. The pull
+    # mechanics are unchanged (still the tuned mass-spring, rim NOT anchored). -Thresh sets
+    # sigma_bar_T. Via CAP_TEAR / CAP_TEAR_THRESH.
+    [switch]$Tear,
+    [double]$Thresh = 150.0,
     # -SofaHeatmap turns on SOFA's built-in DataDisplay + OglColorMap, colouring the
     # DEFORMING 3D mesh by sigma1 (CAP_STRESS_COLOR). It SIGABRTs the imgui GUI, so pair it
     # with -Gui qt (or glfw). This is the in-SOFA counterpart to the browser -Heatmap.
@@ -42,6 +48,7 @@ param(
 )
 if ($Fem) { $env:CAP_MODE = "fem" } else { $env:CAP_MODE = "spring" }
 if ($Heatmap) { $env:CAP_HEATMAP = "1" } else { $env:CAP_HEATMAP = "0" }
+if ($Tear) { $env:CAP_TEAR = "1"; $env:CAP_TEAR_THRESH = "$Thresh" } else { $env:CAP_TEAR = "0" }
 if ($SofaHeatmap) { $env:CAP_STRESS_COLOR = "1" } else { $env:CAP_STRESS_COLOR = "0" }
 if ($SofaHeatmap -and $Gui -eq "imgui") {
     Write-Host "NOTE: SOFA's DataDisplay heatmap crashes the imgui GUI; switching -Gui glfw." -ForegroundColor Yellow

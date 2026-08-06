@@ -252,6 +252,7 @@ let tearThr=0;      // tear threshold sigma_bar_T (0 = off)
 let tearMode="rankine", fibRatio=2.0, fibAlpha=2.0;
 let fibAng=null;     // per-triangle fiber angle [deg] (tangential = concentric fibers)
 let grid=null, gridN=0, gridMin=[0,0], gridCell=[1,1];   // bucket index over centroids
+let geomVer=0;   // reference-disc version; tearing bumps it so the page refetches the mesh
 // Crack-path prediction (Stage A: pure computation, the mesh is never modified).
 let pathOn=false, pathRadius=0.45, pathStep=0.25, pathMaxSteps=90, pathTurnMax=50;
 let pathCache={key:"", pts:[], info:null};
@@ -272,7 +273,7 @@ async function jfetch(url, ms=4000){
 }
 async function loadGeometry(){
   const g=await jfetch("/geometry"); if(!g||!g.verts||!g.verts.length) throw new Error("no geometry");
-  verts=g.verts; tris=g.tris;
+  verts=g.verts; tris=g.tris; geomVer=g.ver||0;
   cents=new Array(tris.length); radial=new Array(tris.length);
   let minx=1e9,maxx=-1e9,miny=1e9,maxy=-1e9;
   for(const v of verts){ if(v[0]<minx)minx=v[0]; if(v[0]>maxx)maxx=v[0]; if(v[1]<miny)miny=v[1]; if(v[1]>maxy)maxy=v[1]; }
@@ -745,6 +746,13 @@ async function tick(){
     prevCount=0; setTimeout(tick, 30); return;    // reload geometry on the next tick
   }
   prevCount=meta.count;
+  // Tearing changes the topology at runtime. The stress arrays are per-triangle, so if the
+  // page kept the old triangle list every value would be drawn on the wrong element --
+  // silently wrong, which is worse than blank. The server versions the geometry; refetch
+  // whenever the frame reports a newer one.
+  if(cur && cur.gver!=null && cur.gver!==geomVer){
+    try{ await loadGeometry(); pinned=-1; pathCache={key:"",pts:[],info:null}; }catch(e){}
+  }
   // (3) the frame to show
   const rng=takeRange();
   if(viewTake<0 && following){
