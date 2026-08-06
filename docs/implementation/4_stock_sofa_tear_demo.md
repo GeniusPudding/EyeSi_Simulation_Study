@@ -147,6 +147,26 @@ ang = 0.5 * np.arctan2(2*σxy, np.maximum(σxx − σyy, 1e-12))   # ← 錯
 mass-spring 模式沒有連續體 E,退回固定 `STRESS_E/STRESS_NU` —— 此時數值只是**幾何應變比例尺**,
 但「哪裡受力最大」的空間分佈兩個模式一致。
 
+**與 SOFA 原生 FEM 應力的交叉驗證**(可重現:[`verify_stress.py`](../../Capsulorhexis/scenes/verify_stress.py),
+`py -3.12 scenes/verify_stress.py`)。SOFA 的 `TriangularFEMForceFieldOptim` 有自己的主應力
+(`computePrincipalStress` + `showStressVector`,`CAP_FEM_STRESS_VIZ=1`),但 `triangleInfo` 在
+Python 讀不到("Invalid type")、`stressMaxValue` 只在繪圖時算,所以無法即時逐值比對。改以 numpy
+**重實作 SOFA 的公式**(共旋**線性**應變 ε_L = U−I,U = √(FᵀF))和我們的 Green 版逐格比對,結果:
+
+| 均勻拉伸 | 方向差(中位/最大) | σ₁ 比值 corot/green(中位) |
+|---|---|---|
+| 2% | 0.000° / 0.000° | 0.990 |
+| 10% | 0.000° / 0.000° | 0.953 |
+| 20% | 0.000° / 0.000° | 0.910 |
+| 50% | 0.000° / 0.000° | 0.802 |
+
+- **方向恆等**(0.000°,任意應變):ε_G、ε_L 都與伸張張量 U 同軸,主方向必然相同 → SOFA 的
+  `showStressVector` 方向線與瀏覽器白線指同方向。
+- **大小**:小應變幾乎相同,大應變我們(Green)略大(`½(U²−I) > U−I`),50% 拉伸時 SOFA≈我們的 80%。
+- 對照解析解:單軸 λ=1.2,解析 σ₁=290.1 = 我們 290.1、方向 0° → **觀測器數值可證為正確**。
+- `verify_stress.py` 內建 self-check:其 inline Green 與**出貨版 `principal_stress()` 逐格差 <1e-12**,
+  確保驗的是真正跑的函式。
+
 **即時力場 UI(解耦式)**(`CAP_HEATMAP=1` / `run_cap.ps1 -Heatmap` / `run_cap.sh --heatmap`):
 SOFA 的**變形視窗完全不動**,另外把 σ₁ 場透過一個**極簡本機 HTTP 服務**(Python 標準庫、背景
 執行緒)推出去;一個自足的瀏覽器頁面 [`stress_viewer.html`](../../Capsulorhexis/scenes/stress_viewer.html)
