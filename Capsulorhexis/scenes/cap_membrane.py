@@ -72,7 +72,7 @@ TEAR_TIP_RADIUS = float(os.environ.get("CAP_TEAR_RADIUS", "0.6"))    # tip neigh
 # passed the crack RUNS, it does not creep one element at a time. Advancing a single edge per
 # opportunity made it crawl (~13 edges/s) instead of ripping, so the rate now scales with how
 # far c exceeds 1 -- c=1 gives one edge, a hard pull gives a fast run -- capped here.
-TEAR_MAX_ADVANCE = int(os.environ.get("CAP_TEAR_MAXADV", "8"))
+TEAR_MAX_ADVANCE = int(os.environ.get("CAP_TEAR_MAXADV", "4"))
 # Crack-tip stress concentration. A real crack tip carries an r^(-1/2) singularity; linear
 # FEM on a mesh with 0.3-unit elements cannot represent it, so the tip-neighbourhood average
 # UNDER-estimates the driving stress badly -- measured live, the pull zone read sigma1 ~760
@@ -137,13 +137,13 @@ LENS_REPULSION = 2000.0
 # --- adhesion of the membrane to the lens ------------------------------------
 ADHESION_STIFF = 120.0    # spring pulling each glued node to its rest spot
 BREAK_FORCE = 60.0        # pull force at which a spot peels off
-if CAP_TEAR:
-    # Capsulorhexis is done on a flap that LIFTS off the lens as it is torn, but the default
-    # adhesion glues every node down hard (measured mid-tear: 1711 of 2156 spots still glued),
-    # so the flap barely moved and the tear felt like fighting glue. Tear mode therefore peels
-    # more readily. Override with CAP_ADHESION / CAP_BREAK to go back to the stiff capsule.
-    ADHESION_STIFF = float(os.environ.get("CAP_ADHESION", "60"))
-    BREAK_FORCE = float(os.environ.get("CAP_BREAK", "22"))
+# NOTE: tear mode deliberately keeps the DEFAULT adhesion. Weakening it to help the flap lift
+# was a mistake -- the flap does not need it (splitting a vertex already ungluesthat spot and
+# its ring, see _split_vertex), while a low break force let the pull peel the ENTIRE cap off
+# the lens: measured 2156 -> 222 glued spots in under 3 s, after which the free sheet crumpled
+# into a wad. Override with CAP_ADHESION / CAP_BREAK if a more fragile capsule is wanted.
+ADHESION_STIFF = float(os.environ.get("CAP_ADHESION", ADHESION_STIFF))
+BREAK_FORCE = float(os.environ.get("CAP_BREAK", BREAK_FORCE))
 # Peel fade: a just-broken node's adhesion decays by PEEL_FADE per step (dropped
 # below PEEL_FADE_MIN) instead of vanishing at once -- releasing the stored ~60
 # units of force in one step is a visible local twitch (~40 units/s impulse).
@@ -306,7 +306,15 @@ STITCH_K = 2500.0        # holds the slit closed; match EDGE_STIFFNESS
 TEAR_T = 3.0             # [s] tear start
 TEAR_DURATION = 3.0      # [s] to go all the way around
 LIFT_HEIGHT = 4.5        # scripted lift of the freed disc
-FIX_OUTER_RIM = False    # True = hard-anchor the outer ring (default: only adhesion)
+FIX_OUTER_RIM = os.environ.get("CAP_FIX_RIM", "0") == "1"
+# Anatomically the anterior capsule is held at its periphery by the ZONULES. Without that
+# anchor a pull does not build tearing stress, it just peels the whole cap off the lens and
+# the free sheet crumples into a wad -- which is exactly what happened in tear mode. So tear
+# mode anchors a NARROW outer ring by default (CAP_FIX_RIM=0 to switch it off). Narrow on
+# purpose: clamping a wide band is what made an earlier attempt feel dead to pull.
+RIM_ANCHOR_FRAC = float(os.environ.get("CAP_RIM_FRAC", "0.96"))
+if CAP_TEAR:
+    FIX_OUTER_RIM = os.environ.get("CAP_FIX_RIM", "1") == "1"
 
 # --- automatic plasticity (viscoplastic creep) ---------------------------------
 # Peeled nodes slowly adopt their current shape as rest shape, so releasing the
@@ -1172,10 +1180,13 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             # capsulorhexis lifts the flap off the lens as it tears, so unglue the split
             # vertex, its duplicate and their immediate ring -- that is what lets the flap
             # open and be pulled, which in turn keeps stressing the tip.
+            # Unglue the two LIPS only. Ungluing their whole ring as well turned the tear
+            # itself into the dominant peeling mechanism -- ~6 extra nodes per split, so a
+            # 169-vertex crack stripped about a thousand spots and the cap came off the lens
+            # and crumpled. The flap still lifts: the normal peel handles the area, this just
+            # makes sure the cut edge itself is not stapled down.
             if self.adhered is not None:
                 free = {int(v), int(nv)}
-                if self.nbr is not None and v < len(self.nbr):
-                    free.update(int(j) for j in self.nbr[v])
                 if self.adhered & free:
                     self.adhered.difference_update(free)
                     self._push_adhesion()
@@ -1235,6 +1246,16 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             """Move the tip one edge along self.crack_dir, splitting the vertex left behind."""
             tip = self.crack[-1]
             cand = [int(j) for j in self.nbr[tip] if j not in self.crack]
+            # Never tear into the zonular anchor ring. Those nodes are held by a
+            # FixedProjectiveConstraint whose index list is fixed at build time, so a
+            # duplicate created there is NOT anchored -- the tear was cutting its own anchor
+            # loose (measured: rim nodes drifting 3.0 instead of staying put), after which the
+            # capsule was free again and crumpled. Anatomically the rhexis also stays well
+            # inside the zonular insertion.
+            if FIX_OUTER_RIM:
+                lim = RIM_ANCHOR_FRAC * G.R
+                cand = [j for j in cand
+                        if np.hypot(P[j][0], P[j][1]) < lim]
             if not cand:
                 return False
             pv = P[tip][:2]
@@ -1303,8 +1324,10 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 if c < 1.0:
                     return                                   # not tearing right now
                 # Unstable propagation: the further past the criterion, the further the crack
-                # runs in this opportunity (c=1 -> 1 edge, c>=8 -> the full budget).
-                budget = min(budget, max(1, int(c)))
+                # runs. Scaled gently (c/4) rather than linearly -- the tip gain and reach can
+                # push c into the tens, which at full budget every step shredded the mesh
+                # (430 crack vertices in 200 steps) instead of tearing it.
+                budget = min(budget, max(1, 1 + int(c / 4.0)))
                 self.crack_dir = d
                 if not self._advance_to_best_neighbour(P):
                     return
@@ -1955,10 +1978,12 @@ def createScene(root):
     if FIX_OUTER_RIM and _capV is not None:
         import math as _m2
         _outer = [i for i, xyz in enumerate(_capV)
-                  if _m2.hypot(float(xyz[0]), float(xyz[1])) > 0.9 * G.R]
+                  if _m2.hypot(float(xyz[0]), float(xyz[1])) > RIM_ANCHOR_FRAC * G.R]
         if _outer:
             cap.addObject("FixedProjectiveConstraint", name="RimAnchor", indices=_outer,
                           showObject=False)
+            print(f"[Zonules] rim anchored: {len(_outer)} nodes beyond r="
+                  f"{RIM_ANCHOR_FRAC * G.R:.2f} of {G.R:.2f}")
 
     # Scripted lift of the freed central disc; must start only AFTER the circle is
     # fully torn (intact stitches at k=2500 would drag the rim up with it).
