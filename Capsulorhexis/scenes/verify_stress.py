@@ -250,5 +250,113 @@ def main():
           f"{'STAYS CURVILINEAR: OK' if dd.max() <= 1.0 else 'FAIL'}")
 
 
+def walk_crack(stress_at, fiber_at, p0, heading0, sT, sL, alpha,
+               step=0.25, turn_max=50.0, nsteps=200):
+    """Port of the viewer's crack walk (Stage A) for verification.
+
+    stress_at(x,y) -> (s1, s2, ang_deg); fiber_at(x,y) -> fiber angle [deg].
+    At each tip: argmax-c over candidate crack directions (Eq.1-4), constrained to turn no
+    more than turn_max from the current heading (Eq.2's H term), then advance one step.
+    """
+    pts = [np.array(p0, float)]
+    h = np.array(heading0, float); h /= np.linalg.norm(h)
+
+    def direction_at(x, y, h):
+        """argmax-c crack direction at (x,y), as a vector, constrained by the turn limit."""
+        s1, s2, th1 = stress_at(x, y)
+        fa = fiber_at(x, y)
+
+        def c_of(a):
+            thu = a + 90.0
+            cp = np.cos(np.radians(thu - th1))
+            su = s1 * cp * cp + s2 * (1 - cp * cp)
+            if su <= 0:
+                return -1.0
+            df = abs(thu - fa) % 180.0
+            if df > 90.0:
+                df = 180.0 - df
+            return su / (sT + (sL - sT) * (1 - df / 90.0) ** alpha)
+
+        def allowed(a):
+            v = np.array([np.cos(np.radians(a)), np.sin(np.radians(a))])
+            if v @ h < 0:
+                v = -v
+            return np.degrees(np.arccos(np.clip(v @ h, -1, 1))) <= turn_max
+
+        best, ba = -1.0, 0.0
+        for a in np.arange(0.0, 180.0, 3.0):
+            if not allowed(a):
+                continue
+            c = c_of(a)
+            if c > best:
+                best, ba = c, a
+        half = 3.0
+        for _ in range(6):
+            half *= 0.5
+            for a in (ba - half, ba + half):
+                if allowed(a) and c_of(a) > best:
+                    best, ba = c_of(a), a
+        if best < 1.0:
+            return None, best
+        v = np.array([np.cos(np.radians(ba)), np.sin(np.radians(ba))])
+        if v @ h < 0:
+            v = -v
+        return v, best
+
+    for _ in range(nsteps):
+        x, y = pts[-1]
+        v1, c1 = direction_at(x, y, h)
+        if v1 is None:
+            break
+        # MIDPOINT (RK2) step. Advancing straight along the tangent leaves a curved crack
+        # path every step -- on a circle of radius R a step s adds s^2/(2R) to the radius,
+        # which accumulated to a 2.07 drift over 400 steps (measured) and looked like the
+        # criterion failing when it was pure integration error. Re-evaluating the direction
+        # at the half-step and using THAT makes the error O(s^3) instead.
+        mid = pts[-1] + v1 * (step * 0.5)
+        v2, _ = direction_at(mid[0], mid[1], v1)
+        v = v1 if v2 is None else v2
+        h = v
+        pts.append(pts[-1] + v * step)
+    return np.array(pts)
+
+
+def check_walk():
+    """The capsule case: radial sigma1 + concentric fibers must walk a CIRCLE."""
+    R0 = 5.0
+    def stress_at(x, y):
+        return 60.0, 15.0, np.degrees(np.arctan2(y, x))      # sigma1 radial
+    def fiber_at(x, y):
+        return np.degrees(np.arctan2(y, x)) + 90.0           # concentric fibers
+    pts = walk_crack(stress_at, fiber_at, (R0, 0.0), (0.0, 1.0),
+                     sT=10.0, sL=30.0, alpha=2.0, step=0.25, nsteps=400)
+    r = np.hypot(pts[:, 0], pts[:, 1])
+    ang = np.unwrap(np.arctan2(pts[:, 1], pts[:, 0]))
+    swept = np.degrees(abs(ang[-1] - ang[0]))
+    print("\n=== crack WALK: radial stress + concentric fibers must trace a circle ===")
+    print(f"  {len(pts)} steps, radius {r.min():.3f}..{r.max():.3f} (start {R0}), "
+          f"drift {abs(r[-1]-R0):.3f}, swept {swept:.0f} deg")
+    ok = (r.max() - r.min()) < 0.35 and swept > 300
+    print(f"  -> {'CIRCLES (CCC mechanism reproduced): OK' if ok else 'FAIL'}")
+
+    # Where the FIBER actually matters: a stress field whose sigma1 is NOT radial. Isotropy
+    # then sends the crack off obliquely; concentric fibers should pull it back toward the
+    # circle. (In the pure-radial field above, Rankine is already circumferential, so the
+    # fiber has nothing to correct -- that made it a useless control.)
+    def stress_oblique(x, y):
+        return 60.0, 15.0, np.degrees(np.arctan2(y, x)) + 35.0   # sigma1 35 deg off radial
+    res = {}
+    for lab, sL_ in (("isotropic sL=sT", 10.0), ("fibers sL=4sT", 40.0)):
+        p = walk_crack(stress_oblique, fiber_at, (R0, 0.0), (0.0, 1.0),
+                       sT=10.0, sL=sL_, alpha=4.0, step=0.25, nsteps=200)
+        rr = np.hypot(p[:, 0], p[:, 1])
+        res[lab] = (rr.max() - rr.min(), rr[-1])
+        print(f"  sigma1 35 deg off radial, {lab:16s}: radius spread {res[lab][0]:6.3f} "
+              f"final r {res[lab][1]:5.2f}")
+    print(f"  -> fibers hold the circle better: "
+          f"{'OK' if res['fibers sL=4sT'][0] < res['isotropic sL=sT'][0] else 'FAIL'}")
+
+
 if __name__ == "__main__":
     main()
+    check_walk()

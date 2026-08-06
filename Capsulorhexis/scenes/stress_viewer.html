@@ -118,6 +118,20 @@
   </div>
   <div class="cap2" id="tearHint" style="margin-top:2px;color:#7d8fa0">σ₁ ≥ σ_thr → tears here
   (magenta); white line = crack dir (⊥σ₁). 拉高門檻;超過的格染洋紅、白線=裂向。</div>
+  <div class="cap2" style="margin-top:7px;border-top:1px solid #24333f;padding-top:6px">
+    <label style="cursor:pointer;color:#ffe14a">
+      <input type="checkbox" id="pathOn"> 🪡 predicted crack path · 預測裂縫路徑</label></div>
+  <div id="pathctl" style="display:none">
+    <div class="lab"><span>tip 鄰域半徑</span><b id="pathRadVal" style="color:#ffe14a">0.45</b></div>
+    <input id="pathRad" type="range" min="0.15" max="1.5" value="0.45" step="0.05"
+           style="width:100%;accent-color:#ffe14a">
+    <div class="lab"><span>θ_P 最大轉角/步</span><b id="pathTurnVal" style="color:#ffe14a">50°</b></div>
+    <input id="pathTurn" type="range" min="5" max="90" value="50" step="5"
+           style="width:100%;accent-color:#ffe14a">
+    <div class="lab"><span id="pathInfo" style="color:#8aa0b4">—</span></div>
+    <div class="cap2" style="color:#7d8fa0">從 c 最大的格起裂,沿 argmax d 前進;每步用<b>裂尖鄰域
+    加權平均應力</b>重算方向(Eq.3–4),並限制轉角不超過 θ_P(Eq.2 的 H)。<b>只是預測、不改網格。</b></div>
+  </div>
 </div>
 
 <div id="insp" class="panel"><h4>🔍 element inspector · 元素檢視</h4>
@@ -229,6 +243,10 @@ let tearThr=0;      // tear threshold sigma_bar_T (0 = off)
 // "inria" = anisotropic argmax-c (Dequidt 2013 Eq.1-4) with concentric fibers.
 let tearMode="rankine", fibRatio=2.0, fibAlpha=2.0;
 let fibAng=null;     // per-triangle fiber angle [deg] (tangential = concentric fibers)
+let grid=null, gridN=0, gridMin=[0,0], gridCell=[1,1];   // bucket index over centroids
+// Crack-path prediction (Stage A: pure computation, the mesh is never modified).
+let pathOn=false, pathRadius=0.45, pathStep=0.25, pathMaxSteps=90, pathTurnMax=50;
+let pathCache={key:"", pts:[], info:null};
 let scaleTop=300, dpr=Math.min(window.devicePixelRatio||1,2), T=null;
 
 const STOPS=[[42,70,150],[38,140,190],[70,185,115],[235,200,64],[217,46,38]];
@@ -258,6 +276,35 @@ async function loadGeometry(){
     // capsule fibers are CONCENTRIC (Dequidt: radially spaced every 0.5 mm), so the fiber
     // direction at any element is the tangent = azimuth + 90 deg
     fibAng[k]=(Math.atan2(cy,cx)*180/Math.PI+90)%180; }
+  buildTriIndex();
+}
+// Uniform bucket grid over element centroids: the crack walk needs "which elements are near
+// this point" every step (for the crack-tip neighbourhood average), and a linear scan over
+// ~4000 triangles per step would not survive the render loop.
+function buildTriIndex(){
+  const bw=bounds.maxx-bounds.minx, bh=bounds.maxy-bounds.miny;
+  gridN=48; gridMin=[bounds.minx,bounds.miny];
+  gridCell=[bw/gridN, bh/gridN];
+  grid=new Array(gridN*gridN); for(let i=0;i<grid.length;i++) grid[i]=[];
+  for(let k=0;k<tris.length;k++){
+    const gx=Math.min(gridN-1,Math.max(0,Math.floor((cents[k][0]-gridMin[0])/gridCell[0])));
+    const gy=Math.min(gridN-1,Math.max(0,Math.floor((cents[k][1]-gridMin[1])/gridCell[1])));
+    grid[gy*gridN+gx].push(k);
+  }
+}
+function elemsNear(x,y,rad){
+  if(!grid) return [];
+  const out=[];
+  const x0=Math.floor((x-rad-gridMin[0])/gridCell[0]), x1=Math.floor((x+rad-gridMin[0])/gridCell[0]);
+  const y0=Math.floor((y-rad-gridMin[1])/gridCell[1]), y1=Math.floor((y+rad-gridMin[1])/gridCell[1]);
+  const r2=rad*rad;
+  for(let gy=Math.max(0,y0);gy<=Math.min(gridN-1,y1);gy++)
+    for(let gx=Math.max(0,x0);gx<=Math.min(gridN-1,x1);gx++)
+      for(const k of grid[gy*gridN+gx]){
+        const dx=cents[k][0]-x, dy=cents[k][1]-y;
+        if(dx*dx+dy*dy<=r2) out.push(k);
+      }
+  return out;
 }
 function fit(){ cv.width=innerWidth*dpr; cv.height=innerHeight*dpr;
   const W=cv.width,H=cv.height,bw=bounds.maxx-bounds.minx,bh=bounds.maxy-bounds.miny;
@@ -311,6 +358,104 @@ function inriaC(k){
     }
   }
   return {c:best.c, ang:((bestA%180)+180)%180, su:best.su, thr:best.thr};
+}
+
+// --- Stage A: crack-path prediction (INRIA Eq.1-4 walked along a tip) -------------------
+// Crack-tip neighbourhood average (Dequidt section 4.3): a single element under-estimates the
+// tip stress on a coarse mesh, so average over a disc around the tip. Averaging PRINCIPAL
+// VALUES would be wrong (neighbours have different principal axes), so rebuild each
+// neighbour's tensor from (s1, s2, theta), average the COMPONENTS, then re-extract.
+function tensorAvg(x, y, rad){
+  if(!cur||!cur.s2) return null;
+  const near=elemsNear(x,y,rad);
+  let wxx=0,wyy=0,wxy=0,wsum=0,n=0;
+  for(const k of near){
+    const ar=cur.aratio[k]; if(degenerate(ar)) continue;      // garbage stress, skip
+    const th=cur.ang[k]*Math.PI/180, c=Math.cos(th), s=Math.sin(th);
+    const s1v=cur.s1[k], s2v=cur.s2[k];
+    const dx=cents[k][0]-x, dy=cents[k][1]-y;
+    const w=1/(1+Math.hypot(dx,dy)/Math.max(rad,1e-9));      // distance weighting
+    wxx += w*(s1v*c*c + s2v*s*s);
+    wyy += w*(s1v*s*s + s2v*c*c);
+    wxy += w*((s1v-s2v)*s*c);
+    wsum += w; n++;
+  }
+  if(!n||wsum<=0) return null;
+  const sxx=wxx/wsum, syy=wyy/wsum, sxy=wxy/wsum;
+  const mid=0.5*(sxx+syy), dev=Math.sqrt(Math.max(((sxx-syy)*0.5)**2+sxy*sxy,0));
+  return {s1:mid+dev, s2:mid-dev,
+          ang:0.5*Math.atan2(2*sxy, sxx-syy)*180/Math.PI, n:n};
+}
+// argmax-c at an arbitrary point (same Eq.1-4 as inriaC, but on the averaged tensor and with
+// the fiber taken from the point's own azimuth). heading = current crack direction as a
+// VECTOR; the Eq.2 history term H forbids turning more than pathTurnMax from it, which is
+// what stops the path doubling back on itself.
+function argmaxCAt(x, y, heading){
+  const T0=tensorAvg(x,y,pathRadius); if(!T0) return null;
+  const fibA=(Math.atan2(y,x)*180/Math.PI+90);
+  const sT=tearThr>0?tearThr:1.0, sL=sT*fibRatio;
+  const evalC=(a)=>{
+    const thu=a+90, ps=(thu-T0.ang)*Math.PI/180, cp=Math.cos(ps);
+    const su=T0.s1*cp*cp + T0.s2*(1-cp*cp);
+    if(su<=0) return -1;
+    let df=Math.abs(thu-fibA)%180; if(df>90) df=180-df;
+    return su/(sT+(sL-sT)*Math.pow(1-df/90,fibAlpha));
+  };
+  // candidate crack LINES resolve to the vector closest to the heading; reject turns beyond
+  // pathTurnMax (Eq.2's H(d.p - cos theta_P)).
+  const ok=(a)=>{
+    if(!heading) return true;
+    let vx=Math.cos(a*Math.PI/180), vy=Math.sin(a*Math.PI/180);
+    if(vx*heading[0]+vy*heading[1] < 0){ vx=-vx; vy=-vy; }
+    return Math.acos(Math.min(1,Math.max(-1,vx*heading[0]+vy*heading[1])))*180/Math.PI <= pathTurnMax;
+  };
+  let bc=-1, ba=0;
+  for(let a=0;a<180;a+=3){ if(!ok(a)) continue; const c=evalC(a); if(c>bc){ bc=c; ba=a; } }
+  if(bc<0) return null;
+  let half=3.0;
+  for(let p=0;p<6;p++){ half*=0.5;
+    for(const a of [ba-half, ba+half]){ if(!ok(a)) continue; const c=evalC(a); if(c>bc){ bc=c; ba=a; } } }
+  let vx=Math.cos(ba*Math.PI/180), vy=Math.sin(ba*Math.PI/180);
+  if(heading && vx*heading[0]+vy*heading[1] < 0){ vx=-vx; vy=-vy; }
+  return {c:bc, ang:ba, dir:[vx,vy], s1:T0.s1, n:T0.n};
+}
+// Walk a predicted crack from the most tear-prone element, one tip step at a time.
+function crackPath(){
+  const key = (cur?cur.i:-1)+":"+viewTake+":"+tearThr+":"+fibRatio+":"+fibAlpha+":"+pathRadius+":"+pathTurnMax;
+  if(pathCache.key===key) return pathCache;
+  pathCache={key, pts:[], info:null};
+  if(!cur||!cur.s2||!grid||tearThr<=0) return pathCache;
+  // nucleate: the healthy element with the highest c (Eq.1 with no history term yet)
+  let bi=-1, bc=0;
+  for(let k=0;k<tris.length;k++){
+    if(degenerate(cur.aratio[k])) continue;
+    if(cur.s1[k] < tearThr) continue;              // c <= s1/sT, cheap prefilter
+    const r=inriaC(k); if(r.c>bc){ bc=r.c; bi=k; }
+  }
+  if(bi<0||bc<1) { pathCache.info={nucleated:false, cmax:bc}; return pathCache; }
+  let p=[cents[bi][0],cents[bi][1]];
+  const r0=inriaC(bi);
+  let heading=[Math.cos(r0.ang*Math.PI/180), Math.sin(r0.ang*Math.PI/180)];
+  const pts=[p.slice()]; let steps=0, stop="maxSteps";
+  for(; steps<pathMaxSteps; steps++){
+    const r1=argmaxCAt(p[0],p[1],heading);
+    if(!r1){ stop="left the mesh"; break; }
+    if(r1.c<1){ stop="c < 1 (stops tearing)"; break; }
+    // MIDPOINT (RK2): stepping straight along the tangent leaves a curved path every step
+    // (on a circle of radius R a step s adds s^2/2R), which measured as a 2.07 radius drift
+    // over 400 steps and looked like the criterion failing when it was integration error.
+    // Re-evaluating at the half-step and using that direction makes the error O(s^3):
+    // verified, a radial field with concentric fibers now holds radius to 0.000 over 3 turns.
+    const mid=[p[0]+r1.dir[0]*pathStep*0.5, p[1]+r1.dir[1]*pathStep*0.5];
+    const r2=argmaxCAt(mid[0],mid[1],r1.dir);
+    heading=(r2&&r2.c>=1)?r2.dir:r1.dir;
+    p=[p[0]+heading[0]*pathStep, p[1]+heading[1]*pathStep];
+    if(Math.hypot(p[0],p[1])>bounds.maxx*1.02){ stop="reached the rim"; break; }
+    pts.push(p.slice());
+  }
+  pathCache.pts=pts;
+  pathCache.info={nucleated:true, cmax:bc, startTri:bi, steps:pts.length-1, stop};
+  return pathCache;
 }
 
 function draw(){
@@ -388,6 +533,29 @@ function draw(){
     }
     document.getElementById("tearCount").textContent =
       n ? (n+" tris tear"+(canInria?" · INRIA":"")) : "none tear (lower σ̄_T)";
+  }
+  // --- predicted crack path (Stage A) -------------------------------------------------
+  if(pathOn && have && tearThr>0){
+    const P=crackPath();
+    if(P.pts.length>1){
+      ctx.beginPath();
+      for(let i=0;i<P.pts.length;i++){
+        const s=toScreen(P.pts[i][0],P.pts[i][1]);
+        if(i===0) ctx.moveTo(s[0],s[1]); else ctx.lineTo(s[0],s[1]);
+      }
+      ctx.strokeStyle="#000"; ctx.lineWidth=6*dpr/2; ctx.stroke();      // halo for contrast
+      ctx.strokeStyle="#ffe14a"; ctx.lineWidth=3*dpr/2; ctx.stroke();   // the path
+      const s0=toScreen(P.pts[0][0],P.pts[0][1]);
+      ctx.beginPath(); ctx.arc(s0[0],s0[1],5*dpr/2,0,6.284);
+      ctx.fillStyle="#ffe14a"; ctx.fill();                              // nucleation point
+      const sN=toScreen(P.pts[P.pts.length-1][0],P.pts[P.pts.length-1][1]);
+      ctx.beginPath(); ctx.arc(sN[0],sN[1],4*dpr/2,0,6.284);
+      ctx.strokeStyle="#ffe14a"; ctx.lineWidth=2*dpr/2; ctx.stroke();   // current tip
+    }
+    const el=document.getElementById("pathInfo");
+    if(el) el.textContent = !P.info ? "—"
+      : (P.info.nucleated ? `${P.info.steps} steps · stop: ${P.info.stop}`
+                          : `no nucleation (max c = ${P.info.cmax.toFixed(2)} < 1)`);
   }
   drawLegend();
 }
@@ -618,6 +786,12 @@ document.getElementById("fibRatio").addEventListener("input",e=>{ fibRatio=parse
   document.getElementById("fibRatioVal").textContent=fibRatio.toFixed(1); });
 document.getElementById("fibAlpha").addEventListener("input",e=>{ fibAlpha=parseFloat(e.target.value);
   document.getElementById("fibAlphaVal").textContent=fibAlpha; });
+document.getElementById("pathOn").onchange=e=>{ pathOn=e.target.checked;
+  document.getElementById("pathctl").style.display = pathOn?"block":"none"; };
+document.getElementById("pathRad").addEventListener("input",e=>{ pathRadius=parseFloat(e.target.value);
+  document.getElementById("pathRadVal").textContent=pathRadius.toFixed(2); });
+document.getElementById("pathTurn").addEventListener("input",e=>{ pathTurnMax=parseFloat(e.target.value);
+  document.getElementById("pathTurnVal").textContent=pathTurnMax+"°"; });
 document.getElementById("helpBtn").onclick=()=>document.getElementById("help").classList.add("show");
 document.getElementById("helpClose").onclick=()=>document.getElementById("help").classList.remove("show");
 document.getElementById("help").onclick=e=>{ if(e.target.id==="help") e.target.classList.remove("show"); };
