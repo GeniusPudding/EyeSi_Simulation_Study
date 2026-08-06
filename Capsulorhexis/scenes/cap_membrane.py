@@ -436,6 +436,7 @@ def _stress_build_frame(i, step, t, s1, s2, sdir, aratio):
     return _json.dumps({
         "i": i, "step": int(step), "t": round(float(t), 3),
         "gver": _STRESS_GEOM_VER,        # topology version these arrays belong to
+        "tear": dict(_TEAR_STATE),       # live tearing status for the viewer
         "s1": np.round(s1, 1).tolist(),
         "s2": np.round(s2, 1).tolist(),
         "ang": np.round(ang, 1).tolist(),
@@ -445,6 +446,10 @@ def _stress_build_frame(i, step, t, s1, s2, sdir, aratio):
 
 
 _STRESS_GEOM_VER = 0
+# Live tearing telemetry, mirrored into every frame so the browser can SHOW whether tearing
+# is even enabled and how close the tip is to the criterion. Without this the only way to
+# tell "-Tear was not passed" from "the threshold is too high" was reading the console.
+_TEAR_STATE = {"on": False, "len": 0, "c": 0.0, "thr": 0.0, "tipr": 0.0, "why": "off"}
 
 
 def _publish_geometry(rest, tris):
@@ -1172,6 +1177,10 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 S1, S2, th1 = S
                 fib = np.degrees(np.arctan2(P[tip][1], P[tip][0])) + 90.0   # concentric fibers
                 c, d = self._argmax_c(S1, S2, th1, fib, self.crack_dir)
+                _TEAR_STATE.update(on=True, len=len(self.crack), c=round(float(c), 2),
+                                   thr=TEAR_THRESH,
+                                   tipr=round(float(np.hypot(P[tip][0], P[tip][1])), 2),
+                                   why="tearing" if c >= 1.0 else "c<1: pull harder near the tip")
                 if c < 1.0:
                     return                                   # not tearing right now
                 self.crack_dir = d
@@ -1933,6 +1942,16 @@ def createScene(root):
                 _tris.append(_idx)
         _publish_geometry(_verts, _tris)      # versioned; republished after every tear split
         _start_stress_server(STRESS_UI_PORT, STRESS_UI_OPEN)
+
+    # Say plainly whether the mesh can tear. Running -Heatmap without -Tear looks exactly
+    # like broken tearing (the membrane just deforms), so do not leave it implicit.
+    if CAP_TEAR:
+        print(f"[Tear] ENABLED: sigma_bar_T={TEAR_THRESH:g} fiberRatio={TEAR_FIB_RATIO:g} "
+              f"alpha={TEAR_FIB_ALPHA:g} turn<={TEAR_TURN_MAX:g}deg")
+    else:
+        print("[Tear] DISABLED -- the mesh will only DEFORM, it cannot tear.\n"
+              "       Add -Tear to the launcher (e.g. run_cap.ps1 -Tear -Heatmap) "
+              "or set CAP_TEAR=1.")
 
     cap.addObject(_make_controller(fem, springs, bending, mo, adhesion, pull,
                                    _mouse, _damper, topo, _display, _camera, root,

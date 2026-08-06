@@ -674,7 +674,14 @@ function updateHud(){
     `peak σ₁  <b>${cur.smax.toFixed(1)}</b>  (p98 <b>${(cur.sp98!=null?cur.sp98:cur.smax).toFixed(0)}</b>)\n`+
     `scale    0 … <b>${scaleTop.toFixed(0)}</b>  (${scaleMode==="fixed"?"fixed":"auto=p98"})\n`+
     `frame    <b>${viewTake>=0?curIdx:cur.i}</b> / ${takeRange().last}`+
-    (viewTake>=0?`   <b>take ${viewTake}</b>`:``);
+    (viewTake>=0?`   <b>take ${viewTake}</b>`:``)+
+    // real-tearing status, straight from the scene: makes "-Tear was not passed" obvious
+    // instead of looking like broken tearing.
+    (cur.tear ? (cur.tear.on
+      ? `\n<b style="color:#ffe14a">TEAR</b>  crack <b>${cur.tear.len}</b> tip r <b>${cur.tear.tipr}</b>`+
+        `  c <b>${cur.tear.c}</b>/1  σ̄_T ${cur.tear.thr}\n         ${cur.tear.why}`
+      : `\n<b style="color:#ff7d72">TEAR OFF</b> — 只會變形不會裂;用 run_cap.ps1 <b>-Tear</b>`)
+     : ``);
 }
 function updateTimeline(){
   const rng=takeRange();
