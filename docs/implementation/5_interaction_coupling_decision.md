@@ -81,15 +81,22 @@ F = MOUSE_STIFFNESS × (游標離抓點的距離)      ← 距離沒有上限 �
 | 囊膜三角、水晶體四面體、IOL 殼 | **co-rotational** | Marchal 2009 / Dequidt 2013 原文 |
 | 時間積分 | 隱式,**dt = 0.01 s** | Dequidt 2013 原文 |
 | 線性解 | matrix-free GPU-CG(K 從不組裝) | Marchal 2009 / Dequidt 2013 原文 |
-| **器械 ↔ 組織的耦合** | **摩擦接觸回應:Saupin contact-warping**(為 co-rotational 設計、含摩擦) | Comas 2010 殼模型 / IOL 置入段 |
+| **器械 ↔ 組織的耦合** | **接觸回應:Saupin _contact-warping_**(接觸力分配、含摩擦,為 co-rotational 設計) | Dequidt 2013 §5.2.3(Saupin [24]);shell FEM 為 Dequidt 自家、非 Comas |
 | **器械本身** | **IR 光學追蹤的剛體**(6 台相機、每器械 4 反光標記、VRPN);Dequidt **明確否決力回饋觸覺筆** | Dequidt 2013 原文 |
 | 條件數 | 非同步預條件子(軟硬不均組織收斂慢的解法) | **Courtecuisse 2010**(非 Dequidt) |
 
-**決定性差異:INRIA 從來不用「一根無上限的橡皮筋去抓住一個節點」。**
+**差異:INRIA 不用「一根無上限的橡皮筋去抓住一個節點」。** 他們的器械是**位置由追蹤決定的
+剛體**,組織透過**接觸回應**與之互動。
 
-他們的器械是**位置由追蹤決定的剛體**,組織透過**約束式的摩擦接觸**回應。約束求解器算出的是「要讓組織不穿透器械,恰好需要多少力」——這個力**天生有界且自洽**,不會出現一步注入巨大衝量的情況。
-
-> 換句話說:**co-rotational 的翻面弱點確實內在存在,但 INRIA 的策略是「不要把元素逼到翻面」,而不是「修好翻面之後的行為」。**
+> ⚠️ **原文校正(2026,回 Dequidt 2013 原文核對)。** 本節原本把 INRIA 的接觸寫成「**約束式的
+> 摩擦接觸 / 約束求解器算出恰好的有界力**」——**這是過度詮釋,原文沒有這樣說**。Dequidt 2013 §5.2.3
+> 實際用的是 **Saupin *contact-warping*(接觸力分配法,為 co-rotational 設計、含摩擦)**,原文描述是
+> 「把接觸的法向力分配成三節點的力與力矩」(force/torque distribution),**全篇沒有 LCP / Signorini /
+> Lagrange / 約束求解器 / FreeMotionAnimationLoop**。而且論文把**穩定性**歸給:**隱式積分**(§3.2.1
+> 「stable simulation even when subjected to challenging interactions」)+ **對硬又輕的 IOL 改用直接
+> 解算器**(§5.2.4「high stiffness and low mass … a direct sparse solver … more stable」)+ **dt=0.01**
+> —— **不是「有界接觸力」**。所以「INRIA 靠約束式接觸避免爆炸」這條推論,原文不支持;§6 的實測也另從
+> 反面推翻它(見下)。詳細原文核對見 [`reference/8`](../reference/8_inria_implementation_deepread.md)。
 
 ---
 
@@ -98,7 +105,7 @@ F = MOUSE_STIFFNESS × (游標離抓點的距離)      ← 距離沒有上限 �
 | 面向 | 本 repo 現況 | INRIA | 差距是否致命 |
 |---|---|---|---|
 | 膜的力學 | mass-spring(被迫放棄 FEM) | co-rotational FEM | ⚠️ 失去應力場的物理基礎 |
-| **器械耦合** | **懲罰彈簧,力無上限** | **約束式摩擦接觸** | 🔴 **這是爆炸的根源** |
+| **器械耦合** | **懲罰彈簧,力無上限** | **Saupin contact-warping**(接觸力分配,非約束求解器) | ⚠️ 原標「爆炸根源」,§6 已推翻(運動學拉扯也爆) |
 | 器械表示 | 滑鼠游標 | IR 追蹤的剛體 | 🟡 研究用途可接受 |
 | 時間步 | dt = 0.02 s | dt = 0.01 s | 🟡 次要 |
 | 預條件子 | 無 | 非同步(Courtecuisse) | 🟡 效能/收斂,非穩定性根因 |
@@ -108,7 +115,11 @@ F = MOUSE_STIFFNESS × (游標離抓點的距離)      ← 距離沒有上限 �
 
 ## 5. 我們還缺什麼(三件事,彼此獨立)
 
-### 5.1 約束式接觸(最高優先)
+### 5.1 約束式接觸(~~最高優先~~ **已被 §6 推翻,見下**)
+
+> ⚠️ **先讀 §6。** 本節原本主張「約束式接觸是針對爆炸根源、最該先做的改動」。**這個推論已被 §6 的
+> 實測推翻**(運動學腳本拉扯——最極致的有界耦合——照樣爆),也與原文不符(§3 校正:INRIA 用的是
+> contact-warping、穩定性來自隱式+直接解算器)。保留本節僅為記錄推理過程;**不要**為了穩定去做它。
 
 把「懲罰彈簧抓取」換成**約束式耦合**:`FreeMotionAnimationLoop` + 約束求解器(LCP / `GenericConstraintSolver`)+ 膜上的 `ConstraintCorrection`。
 

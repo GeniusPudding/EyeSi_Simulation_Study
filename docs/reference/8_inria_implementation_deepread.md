@@ -185,7 +185,7 @@ d_fracture = argmax_d c
 
 **Phaco**:抽吸(尖端球形體積把粒子加人工力拉向尖端)+ 乳化(移除四面體)+ **Projected Tetrahedra** GPU 體積渲染(算光沿深度衰減;移除物質→更多光透出 = 避免推太深穿破後囊的視覺線索)。
 
-**IOL 置入(最複雜接觸,Comas 2010 殼模型)**:
+**IOL 置入(最複雜接觸)**:[校正] shell 模型是 **Dequidt 2013 §5 自家的** shell FEM(平面應力+彎曲能疊加、建在 co-rotational [Felippa] 上);原文未把它歸給「Comas 2010」,此處先前的歸屬存疑。
 - **殼元素** = 平面應力(膜)能 + 彎曲能疊加 + co-rotational。彎曲用 **9 DOF 三次多項式板**:
 ```
 uz = c1 + c2x + c3y + c4x² + c5xy + c6y² + c7x³ + c8xy² + c9y³           (Eq.5)
