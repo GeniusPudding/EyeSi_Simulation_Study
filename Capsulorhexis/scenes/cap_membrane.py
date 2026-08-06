@@ -117,9 +117,18 @@ PEEL_FRONT_ONLY = os.environ.get("CAP_PEEL_FRONT", "1") == "1"
 PEEL_RATE = int(os.environ.get("CAP_PEEL_RATE", "9"))
 
 # --- scripted pull (demo without a mouse; off by default) ---------------------
-SCRIPTED_PULL = False
-PULL_END_T = 6.0
-PULL_MOVE = [1.5, 0.0, 3.0]   # lift the +x rim up and outward to peel
+# Env-driven so a headless run can reproduce the SAME pull twice: CAP_SCRIPTED_PULL=1 with
+# `runSofa -g batch -n N` gives deterministic A/B numbers (see diag_last.csv) without a hand
+# on the mouse -- the only honest way to compare stability/peel tuning. (These knobs were
+# lost as collateral in revert a432f1f, which reverted a peel change that happened to share
+# its commit; they are test harness only and change no physics.)
+SCRIPTED_PULL = os.environ.get("CAP_SCRIPTED_PULL", "0") == "1"
+# Tunable so the harness can sweep from a gentle pull to a violent yank: a mouse drag is far
+# harsher than the 6 s default -- the cursor can jump the target several units in ONE step,
+# which is what actually triggers the snap.
+PULL_END_T = float(os.environ.get("CAP_PULL_END_T", "6.0"))
+PULL_MOVE = [float(v) for v in
+             os.environ.get("CAP_PULL_MOVE", "1.5,0.0,3.0").split(",")]   # +x rim up/out
 
 ENABLE_MOUSE = True
 # Self-collision would let a folded flap rest ON the membrane instead of passing
@@ -1392,7 +1401,7 @@ def createScene(root):
     root.gravity = [0.0, 0.0, GRAVITY_Z]
     # dt = 0.02 on purpose: implicit Euler's numerical dissipation scales with dt,
     # so a SMALLER step is measurably MORE explosive under a hard yank. Keep it.
-    root.dt = 0.02
+    root.dt = float(os.environ.get("CAP_DT", "0.02"))
     # one collapsible node for the ~20 RequiredPlugin entries (GUI tidiness)
     _plugins = root.addChild("RequiredPlugins")
     for name in PLUGINS:
@@ -1449,7 +1458,13 @@ def createScene(root):
     # matrix, so any k is stable at any dt; explicit would need w*dt < 2 and this
     # mesh runs at w*dt ~ 9-16. Rayleigh terms = uniform numerical damping (rK*K
     # kills high-frequency mesh modes, rM*M calms drift).
-    cap.addObject("EulerImplicitSolver", rayleighStiffness=0.2, rayleighMass=0.2)
+    # rayleighStiffness damps HIGH-FREQUENCY modes specifically (the ones this mesh cannot
+    # resolve: omega = sqrt(k/m) ~ 172 rad/s = 1.8 steps per period at dt=0.02), so it is the
+    # lever aimed straight at the pull-snap, without the sluggishness of raising global
+    # damping. Env-tunable for measured sweeps: CAP_RAYLEIGH_K / CAP_RAYLEIGH_M / CAP_DT.
+    cap.addObject("EulerImplicitSolver",
+                  rayleighStiffness=float(os.environ.get("CAP_RAYLEIGH_K", "0.2")),
+                  rayleighMass=float(os.environ.get("CAP_RAYLEIGH_M", "0.2")))
     # CG solves that system MATRIX-FREE: each iteration asks for one product
     # (M - h*B - h^2*K)*p, computed by a scene traversal (addMdx + addDForce) --
     # the matrix is never assembled. 30 iterations suffice at this condition
@@ -1462,7 +1477,8 @@ def createScene(root):
     cap.addObject("TriangleSetGeometryAlgorithms", template="Vec3d")
 
     mo = cap.addObject("MechanicalObject", name="Mo", src="@../loader")
-    cap.addObject("DiagonalMass", massDensity=1.0)
+    cap.addObject("DiagonalMass",
+                  massDensity=float(os.environ.get("CAP_MASS", "1.0")))
 
     # FEM only when USE_MASS_SPRING is off. Optim variant: bakes 1/area from the
     # REST mesh (no divide-by-zero on a collapsed current triangle) and takes

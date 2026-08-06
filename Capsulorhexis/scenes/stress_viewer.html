@@ -401,15 +401,19 @@ function updateInsp(){
         ? "裂縫沿圓繞 → 收成完整圓孔 = CCC 成功。The tear circles back = a clean round opening."
         : ang>60 ? "裂縫朝外緣直衝 → 逃到囊袋周邊、無法控制(Argentinian flag),CCC 最典型的失敗。"
         : "介於兩者:裂縫正偏離圓周、往外傾斜 — 再偏下去就變徑向。Drifting toward radial.";
-    cls = `${verdict}<div class="note">crack vs 圓周 = <b>${ang.toFixed(0)}°</b> `+
-          `<span style="color:#4b5b6a">(0–30 好 · 30–60 警訊 · 60–90 危險)</span></div>`+
+    cls = `${verdict}<div class="note">crack vs 圓周 = <b>${ang.toFixed(0)}°</b> — `+
+          `<b>相對角</b>(對這格自己的圓周方向,非 x 軸)· RELATIVE to this element's own `+
+          `circumferential dir</div>`+
+          `<div class="note"><span style="color:#4b5b6a">分級 0–30 好 · 30–60 警訊 · 60–90 危險 `+
+          `— 均分三等份的<b>判讀慣例</b>,非論文定義(端點才有物理意義:0=純圓周, 90=純徑向)`+
+          `</span></div>`+
           `<div class="note">${why}</div>`; }
   let inriaHtml="";
   if(tearMode==="inria" && tearThr>0 && cur.s2 && cur.s2.length===tris.length && !degenerate(ar)){
     const r=inriaC(k);
     inriaHtml=`<div class="cls"><div class="note" style="color:#8fd0ff">INRIA argmax-c(Dequidt Eq.1–4)</div>`+
       row("argmax d 最想裂的裂向", r.ang.toFixed(0)+"°",
-          "搜尋 36 個候選方向後 c 最大的那個")+
+          "<b>絕對角</b>(+x 起)· 搜尋 36 個候選方向後 c 最大的那個")+
       row("σ_u 開裂張力 @argmax", r.su.toFixed(1),
           "沿裂向的垂直方向 u=d+90° 把裂縫拉開的正向應力 (Eq.3)")+
       row("σ̄_u 方向強度 @argmax", r.thr.toFixed(1),
@@ -427,8 +431,10 @@ function updateInsp(){
        : `tri ${k} — click to 📌 pin 點一下釘選`}</div>`+
     row("σ₁ max principal 最大主應力", v.toFixed(1), "這格被拉最緊方向上的張力 = 熱圖顏色")+
     row("σ₂ min principal 最小主應力", cur.s2?cur.s2[k].toFixed(1):"–", "垂直方向的張力 (負=受壓)")+
-    row("σ₁ dir 主應力方向", cur.ang[k].toFixed(0)+"°", "拉最緊的方向 (盤面角度)")+
-    row("fiber 纖維方向", fibAng?fibAng[k].toFixed(0)+"°":"–", "同心纖維 = 切線方向")+
+    row("σ₁ dir 主應力方向", cur.ang[k].toFixed(0)+"°",
+        "<b>絕對角</b>:從畫面 +x 軸(右)逆時針,mod 180° · ABS from +x")+
+    row("fiber 纖維方向", fibAng?fibAng[k].toFixed(0)+"°":"–",
+        "<b>絕對角</b>:同心纖維 = 切線 = 方位角+90° · ABS from +x")+
     row("r 半徑", rr.toFixed(2), "離圓心距離 (外緣≈6.9)")+
     row("areaRatio 面積比", ar.toFixed(2), "現在/原本面積;≈1 健康, >4 或 <0.25 退化")+
     `<div class="cls"><div class="row"><span class="k">crack ⊥σ₁ 預測裂向</span></div>${cls}</div>`+
