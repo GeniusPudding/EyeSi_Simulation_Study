@@ -86,6 +86,17 @@
   <div class="lab"><span>0</span><span id="lgMid"></span><span id="lgMax">σ₁</span></div>
 </div>
 
+<div id="tearctl" class="panel" style="position:fixed;top:56px;right:12px;width:236px">
+  <div class="cap2"><label style="cursor:pointer;color:#e6b8e0">
+    <input type="checkbox" id="tearOn"> ⚡ tear threshold σ_thr · 撕裂門檻</label></div>
+  <input id="tearThr" type="range" min="0" max="800" value="150" step="5"
+         style="width:100%;accent-color:#ff35c8">
+  <div class="lab"><span>σ_thr = <b id="tearVal" style="color:#ff8fe0">150</b></span>
+       <span id="tearCount" style="color:#8aa0b4">off</span></div>
+  <div class="cap2" style="margin-top:2px;color:#7d8fa0">σ₁ ≥ σ_thr → would tear here (Rankine);
+  white line = crack direction (⊥σ₁). 超過門檻的格會裂,白線=裂縫方向。</div>
+</div>
+
 <div id="tip" class="panel"></div>
 
 <div id="tl" class="panel">
@@ -171,6 +182,7 @@ let meta={count:0,first:0,last:-1,n:0};
 let following=true, playing=false, curIdx=-1, prevCount=0;
 const cache=new Map();           // idx -> frame
 let scaleMode="auto", showWire=false, hover=-1, mouse=null, miss=0;
+let showTear=false, tearThr=150;      // Rankine tear criterion: sigma1 >= tearThr -> breaks
 let scaleTop=300, dpr=Math.min(window.devicePixelRatio||1,2), T=null;
 
 const STOPS=[[42,70,150],[38,140,190],[70,185,115],[235,200,64],[217,46,38]];
@@ -237,6 +249,24 @@ function draw(){
     ctx.beginPath(); ctx.setLineDash([5,4]);
     ctx.moveTo(ce[0]+d[1]*L,ce[1]+d[0]*L); ctx.lineTo(ce[0]-d[1]*L,ce[1]-d[0]*L);
     ctx.strokeStyle="#ff5b4d"; ctx.lineWidth=2; ctx.stroke(); ctx.setLineDash([]); }
+  // --- tear criterion (isotropic Rankine): mark every healthy triangle whose sigma1 has
+  // reached the threshold as "would tear", and draw its crack direction (perpendicular to
+  // sigma1). This is c = sigma1/sigma_thr >= 1; for our disc, argmax direction = perp-sigma1.
+  if(showTear && have){
+    let n=0; const L=8*dpr;
+    for(let k=0;k<tris.length;k++){
+      if(degenerate(ar[k]) || s1[k] < tearThr) continue;
+      n++;
+      const [a,b,c]=tris[k];
+      const A=toScreen(verts[a][0],verts[a][1]),B=toScreen(verts[b][0],verts[b][1]),C=toScreen(verts[c][0],verts[c][1]);
+      ctx.beginPath(); ctx.moveTo(A[0],A[1]); ctx.lineTo(B[0],B[1]); ctx.lineTo(C[0],C[1]); ctx.closePath();
+      ctx.strokeStyle="rgba(255,53,200,.85)"; ctx.lineWidth=1.2; ctx.stroke();
+      const ce=toScreen(cents[k][0],cents[k][1]), d=dirOf(k);   // crack runs perp to sigma1
+      ctx.beginPath(); ctx.moveTo(ce[0]+d[1]*L,ce[1]+d[0]*L); ctx.lineTo(ce[0]-d[1]*L,ce[1]-d[0]*L);
+      ctx.strokeStyle="#fff"; ctx.lineWidth=1.5; ctx.stroke();
+    }
+    document.getElementById("tearCount").textContent = n ? (n+" tris would tear") : "none above σ_thr";
+  }
   drawLegend();
 }
 function drawLegend(){ const lg=document.getElementById("lg"),g=lg.getContext("2d");
@@ -345,6 +375,10 @@ document.getElementById("playBtn").onclick=()=>{ if(following) goReview(meta.fir
 seek.addEventListener("input",()=>{ goReview(parseInt(seek.value)); });
 document.getElementById("scaleBtn").onclick=e=>{ scaleMode=scaleMode==="auto"?"fixed":"auto"; e.target.textContent="Scale: "+scaleMode; };
 document.getElementById("wireBtn").onclick=e=>{ showWire=!showWire; e.target.classList.toggle("on",showWire); };
+document.getElementById("tearOn").onchange=e=>{ showTear=e.target.checked;
+  if(!showTear) document.getElementById("tearCount").textContent="off"; };
+document.getElementById("tearThr").addEventListener("input",e=>{ tearThr=parseInt(e.target.value);
+  document.getElementById("tearVal").textContent=tearThr; });
 document.getElementById("helpBtn").onclick=()=>document.getElementById("help").classList.add("show");
 document.getElementById("helpClose").onclick=()=>document.getElementById("help").classList.remove("show");
 document.getElementById("help").onclick=e=>{ if(e.target.id==="help") e.target.classList.remove("show"); };
