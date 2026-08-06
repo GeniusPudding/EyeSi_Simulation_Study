@@ -68,7 +68,11 @@ TEAR_FIB_ALPHA = float(os.environ.get("CAP_TEAR_ALPHA", "2.0"))      # Eq.4 stee
 TEAR_TURN_MAX = float(os.environ.get("CAP_TEAR_TURN", "70"))     # theta_P, max turn per advance
 TEAR_EVERY = int(os.environ.get("CAP_TEAR_EVERY", "3"))          # steps between advances
 TEAR_TIP_RADIUS = float(os.environ.get("CAP_TEAR_RADIUS", "0.6"))    # tip neighbourhood
-TEAR_MAX_ADVANCE = int(os.environ.get("CAP_TEAR_MAXADV", "1"))   # edges per advance (speed cap)
+# Edges the crack may run in ONE opportunity. A real tear is unstable: once the criterion is
+# passed the crack RUNS, it does not creep one element at a time. Advancing a single edge per
+# opportunity made it crawl (~13 edges/s) instead of ripping, so the rate now scales with how
+# far c exceeds 1 -- c=1 gives one edge, a hard pull gives a fast run -- capped here.
+TEAR_MAX_ADVANCE = int(os.environ.get("CAP_TEAR_MAXADV", "8"))
 # Crack-tip stress concentration. A real crack tip carries an r^(-1/2) singularity; linear
 # FEM on a mesh with 0.3-unit elements cannot represent it, so the tip-neighbourhood average
 # UNDER-estimates the driving stress badly -- measured live, the pull zone read sigma1 ~760
@@ -1272,7 +1276,9 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 return
             if self.vtris is None or len(self.vtris) != len(P):
                 self._build_vtris()
-            for _ in range(max(1, TEAR_MAX_ADVANCE)):
+            budget, done = max(1, TEAR_MAX_ADVANCE), 0
+            while done < budget:
+                done += 1
                 P = np.array(self.mo.position.value)
                 tip = self.crack[-1]
                 S = self._tip_stress(P, P[tip][0], P[tip][1])
@@ -1296,6 +1302,9 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                                    why="tearing" if c >= 1.0 else "c<1: pull harder near the tip")
                 if c < 1.0:
                     return                                   # not tearing right now
+                # Unstable propagation: the further past the criterion, the further the crack
+                # runs in this opportunity (c=1 -> 1 edge, c>=8 -> the full budget).
+                budget = min(budget, max(1, int(c)))
                 self.crack_dir = d
                 if not self._advance_to_best_neighbour(P):
                     return
@@ -1366,10 +1375,13 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
 
             # (2) Strain clamp: project over-stretched edges back to MAX_STRETCH x rest
             # (a few relaxation passes; rest lengths cached once).
-            # In tear mode the strain clamp is skipped: it would pull a just-opened cut shut
-            # (the two lips are coincident at birth, and every edge across the crack has a
-            # rest length it must NOT be projected back to).
-            if MAX_STRETCH > 0.0 and not CAP_TEAR:
+            # The strain clamp stays ON in tear mode. It was skipped on the assumption that it
+            # would pull a fresh cut shut -- that was wrong: after a split the two lips are
+            # DIFFERENT vertices with no edge between them, so the clamp cannot close a crack;
+            # it only limits real mesh edges. Skipping it let torn-off strips stretch without
+            # bound into the long spikes seen in the GUI. (edge_rest is invalidated on every
+            # split, so it always re-derives against the current topology.)
+            if MAX_STRETCH > 0.0:
                 if self.edges is None:
                     self._build_edges()
                 if len(self.edges):
