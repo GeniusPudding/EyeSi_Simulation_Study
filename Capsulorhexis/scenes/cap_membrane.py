@@ -646,6 +646,10 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.boundary = None       # mesh-boundary nodes = crack initiation sites
             self.dup_of = {}           # duplicate vertex -> the lip it was split from
             self._visual = None        # rendered skin; must be re-pushed after every split
+            self.rest0 = None          # PRISTINE rest shape for the reference disc. NOT
+                                       # rest_position: plasticity creeps that toward the
+                                       # deformed shape, which was warping the "undeformed"
+                                       # map in the browser. Grows with duplicates only.
             self.crack = None          # vertex path of the tear; last entry is the live tip
             self.crack_dir = None      # current heading (unit xy), for the Eq.2 turn limit
             self.vtris = None          # vertex -> [triangle ids], rebuilt on topology change
@@ -1107,6 +1111,11 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             # remember the pairing: plasticity drifts the rest positions, so after a while
             # a duplicate can no longer be matched back to its lip by geometry alone
             self.dup_of[nv] = int(v)
+            # the reference disc keeps the PRISTINE shape: the duplicate inherits its lip's
+            # original position, so the map stays a clean disc no matter how far the
+            # simulation deforms or how much plasticity has crept
+            if self.rest0 is not None and v < len(self.rest0):
+                self.rest0 = np.vstack([self.rest0, self.rest0[v]])
             self.mo.position.value = np.vstack([P, P[v]]).tolist()
             self.mo.rest_position.value = np.vstack([R, R[v]]).tolist()
             V = np.array(self.mo.velocity.value)
@@ -1163,8 +1172,8 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.tri_idx = self.tri_rest_area = None
             self.last_good = self.last_good_rest = None
             self.prev_pos = None
-            _publish_geometry(np.array(self.mo.rest_position.value),
-                              np.array(self.topo.triangles.value))
+            if self.rest0 is not None:
+                _publish_geometry(self.rest0, np.array(self.topo.triangles.value))
 
         def _tear_seed(self, P):
             """Cystotome puncture: a short radial slit near the centre. Without an initial
@@ -1217,6 +1226,9 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                     self._visual = self.mo.getContext().getChild("Visual").getObject("visual")
                 except Exception:  # noqa: BLE001
                     self._visual = None
+            if self.rest0 is None:
+                # snapshot BEFORE plasticity has had a chance to creep the rest shape
+                self.rest0 = np.array(self.mo.rest_position.value)
             if self.crack is None:
                 self._tear_seed(P)
                 self._tear_reinit()
