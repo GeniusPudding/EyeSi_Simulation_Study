@@ -211,6 +211,10 @@ STRESS_HEAT_MAX = float(os.environ.get("CAP_HEAT_MAX", "300"))
 STRESS_LOG = os.environ.get("CAP_STRESS_LOG", "1") == "1"
 STRESS_LOG_PATH = os.path.join(_HERE, "stress_log.jsonl")
 STRESS_HISTORY = int(os.environ.get("CAP_STRESS_HISTORY", "1500"))   # frames kept for scrub
+# How many FINISHED takes (one per scene reset) stay replayable in the browser. Each holds
+# up to STRESS_HISTORY frames in memory, so keep this small; the JSONL on disk is per-take
+# and unbounded (stress_log_<id>.jsonl), so nothing is lost either way.
+STRESS_SESSIONS_MAX = int(os.environ.get("CAP_STRESS_SESSIONS", "6"))
 
 # --- safety nets (all applied in onAnimateEnd, before the frame is drawn) ------
 # Layered by failure mode; each net is a hard geometric/kinematic bound that no
@@ -370,6 +374,11 @@ _STRESS_LATEST = "{}"
 _STRESS_HISTORY = _collections.deque()
 _STRESS_TOTAL = 0                 # frames ever published (also the next frame's global index)
 _STRESS_LOG_FH = None
+# SESSIONS: each scene reset ends the current recording and starts a new one, instead of
+# throwing the old frames away. _STRESS_SESSIONS holds the finished ones (id, frames, time
+# span) so the browser can pick WHICH pull to replay; _STRESS_SESSION_ID is the live one.
+_STRESS_SESSIONS = []
+_STRESS_SESSION_ID = 0
 
 
 def _stress_build_frame(i, step, t, s1, s2, sdir, aratio):
@@ -410,14 +419,19 @@ def _stress_record(js):
     if STRESS_LOG:
         try:
             if _STRESS_LOG_FH is None:
-                # keep the previous run's recording as .prev so a relaunch never silently
-                # destroys a session you wanted to analyse (the log is otherwise truncated)
-                if os.path.exists(STRESS_LOG_PATH):
-                    try:
-                        os.replace(STRESS_LOG_PATH, STRESS_LOG_PATH + ".prev")
-                    except OSError:
-                        pass
-                _STRESS_LOG_FH = open(STRESS_LOG_PATH, "w", buffering=1)
+                # ONE FILE PER TAKE: stress_log_<session>.jsonl, so a reset never overwrites
+                # the pull you wanted to analyse. stress_log.jsonl stays as a copy of the
+                # newest take for the existing tools/docs that reference that name.
+                if _STRESS_SESSION_ID > 0:
+                    path = STRESS_LOG_PATH.replace(".jsonl", f"_{_STRESS_SESSION_ID}.jsonl")
+                else:
+                    path = STRESS_LOG_PATH
+                    if os.path.exists(path):
+                        try:
+                            os.replace(path, path + ".prev")
+                        except OSError:
+                            pass
+                _STRESS_LOG_FH = open(path, "w", buffering=1)
             _STRESS_LOG_FH.write(js + "\n")
         except Exception:  # noqa: BLE001
             pass           # a disk hiccup must never take down the sim
@@ -454,14 +468,34 @@ def _start_stress_server(port, open_browser):
             try:
                 if self.path.startswith("/stress"):
                     self._send(_STRESS_LATEST.encode(), "application/json")
+                elif self.path.startswith("/sessions"):
+                    # the finished takes (one per scene reset) + the live one, so the page
+                    # can offer "which pull do you want to replay?"
+                    out = [{"id": s["id"], "n": len(s["frames"]),
+                            "t0": s["t0"], "t1": s["t1"], "live": False}
+                           for s in _STRESS_SESSIONS]
+                    out.append({"id": _STRESS_SESSION_ID, "n": len(_STRESS_HISTORY),
+                                "t0": 0.0, "t1": 0.0, "live": True})
+                    self._send(_json.dumps({"sessions": out}).encode(), "application/json")
                 elif self.path.startswith("/meta"):
                     n = len(_STRESS_HISTORY)
                     meta = {"count": _STRESS_TOTAL, "n": n,
-                            "first": _STRESS_TOTAL - n, "last": _STRESS_TOTAL - 1}
+                            "first": _STRESS_TOTAL - n, "last": _STRESS_TOTAL - 1,
+                            "session": _STRESS_SESSION_ID,
+                            "nsessions": len(_STRESS_SESSIONS)}
                     self._send(_json.dumps(meta).encode(), "application/json")
                 elif self.path.startswith("/frame"):
                     q = parse_qs(urlparse(self.path).query)
                     i = int(q.get("i", ["-1"])[0])
+                    sid = q.get("s", [""])[0]
+                    if sid != "" and int(sid) != _STRESS_SESSION_ID:
+                        # frame from an ARCHIVED take: index is 0-based within that take
+                        arc = next((s for s in _STRESS_SESSIONS if s["id"] == int(sid)), None)
+                        if arc and 0 <= i < len(arc["frames"]):
+                            self._send(arc["frames"][i].encode(), "application/json")
+                        else:
+                            self._send(b"{}", "application/json")
+                        return
                     pos = i - (_STRESS_TOTAL - len(_STRESS_HISTORY))
                     if 0 <= pos < len(_STRESS_HISTORY):
                         self._send(_STRESS_HISTORY[pos].encode(), "application/json")
@@ -1561,12 +1595,27 @@ def createScene(root):
     # once, then start the local server the browser page polls. Physics/rendering above
     # are untouched. Geometry is taken from cap.obj so it needs no live SOFA state.
     if STRESS_UI:
-        # Reset any recording state carried over from a previous scene build -- SofaImGui's
-        # "reload scene" re-runs createScene in the SAME process, so without this the
-        # browser would see the old session's frames concatenated with the new one. The
-        # frame counter drops back to 0, which the page detects to reset itself (re-fetch
-        # geometry, clear its cache, return to LIVE). A fresh log run also re-backs-up .prev.
+        # A scene reset ENDS the current recording and starts a new SESSION -- SofaImGui's
+        # "reload scene" re-runs createScene in the same process, so each reload is one pull
+        # take. The finished frames are archived (not discarded) so the browser can choose
+        # which take to replay; the live counter restarts at 0, which the page detects.
         global _STRESS_GEOMETRY, _STRESS_HISTORY, _STRESS_TOTAL, _STRESS_LOG_FH, _STRESS_LATEST
+        global _STRESS_SESSIONS, _STRESS_SESSION_ID
+        if _STRESS_HISTORY:
+            try:
+                _t0 = _json.loads(_STRESS_HISTORY[0]).get("t", 0.0)
+                _t1 = _json.loads(_STRESS_HISTORY[-1]).get("t", 0.0)
+            except Exception:  # noqa: BLE001
+                _t0 = _t1 = 0.0
+            _STRESS_SESSIONS.append({"id": _STRESS_SESSION_ID, "frames": list(_STRESS_HISTORY),
+                                     "t0": _t0, "t1": _t1})
+            # keep memory bounded: a session is up to STRESS_HISTORY frames of ~4000 floats
+            while len(_STRESS_SESSIONS) > STRESS_SESSIONS_MAX:
+                _STRESS_SESSIONS.pop(0)
+            print(f"[StressUI] session {_STRESS_SESSION_ID} archived: "
+                  f"{len(_STRESS_HISTORY)} frames, t {_t0:.2f}..{_t1:.2f}s "
+                  f"(pick it in the browser's take selector)")
+        _STRESS_SESSION_ID += 1
         _STRESS_HISTORY.clear()
         _STRESS_TOTAL = 0
         _STRESS_LATEST = "{}"

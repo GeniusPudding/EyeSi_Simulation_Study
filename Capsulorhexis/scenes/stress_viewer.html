@@ -24,7 +24,7 @@
   #ctrls button.on { background: #2a4258; border-color: #4a6076; color: #bfe4ff; }
   /* timeline */
   #tl { position: fixed; left: 12px; right: 12px; bottom: 12px; padding: 8px 12px 10px;
-        display: grid; grid-template-columns: auto auto 1fr auto; gap: 10px; align-items: center; }
+        display: grid; grid-template-columns: auto auto 1fr auto auto; gap: 10px; align-items: center; }
   #tl button { background: #16212c; color: #dfe6ee; border: 1px solid #2b3a49; border-radius: 6px;
                width: 30px; height: 28px; cursor: pointer; font-size: 13px; }
   #tl button:hover { border-color: #4a6076; }
@@ -124,6 +124,9 @@
   <button id="liveBtn" class="on" title="follow the latest frame (Space)">◉</button>
   <button id="playBtn" title="replay">▶</button>
   <input id="seek" type="range" min="0" max="0" value="0" step="1">
+  <select id="takeSel" title="which recorded pull to replay · 選擇要回放哪一次拉動"
+          style="background:#16212c;color:#dfe6ee;border:1px solid #2b3a49;border-radius:6px;
+                 padding:4px 6px;font-size:12px;max-width:190px"></select>
   <div id="tllab"><span id="liveDot">◉ LIVE</span></div>
 </div>
 
@@ -213,6 +216,9 @@ let verts=null, tris=null, cents=null, radial=null, bounds=null;
 let cur=null;                    // the frame currently displayed {s1,ang,aratio,smax,heatmax,t,i,step}
 let meta={count:0,first:0,last:-1,n:0};
 let following=true, playing=false, curIdx=-1, prevCount=0;
+// Takes: each SOFA scene reset archives the finished recording as a session. takeSel = the
+// one being viewed (-1 = the live one); sessions = what /sessions reported.
+let sessions=[], viewTake=-1, liveSession=0, sessSig="";
 const cache=new Map();           // idx -> frame
 let scaleMode="auto", showWire=false, hover=-1, mouse=null, miss=0;
 let tearThr=0;      // tear threshold sigma_bar_T (0 = off)
@@ -436,24 +442,53 @@ function updateHud(){
     `t        <b>${(cur.t).toFixed(2)}</b> s   step <b>${cur.step}</b>\n`+
     `peak σ₁  <b>${cur.smax.toFixed(1)}</b>  (p98 <b>${(cur.sp98!=null?cur.sp98:cur.smax).toFixed(0)}</b>)\n`+
     `scale    0 … <b>${scaleTop.toFixed(0)}</b>  (${scaleMode==="fixed"?"fixed":"auto=p98"})\n`+
-    `frame    <b>${cur.i}</b> / ${meta.last}`;
+    `frame    <b>${viewTake>=0?curIdx:cur.i}</b> / ${takeRange().last}`+
+    (viewTake>=0?`   <b>take ${viewTake}</b>`:``);
 }
 function updateTimeline(){
-  seek.min=meta.first; seek.max=Math.max(meta.first,meta.last);
-  if(following) seek.value=meta.last;
-  const shown = cur? cur.i : meta.last;
-  if(following){ tllab.innerHTML=`<span id="liveDot">◉ LIVE</span>  ·  frame <b>${shown}</b>  t <b>${cur?cur.t.toFixed(2):"--"}</b>s`; }
-  else { tllab.innerHTML=`<span id="reviewTag">❚❚ REVIEW</span>  ·  frame <b>${shown}</b> / ${meta.last}  t <b>${cur?cur.t.toFixed(2):"--"}</b>s`; }
+  const rng=takeRange();
+  seek.min=rng.first; seek.max=Math.max(rng.first,rng.last);
+  const isLive = viewTake<0 && following;
+  if(isLive) seek.value=rng.last;
+  const shown = cur? (viewTake>=0 ? curIdx : cur.i) : rng.last;
+  const tk = viewTake>=0 ? ` · take <b>${viewTake}</b>` : "";
+  if(isLive){ tllab.innerHTML=`<span id="liveDot">◉ LIVE</span>  ·  frame <b>${shown}</b>  t <b>${cur?cur.t.toFixed(2):"--"}</b>s`; }
+  else { tllab.innerHTML=`<span id="reviewTag">❚❚ REVIEW</span>${tk}  ·  frame <b>${shown}</b> / ${rng.last}  t <b>${cur?cur.t.toFixed(2):"--"}</b>s`; }
   document.getElementById("liveBtn").classList.toggle("on",following);
   document.getElementById("playBtn").textContent=playing?"❚❚":"▶";
 }
 
 async function fetchFrame(i){
-  if(cache.has(i)) return cache.get(i);
-  try{ const f=await jfetch("/frame?i="+i);
-    if(f&&f.s1){ cache.set(i,f); if(cache.size>400){ const first=cache.keys().next().value; cache.delete(first); } return f; } }
+  const key=viewTake+":"+i;                     // cache per take, not just per index
+  if(cache.has(key)) return cache.get(key);
+  const q = viewTake>=0 ? `/frame?s=${viewTake}&i=${i}` : `/frame?i=${i}`;
+  try{ const f=await jfetch(q);
+    if(f&&f.s1){ cache.set(key,f); if(cache.size>400){ const first=cache.keys().next().value; cache.delete(first); } return f; } }
   catch(e){}
   return null;
+}
+function takeRange(){
+  // frame index range of whatever is being viewed: archived takes are 0..n-1, the live
+  // recording uses the global counter window from /meta.
+  if(viewTake>=0){ const s=sessions.find(x=>x.id===viewTake);
+    return {first:0, last:s? s.n-1 : 0}; }
+  return {first:meta.first, last:meta.last};
+}
+function rebuildTakeSel(){
+  const sel=document.getElementById("takeSel");
+  const sig=sessions.map(s=>s.id+"/"+s.n+(s.live?"L":"")).join(",");
+  if(sig===sessSig) return;                     // only rebuild when the list really changed
+  sessSig=sig;
+  sel.innerHTML="";
+  for(const s of sessions){
+    if(!s.live && !s.n) continue;
+    const o=document.createElement("option");
+    o.value = s.live ? "-1" : String(s.id);
+    o.textContent = s.live ? `● take ${s.id} (live 進行中)`
+                           : `take ${s.id} · ${s.n}f · ${s.t0.toFixed(1)}–${s.t1.toFixed(1)}s`;
+    sel.appendChild(o);
+  }
+  sel.value=String(viewTake);
 }
 async function tick(){
   // (1) Ensure geometry FIRST, retrying every tick -- the page no longer blocks on a
@@ -465,22 +500,28 @@ async function tick(){
     catch(e){ deadEl.style.display="grid";
       hud.textContent="waiting for the simulation…\n等待模擬啟動…"; setTimeout(tick, 500); return; }
   }
-  // (2) meta (frame range)
+  // (2) meta (frame range) + the take list
   try{ meta=await jfetch("/meta"); miss=0; deadEl.style.display="none"; }
   catch(e){ if(++miss>6) deadEl.style.display="grid"; setTimeout(tick, 400); return; }
-  // reset detection: the frame counter only grows within a session, so a DROP means the
-  // SOFA scene was reloaded/restarted -> re-fetch geometry, clear cache, snap back to LIVE.
+  try{ const sj=await jfetch("/sessions"); sessions=sj.sessions||[];
+       const lv=sessions.find(s=>s.live); if(lv) liveSession=lv.id; rebuildTakeSel(); }catch(e){}
+  // reset detection: within one take the frame counter only grows, so a DROP means the SOFA
+  // scene was reloaded -> the previous take is now archived (still replayable via the take
+  // selector). Reload geometry, drop the live cache, and follow the NEW take.
   if(meta.count < prevCount){
-    verts=null; cache.clear(); cur=null; following=true; playing=false; curIdx=-1; pinned=-1;
-    prevCount=0; setTimeout(tick, 30); return;      // reload geometry on the next tick
+    verts=null; cur=null; following=true; playing=false; curIdx=-1; pinned=-1;
+    for(const k of [...cache.keys()]) if(k.startsWith("-1:")) cache.delete(k);
+    if(viewTake<0) sessSig="";                    // force the selector to refresh
+    prevCount=0; setTimeout(tick, 30); return;    // reload geometry on the next tick
   }
   prevCount=meta.count;
   // (3) the frame to show
-  if(following){
+  const rng=takeRange();
+  if(viewTake<0 && following){
     try{ const f=await jfetch("/stress"); if(f&&f.s1){ cur=f; curIdx=f.i; } }catch(e){}
   } else {
-    if(playing){ curIdx++; if(curIdx>meta.last){ curIdx=meta.last; playing=false; } }
-    if(curIdx<meta.first) curIdx=meta.first;
+    if(playing){ curIdx++; if(curIdx>rng.last){ curIdx=rng.last; playing=false; } }
+    if(curIdx<rng.first) curIdx=rng.first;
     const f=await fetchFrame(curIdx); if(f) cur=f;
   }
   // Never let a render error kill the loop (that is what left the page stuck on
@@ -497,11 +538,20 @@ cv.addEventListener("click",()=>{                                   // click = p
   if(hover>=0) pinned = (pinned===hover ? -1 : hover);
   else pinned = -1;                                                 // click empty space clears
 });
-function goLive(){ following=true; playing=false; }
-function goReview(i){ following=false; curIdx=Math.max(meta.first,Math.min(meta.last,i)); }
-document.getElementById("liveBtn").onclick=()=>{ following?goReview(meta.last):goLive(); };
-document.getElementById("playBtn").onclick=()=>{ if(following) goReview(meta.first); playing=!playing; };
+function goLive(){ viewTake=-1; following=true; playing=false;
+  const s=document.getElementById("takeSel"); if(s) s.value="-1"; }
+function goReview(i){ const r=takeRange();
+  following=false; curIdx=Math.max(r.first,Math.min(r.last,i)); }
+document.getElementById("liveBtn").onclick=()=>{
+  (viewTake<0 && following) ? goReview(takeRange().last) : goLive(); };
+document.getElementById("playBtn").onclick=()=>{
+  if(viewTake<0 && following) goReview(takeRange().first); playing=!playing; };
 seek.addEventListener("input",()=>{ goReview(parseInt(seek.value)); });
+document.getElementById("takeSel").addEventListener("change",e=>{
+  const v=parseInt(e.target.value);
+  if(v<0){ goLive(); }
+  else { viewTake=v; following=false; playing=false; curIdx=0; pinned=-1; }
+});
 document.getElementById("scaleBtn").onclick=e=>{ scaleMode=scaleMode==="auto"?"fixed":"auto"; e.target.textContent="Scale: "+scaleMode; };
 document.getElementById("wireBtn").onclick=e=>{ showWire=!showWire; e.target.classList.toggle("on",showWire); };
 document.getElementById("tearThr").addEventListener("input",e=>{ tearThr=parseInt(e.target.value);

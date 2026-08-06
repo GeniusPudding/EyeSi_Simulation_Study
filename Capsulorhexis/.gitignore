@@ -11,3 +11,4 @@ scenes/run_last.log
 # per-session sigma1 field recording (cap_membrane CAP_STRESS_LOG)
 scenes/stress_log.jsonl
 scenes/stress_log.jsonl.prev
+scenes/stress_log_*.jsonl
