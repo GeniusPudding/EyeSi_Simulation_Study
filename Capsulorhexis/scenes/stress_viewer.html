@@ -95,7 +95,10 @@
 <div id="tearctl" class="panel" style="position:fixed;top:56px;right:12px;width:250px">
   <div class="cap2" style="color:#e6b8e0">⚡ tear threshold σ_thr · 撕裂門檻
     <span style="color:#7d8fa0">(0 = off)</span></div>
-  <input id="tearThr" type="range" min="0" max="400" value="0" step="2"
+  <!-- range from measured data (stress_log_1, 460 frames): with degenerates filtered the
+       loaded front sits around p99 ~ 1000, so useful thresholds are ~200-2000; 400 was too
+       low to ever show a narrow front. Log-ish feel via a wide linear range. -->
+  <input id="tearThr" type="range" min="0" max="3000" value="0" step="10"
          style="width:100%;accent-color:#ff35c8">
   <div class="lab"><span>σ_thr = <b id="tearVal" style="color:#ff8fe0">0</b>
        <span id="tearPeak" style="color:#7d8fa0"></span></span>
