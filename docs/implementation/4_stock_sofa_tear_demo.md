@@ -209,32 +209,6 @@ SOFA 的**變形視窗完全不動**,另外把 σ₁ 場透過一個**極簡本�
 > (v25.12 Win64)的 imgui GUI 視覺初始化 SIGABRT(batch 正常、GUI 死),`OglModel` 也未暴露
 > 逐頂點顏色。故改走「SOFA 不動 + 解耦 HTTP + 瀏覽器頁面」這條,一併解掉遮擋與 hover 兩個問題。
 
-### 4.2 真正撕開:stock `TearingEngine`(INRIA Rung 1,可即時調門檻)
-
-`CAP_TEAR=1`(`run_cap.ps1 -Tear`)接上**本 build 內建的 `Tearing` plugin**(InfinyTech3D),它的
-`TearingEngine` 就是 INRIA 各向同性 Rankine 撕裂的 C++ 實作:讀 FEM 逐元素主應力,超過門檻處
-**沿 ⊥σ₁ 真的切開 mesh**(生新頂點、改拓樸)。互動範例的接法照抄:
-
-```
-TriangularFEMForceField ... computePrincipalStress="1"     # 需要 FEM 的主應力
-TearingEngine input_position="@Mo.position" stressThreshold=... step=30
-              nbFractureMax=400 fractureMaxLength=1.5 showFracturePath="1"
-```
-
-- **門檻 `stressThreshold` 是 live Data** → 拉動時可在 GUI(`Cap > Tearing > stressThreshold`)即時調,
-  或用 `CAP_STRESS_THR` / `-Thresh` 開場設。實測本場景(PAPER_YOUNG=1200)的 FEM 應力尺度約數十,
-  猛拉到 ~40+;門檻 5–12 會撕、太高不撕。
-- **要有錨才撕得動**:tear 模式**強制 FEM + 錨住外緣**(`FIX_OUTER_RIM`,對應懸韌帶)。否則滑鼠只會
-  把整片從水晶體剝下、應力建不起來、不會撕(實測腳本拉 rim 撕不動;拉**內部**點頂著錨才撕)。
-- **拓樸改變 vs 我們的安全網**:撕裂會改頂點/三角形數,使控制器所有「逐節點/逐三角形」快取瞬間
-  size 不符 → 會 crash。`_check_topology()` 偵測頂點數變化就丟掉重建;且 tear 模式**跳過會跟切口
-  打架的網**(整片回滾 0、應變夾 2、反塌陷 2b),只留位移/速度夾。實測:mesh 真的撕開
-  (2156→2198 頂點、4166→4250 三角形)且 `animate` 全程不 raise。
-
-> [推論] 這是 INRIA 階梯的 **Rung 1(各向同性)**;`showFracturePath` 畫出切線。尚未做:裂尖鄰域
-> 加權(§4 的「力傳不到裂尖」)、纖維各向異性 argmax-c(維持圓弧)。撕開後瀏覽器熱圖的
-> `/geometry` 會過期(拓樸變了),需另讓它重抓——目前 tear 與瀏覽器熱圖分開用。
-
 ---
 
 ## 5. 做不到什麼、為什麼(這是重點)
