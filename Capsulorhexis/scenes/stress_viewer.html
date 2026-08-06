@@ -259,7 +259,7 @@ function dirOf(k){ const a=cur.ang[k]*Math.PI/180; return [Math.cos(a),Math.sin(
 function inriaC(k){
   const s1v=cur.s1[k], s2v=cur.s2[k], th1=cur.ang[k], thf=fibAng[k];
   const sT=tearThr, sL=tearThr*fibRatio;
-  let best=0, bestA=0;
+  let best=0, bestA=0, bestSu=0, bestThr=sT;
   for(let a=0;a<180;a+=5){
     const thu=a+90;                                        // opening normal
     const ps=(thu-th1)*Math.PI/180, cp=Math.cos(ps);
@@ -268,9 +268,9 @@ function inriaC(k){
     let df=Math.abs(thu-thf)%180; if(df>90) df=180-df;     // fold angle(u,f) to [0,90]
     const thr=sT+(sL-sT)*Math.pow(1-df/90,fibAlpha);
     const c=su/thr;
-    if(c>best){ best=c; bestA=a; }
+    if(c>best){ best=c; bestA=a; bestSu=su; bestThr=thr; }
   }
-  return {c:best, ang:bestA};
+  return {c:best, ang:bestA, su:bestSu, thr:bestThr};
 }
 
 function draw(){
@@ -376,12 +376,19 @@ function updateInsp(){
   let inriaHtml="";
   if(tearMode==="inria" && tearThr>0 && cur.s2 && cur.s2.length===tris.length && !degenerate(ar)){
     const r=inriaC(k);
-    inriaHtml=`<div class="cls">`+
-      row("INRIA c = σ_u/σ̄_u", r.c.toFixed(2))+
+    inriaHtml=`<div class="cls"><div class="note" style="color:#8fd0ff">INRIA argmax-c(Dequidt Eq.1–4)</div>`+
+      row("argmax d 最想裂的裂向", r.ang.toFixed(0)+"°",
+          "搜尋 36 個候選方向後 c 最大的那個")+
+      row("σ_u 開裂張力 @argmax", r.su.toFixed(1),
+          "沿裂向的垂直方向 u=d+90° 把裂縫拉開的正向應力 (Eq.3)")+
+      row("σ̄_u 方向強度 @argmax", r.thr.toFixed(1),
+          "u 與纖維的夾角決定:順纖維 σ̄_L 硬、垂直 σ̄_T 軟 (Eq.4)")+
+      row("c = σ_u / σ̄_u", r.c.toFixed(2), "≥1 就裂 (Eq.1)")+
       `<div class="row"><span class="k">verdict 判定</span><span class="v">`+
-      (r.c>=1?`<span class="bad">tears 裂</span>`:`<span class="good">holds 撐住</span>`)+`</span></div>`+
-      row("argmax crack dir 裂向", r.ang.toFixed(0)+"°",
-          "考慮纖維後「最想裂」的方向 (c 最大)")+`</div>`;
+      (r.c>=1?`<span class="bad">tears 裂</span>`:`<span class="good">holds 撐住</span>`)+`</span></div></div>`;
+  } else if(tearThr>0 && !degenerate(ar)){
+    inriaHtml=`<div class="note" style="margin-top:4px">σ_u / σ̄_u / c(d):按右上 criterion 切到
+      INRIA argmax-c 才會計算顯示 · switch criterion to INRIA to see them</div>`;
   }
   insp.innerHTML = head+
     `<div class="note">${pinned>=0
