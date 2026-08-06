@@ -135,7 +135,10 @@
            style="width:100%;accent-color:#ffe14a">
     <div class="lab"><span id="pathInfo" style="color:#8aa0b4">—</span></div>
     <div class="cap2" style="color:#7d8fa0">從 c 最大的格起裂,沿 argmax d 前進;每步用<b>裂尖鄰域
-    加權平均應力</b>重算方向(Eq.3–4),並限制轉角不超過 θ_P(Eq.2 的 H)。<b>只是預測、不改網格。</b></div>
+    加權平均應力</b>重算方向(Eq.3–4),並限制轉角不超過 θ_P(Eq.2 的 H)。<b>只是預測、不改網格。</b>
+    <br><b style="color:#ffe14a">路徑很短(2–3 點)= 門檻太高</b>:σ₁ 峰值是單一元素尖刺(實測隔壁一格
+    就掉 100 倍),門檻只被孤立尖刺超過時,走一步就掉出熱區。<b>調低門檻</b>讓它落在連通的應力帶上,
+    路徑才會長、其他滑桿才看得出差別。</div>
   </div>
 </div>
 
@@ -797,11 +800,19 @@ document.getElementById("fibRatio").addEventListener("input",e=>{ fibRatio=parse
 document.getElementById("fibAlpha").addEventListener("input",e=>{ fibAlpha=parseFloat(e.target.value);
   document.getElementById("fibAlphaVal").textContent=fibAlpha; });
 document.getElementById("pathOn").onchange=e=>{ pathOn=e.target.checked;
-  // The path needs an absolute threshold to decide c >= 1. Rather than silently doing
-  // nothing when the slider is still at 0 (which just looks broken), pick a sensible one
-  // from the current frame -- p98 of the loaded cells is where the pull front sits.
-  if(pathOn && tearThr<=0 && cur){
-    const auto=Math.max(20, Math.round((cur.sp98!=null?cur.sp98:cur.smax)||100));
+  // The path needs an absolute threshold to decide c >= 1. Auto-pick one so enabling the
+  // checkbox does something. NOT p98: the sigma1 peak is a single-element SPIKE, not a
+  // ridge -- measured on a real recording, the hottest element was 144360 while its
+  // immediate neighbour was 1499 (a 100x cliff in one element width). A p98 threshold is
+  // therefore only exceeded by isolated spikes, so the walk starts on one, steps off it and
+  // stops after 2-3 points -- which is why the path looked frozen and every slider looked
+  // dead. A threshold around p90 of the loaded cells sits on the connected band instead:
+  // at 500 the path was 3 points, at 200 it ran 11 points to the rim.
+  if(pathOn && tearThr<=0 && cur && cur.s1){
+    const pos=[]; for(let k=0;k<cur.s1.length;k++)
+      if(!degenerate(cur.aratio[k]) && cur.s1[k]>0) pos.push(cur.s1[k]);
+    pos.sort((a,b)=>a-b);
+    const auto = pos.length ? Math.max(20, Math.round(pos[Math.floor(pos.length*0.90)])) : 100;
     tearThr=auto;
     const sl=document.getElementById("tearThr"); if(sl) sl.value=String(Math.min(auto,+sl.max));
     document.getElementById("tearVal").textContent=tearThr;
