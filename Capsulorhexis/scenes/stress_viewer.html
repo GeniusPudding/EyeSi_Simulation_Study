@@ -107,21 +107,26 @@
     <button id="modeBtn" style="background:#16212c;color:#dfe6ee;border:1px solid #2b3a49;
       border-radius:6px;padding:3px 9px;cursor:pointer;font-size:12px">criterion: Rankine ⊥σ₁</button>
   </div>
-  <div id="fibctl" style="display:none">
+  <div id="fibctl">
     <div class="lab" style="margin-top:4px"><span>σ̄_L/σ̄_T 纖維強度比</span>
       <b id="fibRatioVal" style="color:#8fd0ff">2.0</b></div>
     <input id="fibRatio" type="range" min="1" max="5" value="2" step="0.1"
            style="width:100%;accent-color:#4aa3ff">
-    <div class="lab"><span>α 尖峰指數</span><b id="fibAlphaVal" style="color:#8fd0ff">2</b></div>
+    <div class="cap2" style="color:#7d8fa0;margin-top:-2px">沿纖維裂多容易 vs 橫切纖維多難。
+      <b>1.0 = 無纖維效果</b>(退回各向同性 Rankine);越大 = 纖維越主導、裂縫越黏著圓周走。</div>
+    <div class="lab" style="margin-top:4px"><span>α 尖峰指數</span>
+      <b id="fibAlphaVal" style="color:#8fd0ff">2</b></div>
     <input id="fibAlpha" type="range" min="1" max="8" value="2" step="0.5"
            style="width:100%;accent-color:#4aa3ff">
+    <div class="cap2" style="color:#7d8fa0;margin-top:-2px">強度峰值有多「尖」。α=1 線性過渡;
+      α 大 = 只有非常接近纖維方向才變硬,其餘方向都接近 σ̄_T(論文的 controllable steepness)。</div>
   </div>
   <div class="cap2" id="tearHint" style="margin-top:2px;color:#7d8fa0">σ₁ ≥ σ_thr → tears here
   (magenta); white line = crack dir (⊥σ₁). 拉高門檻;超過的格染洋紅、白線=裂向。</div>
   <div class="cap2" style="margin-top:7px;border-top:1px solid #24333f;padding-top:6px">
     <label style="cursor:pointer;color:#ffe14a">
       <input type="checkbox" id="pathOn"> 🪡 predicted crack path · 預測裂縫路徑</label></div>
-  <div id="pathctl" style="display:none">
+  <div id="pathctl">
     <div class="lab"><span>tip 鄰域半徑</span><b id="pathRadVal" style="color:#ffe14a">0.45</b></div>
     <input id="pathRad" type="range" min="0.15" max="1.5" value="0.45" step="0.05"
            style="width:100%;accent-color:#ffe14a">
@@ -535,7 +540,13 @@ function draw(){
       n ? (n+" tris tear"+(canInria?" · INRIA":"")) : "none tear (lower σ̄_T)";
   }
   // --- predicted crack path (Stage A) -------------------------------------------------
-  if(pathOn && have && tearThr>0){
+  if(pathOn){
+    const el0=document.getElementById("pathInfo");
+    if(!have){ if(el0) el0.textContent="waiting for stress data 等待應力資料"; }
+    else if(tearThr<=0){ if(el0) el0.textContent="σ̄_T = 0 → 拉高撕裂門檻才會算"; }
+    else if(!cur.s2){ if(el0) el0.textContent="this frame has no σ₂ (old recording 舊錄製)"; }
+  }
+  if(pathOn && have && tearThr>0 && cur.s2){
     const P=crackPath();
     if(P.pts.length>1){
       ctx.beginPath();
@@ -555,7 +566,7 @@ function draw(){
     const el=document.getElementById("pathInfo");
     if(el) el.textContent = !P.info ? "—"
       : (P.info.nucleated ? `${P.info.steps} steps · stop: ${P.info.stop}`
-                          : `no nucleation (max c = ${P.info.cmax.toFixed(2)} < 1)`);
+                          : `no tear yet: max c = ${P.info.cmax.toFixed(2)} < 1 — 把門檻調低或拉更用力`);
   }
   drawLegend();
 }
@@ -776,7 +787,6 @@ document.getElementById("tearThr").addEventListener("input",e=>{ tearThr=parseIn
 document.getElementById("modeBtn").onclick=e=>{
   tearMode = tearMode==="rankine" ? "inria" : "rankine";
   e.target.textContent = tearMode==="rankine" ? "criterion: Rankine ⊥σ₁" : "criterion: INRIA argmax-c";
-  document.getElementById("fibctl").style.display = tearMode==="inria" ? "block" : "none";
   document.getElementById("tearHint").innerHTML = tearMode==="inria"
     ? "argmax-c with CONCENTRIC fibers (Dequidt Eq.1–4): tears where max<sub>d</sub> σ_u/σ̄_u ≥ 1;"+
       " white line = argmax crack dir. 同心纖維:跨纖維的裂被 σ̄_L 壓制 → 傾向沿圓周。"
@@ -787,7 +797,16 @@ document.getElementById("fibRatio").addEventListener("input",e=>{ fibRatio=parse
 document.getElementById("fibAlpha").addEventListener("input",e=>{ fibAlpha=parseFloat(e.target.value);
   document.getElementById("fibAlphaVal").textContent=fibAlpha; });
 document.getElementById("pathOn").onchange=e=>{ pathOn=e.target.checked;
-  document.getElementById("pathctl").style.display = pathOn?"block":"none"; };
+  // The path needs an absolute threshold to decide c >= 1. Rather than silently doing
+  // nothing when the slider is still at 0 (which just looks broken), pick a sensible one
+  // from the current frame -- p98 of the loaded cells is where the pull front sits.
+  if(pathOn && tearThr<=0 && cur){
+    const auto=Math.max(20, Math.round((cur.sp98!=null?cur.sp98:cur.smax)||100));
+    tearThr=auto;
+    const sl=document.getElementById("tearThr"); if(sl) sl.value=String(Math.min(auto,+sl.max));
+    document.getElementById("tearVal").textContent=tearThr;
+  }
+};
 document.getElementById("pathRad").addEventListener("input",e=>{ pathRadius=parseFloat(e.target.value);
   document.getElementById("pathRadVal").textContent=pathRadius.toFixed(2); });
 document.getElementById("pathTurn").addEventListener("input",e=>{ pathTurnMax=parseFloat(e.target.value);
