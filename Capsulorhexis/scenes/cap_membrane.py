@@ -50,6 +50,23 @@ LENS_OBJ = os.path.join(_HERE, "lens.obj")  # the flattened (oblate) base it sti
 # giving back the real continuum stress tensor and citable E/nu.
 USE_MASS_SPRING = os.environ.get("CAP_MODE", "spring").lower() != "fem"
 
+# --- real mesh tearing (INRIA-style, via the stock Tearing plugin) ------------------
+# CAP_TEAR=1 turns on SOFA's TearingEngine: it reads the FEM's per-element principal
+# stress and, where it exceeds stressThreshold, CUTS the mesh along the perpendicular-to-
+# sigma1 direction (the isotropic Rankine tear = INRIA Rung 1, in C++). Requires FEM with
+# computePrincipalStress, so CAP_TEAR forces FEM mode and uses the PLAIN
+# TriangularFEMForceField the Tearing examples use. stressThreshold is a live Data (tune it
+# in the SOFA GUI while running, or up front with CAP_STRESS_THR). Because it changes the
+# topology at runtime, the controller resets its per-node/per-triangle caches on every
+# vertex-count change (see onAnimateBegin), and its geometry safety nets that would fight a
+# fresh cut (strain clamp / anti-collapse / whole-sheet rewind) are skipped in tear mode.
+CAP_TEAR = os.environ.get("CAP_TEAR", "0") == "1"
+CAP_TEAR_THRESH = float(os.environ.get("CAP_STRESS_THR", "12.0"))   # TearingEngine stressThreshold
+CAP_TEAR_MAXLEN = float(os.environ.get("CAP_TEAR_MAXLEN", "1.5"))    # max cut length per fracture
+CAP_TEAR_STEP = int(os.environ.get("CAP_TEAR_STEP", "30"))          # steps between fractures
+if CAP_TEAR:
+    USE_MASS_SPRING = False        # TearingEngine needs the FEM's principal stress
+
 # --- material ----------------------------------------------------------------
 CLOTH_YOUNG = 120.0       # FEM-only: soft opening phase
 PAPER_YOUNG = 1200.0      # FEM-only: stiffened at SWITCH_T; 4000+ risks blow-up
@@ -246,7 +263,12 @@ STITCH_K = 2500.0        # holds the slit closed; match EDGE_STIFFNESS
 TEAR_T = 3.0             # [s] tear start
 TEAR_DURATION = 3.0      # [s] to go all the way around
 LIFT_HEIGHT = 4.5        # scripted lift of the freed disc
-FIX_OUTER_RIM = False    # True = hard-anchor the outer ring (default: only adhesion)
+FIX_OUTER_RIM = os.environ.get("CAP_FIX_RIM", "0") == "1"   # hard-anchor the outer ring
+if CAP_TEAR:
+    # Tearing needs an anchor to build stress against (the zonules in real capsulorhexis);
+    # without it the mouse just peels the whole cap off the lens and nothing tears. So tear
+    # mode anchors the rim by default (override with CAP_FIX_RIM=0 if you want free peeling).
+    FIX_OUTER_RIM = os.environ.get("CAP_FIX_RIM", "1") == "1"
 
 # --- automatic plasticity (viscoplastic creep) ---------------------------------
 # Peeled nodes slowly adopt their current shape as rest shape, so releasing the
@@ -282,6 +304,8 @@ PLUGINS = [
     "Sofa.GL.Component.Rendering3D",   # OglModel, DataDisplay
     "Sofa.GL.Component.Rendering2D",   # OglColorMap (stress legend)
 ]
+if CAP_TEAR:
+    PLUGINS.append("Tearing")          # stock TearingEngine (real mesh tearing)
 
 
 def principal_stress(pos, rest, tris, E=None, nu=None):
@@ -546,6 +570,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.last_ks = None
             self.clamped = 0
             self.prev_pos = None       # positions as rendered last step, for the disp clamp
+            self._last_nverts = None   # vertex count last step; a change = a tear happened
             self.disp_clamped = 0      # nodes caught by the per-step displacement clamp
             self.last_jump = 0.0       # pre-guard peak single-frame jump (diagnostics)
             self.diag = None           # diagnostics CSV handle (opened lazily)
@@ -874,19 +899,46 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
         def _publish_stress(self, s1, sdir, aratio, t):
             _stress_record(_stress_build_frame(_STRESS_TOTAL, self.step, t, s1, sdir, aratio))
 
+        def _check_topology(self):
+            """When TearingEngine cuts the mesh the vertex/triangle counts change, so every
+            cached per-node/per-triangle array (edges, tri list, rewind snapshots, disp-clamp
+            baseline) is suddenly the wrong size -> indexing them would crash. Detect the
+            count change and drop the caches so they rebuild against the new mesh. Node
+            indices that already existed are preserved by the topology modifier (cuts APPEND
+            duplicated vertices), so the adhered/peel_fade sets stay valid."""
+            n = len(self.mo.position.value)
+            if self._last_nverts is None:
+                self._last_nverts = n
+            elif n != self._last_nverts:
+                self.edges = self.edge_rest = None
+                self.tris = None
+                self.tri_idx = self.tri_rest_area = None
+                self.nbr = self.boundary = None
+                self.last_good = self.last_good_rest = None
+                self.prev_pos = None            # disp-clamp baseline no longer matches
+                print(f"[Tear] mesh cut: verts {self._last_nverts} -> {n}, "
+                      f"tris {len(self.topo.triangles.value)}")
+                self._last_nverts = n
+
         def onAnimateEndEvent(self, event):
+            if CAP_TEAR:
+                self._check_topology()
             # Safety-net chain, in order, all BEFORE this frame is rendered:
             #   (0) NaN / runaway rewind  (0b) per-step displacement clamp
             #   (1) speed clamp           (2) edge-strain clamp (+velocity consistency)
             #   (2b) FEM anti-collapse    (2c) final render guard
             #   (3) healthy-frame snapshot (the rewind target)
+            # In CAP_TEAR mode the nets that assume fixed topology and would fight a fresh
+            # cut -- the runaway rewind (0), the edge-strain clamp (2, would pull a just-
+            # opened cut shut) and the FEM anti-collapse (2b) -- are skipped; the disp/speed
+            # clamps that only bound the mouse impulse stay on.
             #
             # (0) NaN is sticky (NaN > limit == False beats every clamp below), and a
             # finite-but-runaway frame poisons everything downstream: both rewind.
             P0 = np.array(self.mo.position.value)
             runaway = (MAX_COORD > 0.0 and P0.size > 0
                        and np.isfinite(P0).all() and np.abs(P0).max() > MAX_COORD)
-            if not np.isfinite(P0).all() or runaway:
+            if not CAP_TEAR and (not np.isfinite(P0).all() or runaway):
                 if runaway and self.step % 15 == 0:
                     print(f"[Runaway] a node passed |coord|>{MAX_COORD:g} "
                           f"(max {float(np.abs(P0).max()):.1f}) -> rewound before it "
@@ -929,8 +981,9 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                         self.clamped += int(hot.sum())
 
             # (2) Strain clamp: project over-stretched edges back to MAX_STRETCH x rest
-            # (a few relaxation passes; rest lengths cached once).
-            if MAX_STRETCH > 0.0:
+            # (a few relaxation passes; rest lengths cached once). Skipped in tear mode --
+            # it would pull a just-opened cut shut.
+            if MAX_STRETCH > 0.0 and not CAP_TEAR:
                 if self.edges is None:
                     self._build_edges()
                 if len(self.edges):
@@ -990,7 +1043,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             # near-collinear triangles, or rewind the sheet if a whole cluster
             # collapsed at once / repair failed.
             degenerate_after = None       # None = not yet known
-            if MIN_AREA_FRAC > 0.0 and not USE_MASS_SPRING:
+            if MIN_AREA_FRAC > 0.0 and not USE_MASS_SPRING and not CAP_TEAR:
                 if self.tri_idx is None:
                     self._build_tri_areas()
                 tris = self.tri_idx
@@ -1062,6 +1115,8 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.prev_pos = Pn
 
         def onAnimateBeginEvent(self, event):
+            if CAP_TEAR:
+                self._check_topology()      # a cut may have resized the mesh since last step
             t = self.mo.getContext().getTime()
 
             # Poll Bending.stiffness and re-bake on change: the component bakes ks
@@ -1428,7 +1483,13 @@ def createScene(root):
     # REST mesh (no divide-by-zero on a collapsed current triangle) and takes
     # youngModulus as a scalar.
     fem = None
-    if not USE_MASS_SPRING:
+    if CAP_TEAR:
+        # Tear mode: the PLAIN TriangularFEMForceField the Tearing examples use, with
+        # computePrincipalStress on so TearingEngine can read per-element stress.
+        fem = cap.addObject("TriangularFEMForceField", name="FEM", method="large",
+                            youngModulus=PAPER_YOUNG, poissonRatio=0.3,
+                            computePrincipalStress=True)
+    elif not USE_MASS_SPRING:
         fem = cap.addObject("TriangularFEMForceFieldOptim", name="FEM", method="large",
                             youngModulus=CLOTH_YOUNG, poissonRatio=0.3)
         # SOFA's OWN principal-stress calc + vectors: an INDEPENDENT method to compare with
@@ -1455,6 +1516,17 @@ def createScene(root):
     # adhesion: springs pulling every node to its rest spot on the lens
     adhesion = cap.addObject("RestShapeSpringsForceField", name="Adhesion",
                              stiffness=ADHESION_STIFF, drawSpring=False)
+
+    # Real mesh tearing (stock Tearing plugin). Reads the FEM's per-element principal
+    # stress; where it passes stressThreshold it CUTS the mesh perpendicular to sigma1
+    # (isotropic Rankine = INRIA Rung 1). stressThreshold is a live Data -> tune it in the
+    # SOFA GUI while dragging. step = frames between successive cuts; fractureMaxLength =
+    # max cut length per fracture; showFracturePath draws the cut line.
+    if CAP_TEAR:
+        cap.addObject("TearingEngine", name="Tearing", input_position="@Mo.position",
+                      stressThreshold=CAP_TEAR_THRESH, step=CAP_TEAR_STEP,
+                      nbFractureMax=400, fractureMaxLength=CAP_TEAR_MAXLEN,
+                      showFracturePath=True, showTearableCandidates=False)
 
     # Stitch springs hold the pre-slit tear circle closed (coincident vertex pairs,
     # rest length 0), angle-sorted so a scripted tear can run around progressively.
