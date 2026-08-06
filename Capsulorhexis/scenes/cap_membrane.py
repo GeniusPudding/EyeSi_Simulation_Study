@@ -57,7 +57,12 @@ USE_MASS_SPRING = os.environ.get("CAP_MODE", "spring").lower() != "fem"
 # on one side onto the duplicates. Nothing about the pull mechanics changes -- the membrane
 # is still the tuned mass-spring, the rim is NOT anchored, and the mouse spring is untouched.
 CAP_TEAR = os.environ.get("CAP_TEAR", "0") == "1"
-TEAR_THRESH = float(os.environ.get("CAP_TEAR_THRESH", "150"))    # sigma_bar_T
+# sigma_bar_T. Measured, NOT guessed: the crack-tip NEIGHBOURHOOD AVERAGE near the nick runs
+# only ~7-20 (it is an average over a disc, an order of magnitude below the single-element
+# peaks the heatmap shows at the pull front). Sweep with a hand-like pull: 150 and 30 never
+# tear at all, 10 propagates the crack from the centre to the rim (4 -> 67 vertices), 5 and 2
+# behave the same. So 8 is a responsive default; raise it to make the capsule tougher.
+TEAR_THRESH = float(os.environ.get("CAP_TEAR_THRESH", "8"))
 TEAR_FIB_RATIO = float(os.environ.get("CAP_TEAR_FIBRATIO", "2.5"))   # sigma_bar_L / sigma_bar_T
 TEAR_FIB_ALPHA = float(os.environ.get("CAP_TEAR_ALPHA", "2.0"))      # Eq.4 steepness
 TEAR_TURN_MAX = float(os.environ.get("CAP_TEAR_TURN", "70"))     # theta_P, max turn per advance

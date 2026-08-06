@@ -31,7 +31,9 @@ param(
     # mechanics are unchanged (still the tuned mass-spring, rim NOT anchored). -Thresh sets
     # sigma_bar_T. Via CAP_TEAR / CAP_TEAR_THRESH.
     [switch]$Tear,
-    [double]$Thresh = 150.0,
+    # sigma_bar_T. Tip-neighbourhood stress runs ~7-20 here, so 8 tears readily; 30+ never
+    # tears at all (measured). Raise for a tougher capsule, lower for a more fragile one.
+    [double]$Thresh = 8.0,
     # -SofaHeatmap turns on SOFA's built-in DataDisplay + OglColorMap, colouring the
     # DEFORMING 3D mesh by sigma1 (CAP_STRESS_COLOR). It SIGABRTs the imgui GUI, so pair it
     # with -Gui qt (or glfw). This is the in-SOFA counterpart to the browser -Heatmap.
