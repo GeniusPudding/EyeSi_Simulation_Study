@@ -633,6 +633,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.peel_fade = {}        # node -> decaying adhesion stiffness (peel fade-out)
             self.nbr = None            # per-node neighbours, for front-only peeling
             self.boundary = None       # mesh-boundary nodes = crack initiation sites
+            self.dup_of = {}           # duplicate vertex -> the lip it was split from
             self.crack = None          # vertex path of the tear; last entry is the live tip
             self.crack_dir = None      # current heading (unit xy), for the Eq.2 turn limit
             self.vtris = None          # vertex -> [triangle ids], rebuilt on topology change
@@ -1090,6 +1091,9 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             if not neg or len(neg) == len(tl):
                 return None                  # crack line misses the fan: nothing to open
             nv = len(P)
+            # remember the pairing: plasticity drifts the rest positions, so after a while
+            # a duplicate can no longer be matched back to its lip by geometry alone
+            self.dup_of[nv] = int(v)
             self.mo.position.value = np.vstack([P, P[v]]).tolist()
             self.mo.rest_position.value = np.vstack([R, R[v]]).tolist()
             V = np.array(self.mo.velocity.value)
@@ -1099,6 +1103,19 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             for ti in neg:
                 T[ti][T[ti] == v] = nv
             self.topo.triangles.value = T.tolist()
+            # Release the adhesion along the cut. Without this the tear is invisible: both
+            # lips stay glued flat to the lens by RestShapeSprings (they share a rest
+            # position), so the mesh is topologically open but nothing can separate. A real
+            # capsulorhexis lifts the flap off the lens as it tears, so unglue the split
+            # vertex, its duplicate and their immediate ring -- that is what lets the flap
+            # open and be pulled, which in turn keeps stressing the tip.
+            if self.adhered is not None:
+                free = {int(v), int(nv)}
+                if self.nbr is not None and v < len(self.nbr):
+                    free.update(int(j) for j in self.nbr[v])
+                if self.adhered & free:
+                    self.adhered.difference_update(free)
+                    self._push_adhesion()
             return nv
 
         def _tear_reinit(self):
