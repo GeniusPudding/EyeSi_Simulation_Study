@@ -278,7 +278,11 @@ function dirOf(k){ const a=cur.ang[k]*Math.PI/180; return [Math.cos(a),Math.sin(
 // reduces EXACTLY to Rankine (verified in verify_stress.py, 5000 random states).
 function inriaC(k){
   const s1v=cur.s1[k], s2v=cur.s2[k], th1=cur.ang[k], thf=fibAng[k];
-  const sT=tearThr, sL=tearThr*fibRatio;
+  // sigma_bar_u is PROPORTIONAL to sigma_bar_T, so the argmax direction is independent of
+  // the absolute threshold -- only the fiber ratio and alpha steer it. That means the crack
+  // DIRECTION can always be computed (sT=1 as the unit scale) even with the tear slider at 0;
+  // only the absolute c value needs a real threshold.
+  const sT=tearThr>0?tearThr:1.0, sL=sT*fibRatio;
   let best=0, bestA=0, bestSu=0, bestThr=sT;
   for(let a=0;a<180;a+=5){
     const thu=a+90;                                        // opening normal
@@ -325,7 +329,17 @@ function draw(){
     ctx.strokeStyle="#fff"; ctx.lineWidth=2; ctx.stroke();
     ctx.beginPath(); ctx.setLineDash([5,4]);
     ctx.moveTo(ce[0]+d[1]*L,ce[1]+d[0]*L); ctx.lineTo(ce[0]-d[1]*L,ce[1]-d[0]*L);
-    ctx.strokeStyle="#ff5b4d"; ctx.lineWidth=2; ctx.stroke(); ctx.setLineDash([]); }
+    ctx.strokeStyle="#ff5b4d"; ctx.lineWidth=2; ctx.stroke(); ctx.setLineDash([]);
+    // fiber direction (blue): the concentric collagen the tear is steered by
+    if(fibAng){ const fa=fibAng[sh]*Math.PI/180, fx=Math.cos(fa), fy=Math.sin(fa), FL=20*dpr;
+      ctx.beginPath(); ctx.moveTo(ce[0]-fx*FL,ce[1]+fy*FL); ctx.lineTo(ce[0]+fx*FL,ce[1]-fy*FL);
+      ctx.strokeStyle="#4aa3ff"; ctx.lineWidth=2; ctx.stroke(); }
+    // INRIA argmax crack direction (cyan dashed): where the fiber-aware rule would tear
+    if(cur.s2 && cur.s2.length===tris.length && !degenerate(cur.aratio[sh])){
+      const rr2=inriaC(sh), ca=rr2.ang*Math.PI/180, cx2=Math.cos(ca), cy2=Math.sin(ca), CL=30*dpr;
+      ctx.beginPath(); ctx.setLineDash([3,3]);
+      ctx.moveTo(ce[0]-cx2*CL,ce[1]+cy2*CL); ctx.lineTo(ce[0]+cx2*CL,ce[1]-cy2*CL);
+      ctx.strokeStyle="#7fffd4"; ctx.lineWidth=2; ctx.stroke(); ctx.setLineDash([]); } }
   // --- tear criterion overlay, driven by the slider (sigma_thr > 0 = on) --------------
   // rankine mode: tears where s1 >= sT, crack perp to sigma1 (white line).
   // inria mode:  anisotropic argmax-c with concentric fibers -- tears where cmax >= 1,
@@ -411,27 +425,36 @@ function updateInsp(){
           `— 均分三等份的<b>判讀慣例</b>,非論文定義(端點才有物理意義:0=純圓周, 90=純徑向)`+
           `</span></div>`+
           `<div class="note">${why}</div>`; }
+  // INRIA block: ALWAYS shown when sigma2 is available (it no longer requires switching the
+  // criterion or raising the threshold -- the direction is threshold-independent). Only the
+  // absolute c/verdict need a real sigma_bar_T.
   let inriaHtml="";
-  if(tearMode==="inria" && tearThr>0 && cur.s2 && cur.s2.length===tris.length && !degenerate(ar)){
+  if(cur.s2 && cur.s2.length===tris.length && !degenerate(ar)){
     const r=inriaC(k);
-    inriaHtml=`<div class="cls"><div class="note" style="color:#8fd0ff">INRIA argmax-c(Dequidt Eq.1–4)</div>`+
-      row("argmax d 最想裂的裂向", r.ang.toFixed(0)+"°",
-          "<b>絕對角</b>(+x 起)· 搜尋 36 個候選方向後 c 最大的那個")+
-      row("σ_u 開裂張力 @argmax", r.su.toFixed(1),
-          "沿裂向的垂直方向 u=d+90° 把裂縫拉開的正向應力 (Eq.3)")+
-      row("σ̄_u 方向強度 @argmax", r.thr.toFixed(1),
-          "u 與纖維的夾角決定:順纖維 σ̄_L 硬、垂直 σ̄_T 軟 (Eq.4)")+
-      row("c = σ_u / σ̄_u", r.c.toFixed(2), "≥1 就裂 (Eq.1)")+
-      `<div class="row"><span class="k">verdict 判定</span><span class="v">`+
-      (r.c>=1?`<span class="bad">tears 裂</span>`:`<span class="good">holds 撐住</span>`)+`</span></div></div>`;
-  } else if(tearThr>0 && !degenerate(ar)){
-    inriaHtml=`<div class="note" style="margin-top:4px">σ_u / σ̄_u / c(d):按右上 criterion 切到
-      INRIA argmax-c 才會計算顯示 · switch criterion to INRIA to see them</div>`;
+    inriaHtml=`<div class="cls"><div class="note" style="color:#8fd0ff">`+
+      `INRIA argmax-c 纖維各向異性判據(Dequidt Eq.1–4)· σ̄_L/σ̄_T=${fibRatio.toFixed(1)} α=${fibAlpha}</div>`+
+      row("d = argmax 裂向", r.ang.toFixed(0)+"°",
+          "<b>絕對角</b>(+x 起)· 掃 36 個候選裂向、c 最大的那個 = 考慮纖維後最想裂的方向")+
+      row("σ_u 開裂張力", r.su.toFixed(1),
+          "沿 u=d+90°(垂直裂縫)把裂縫拉開的正向應力 · Eq.3")+
+      (tearThr>0
+        ? row("σ̄_u 該方向強度", r.thr.toFixed(1),
+              "u 與纖維夾角決定:順纖維 σ̄_L 硬、垂直 σ̄_T 軟 · Eq.4")+
+          row("c = σ_u / σ̄_u", r.c.toFixed(2), "撕裂判據:≥1 就裂 · Eq.1")+
+          `<div class="row"><span class="k">verdict 判定</span><span class="v">`+
+          (r.c>=1?`<span class="bad">tears 裂</span>`:`<span class="good">holds 撐住</span>`)+`</span></div>`
+        : `<div class="note">σ̄_u 與 c 需要門檻:把右上「⚡ 撕裂門檻」拉桿拉大於 0 就會算出來。`+
+          `方向 d 不需門檻(σ̄_u 正比於 σ̄_T,argmax 時抵消)。</div>`)+
+      `</div>`;
   }
   insp.innerHTML = head+
     `<div class="note">${pinned>=0
        ? `<span class="pin">📌 pinned tri ${k} 已釘選</span> — click again to unpin 再點解除`
        : `tri ${k} — click to 📌 pin 點一下釘選`}</div>`+
+    `<div class="note">線條圖例:<span style="color:#fff">白=σ₁ 方向</span> ·
+     <span style="color:#ff5b4d">紅虛=⊥σ₁ 裂向</span> ·
+     <span style="color:#4aa3ff">藍=纖維</span> ·
+     <span style="color:#7fffd4">青虛=INRIA argmax 裂向</span></div>`+
     row("σ₁ max principal 最大主應力", v.toFixed(1), "這格被拉最緊方向上的張力 = 熱圖顏色")+
     row("σ₂ min principal 最小主應力", cur.s2?cur.s2[k].toFixed(1):"–", "垂直方向的張力 (負=受壓)")+
     row("σ₁ dir 主應力方向", cur.ang[k].toFixed(0)+"°",
