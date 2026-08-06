@@ -283,18 +283,34 @@ function inriaC(k){
   // DIRECTION can always be computed (sT=1 as the unit scale) even with the tear slider at 0;
   // only the absolute c value needs a real threshold.
   const sT=tearThr>0?tearThr:1.0, sL=sT*fibRatio;
-  let best=0, bestA=0, bestSu=0, bestThr=sT;
-  for(let a=0;a<180;a+=5){
-    const thu=a+90;                                        // opening normal
+  // c(d) for one candidate crack angle
+  const evalC=(a)=>{
+    const thu=a+90;                                        // opening normal u = d + 90
     const ps=(thu-th1)*Math.PI/180, cp=Math.cos(ps);
-    const su=s1v*cp*cp + s2v*(1-cp*cp);
-    if(su<=0) continue;                                    // compression cannot open
-    let df=Math.abs(thu-thf)%180; if(df>90) df=180-df;     // fold angle(u,f) to [0,90]
-    const thr=sT+(sL-sT)*Math.pow(1-df/90,fibAlpha);
-    const c=su/thr;
-    if(c>best){ best=c; bestA=a; bestSu=su; bestThr=thr; }
+    const su=s1v*cp*cp + s2v*(1-cp*cp);                    // Eq.3 in principal axes
+    if(su<=0) return {c:0, su:su, thr:sT};                 // compression cannot open a crack
+    let df=Math.abs(thu-thf)%180; if(df>90) df=180-df;     // fold angle(u,f) into [0,90]
+    const thr=sT+(sL-sT)*Math.pow(1-df/90,fibAlpha);       // Eq.4
+    return {c:su/thr, su:su, thr:thr};
+  };
+  // coarse scan picks the BASIN -- 3 deg, not 5: at 5 deg the scan lands in the wrong basin
+  // for ~0.04% of states and the local refinement cannot escape it (measured, 5000 states);
+  // 3 deg gives zero such failures for 24 more evaluations.
+  let best={c:-1}, bestA=0;
+  for(let a=0;a<180;a+=3){ const r=evalC(a); if(r.c>best.c){ best=r; bestA=a; } }
+  // ...then bracket bisection to kill the discretisation error. Measured (4000 random
+  // states vs a 0.01 deg reference): the 5 deg scan alone is off by 1.2 deg median in the
+  // direction and up to 27% in c -- unusable for a crack path, which accumulates the error
+  // every step. 6 refinement passes bring it to ~0.02 deg / 1e-5. Bisection (not a
+  // derivative method) because c(d) has a kink where u crosses the fiber.
+  let half=3.0;
+  for(let p=0;p<6;p++){
+    half*=0.5;
+    for(const a of [bestA-half, bestA+half]){
+      const r=evalC(a); if(r.c>best.c){ best=r; bestA=a; }
+    }
   }
-  return {c:best, ang:bestA, su:bestSu, thr:bestThr};
+  return {c:best.c, ang:((bestA%180)+180)%180, su:best.su, thr:best.thr};
 }
 
 function draw(){

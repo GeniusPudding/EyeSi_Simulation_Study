@@ -81,7 +81,19 @@ def _angdiff(a, b):
     return np.minimum(d, 180.0 - d)
 
 
-def inria_c(s1, s2, ang1_deg, fib_deg, sT, sL, alpha, dstep=5.0):
+def _c_of(d_deg, s1, s2, ang1_deg, fib_deg, sT, sL, alpha):
+    """c(d) for a per-element array of candidate crack angles d (Eq.1-4). Shared by the
+    coarse scan and the refinement so both evaluate exactly the same function."""
+    u = d_deg + 90.0
+    psi = np.radians(u - ang1_deg)
+    sigma_u = s1 * np.cos(psi) ** 2 + s2 * np.sin(psi) ** 2
+    duf = np.radians(u - fib_deg)
+    fold = np.arccos(np.abs(np.cos(duf)))
+    thr = sT + (sL - sT) * (1.0 - fold / (np.pi / 2)) ** alpha
+    return np.where(sigma_u > 0.0, sigma_u / thr, 0.0)
+
+
+def inria_c(s1, s2, ang1_deg, fib_deg, sT, sL, alpha, dstep=5.0, refine=0):
     """INRIA anisotropic tear criterion (Dequidt 2013 Eq.1-4), nucleation form (H=1).
 
     For each element, search candidate CRACK directions d (0..180 deg, step dstep). The
@@ -105,7 +117,23 @@ def inria_c(s1, s2, ang1_deg, fib_deg, sT, sL, alpha, dstep=5.0):
     thr = sT + (sL - sT) * (1.0 - fold / (np.pi / 2)) ** alpha
     c = np.where(sigma_u > 0.0, sigma_u / thr, 0.0)      # compression cannot open a crack
     k = np.argmax(c, axis=1)
-    return c[np.arange(len(s1)), k], ds[k]
+    best_c, best_d = c[np.arange(len(s1)), k], ds[k]
+    # LOCAL REFINEMENT: the coarse scan alone is not accurate enough -- at 5 deg the argmax
+    # direction is off by ~1.2 deg (median) and c by up to 27%, and a crack path accumulates
+    # that error every step. c(d) has kinks (the fold at u = fiber), so use bracket bisection
+    # rather than a derivative method: each pass samples inside the current bracket and
+    # shrinks it, converging geometrically and staying correct across a kink.
+    if refine:
+        half = dstep
+        for _ in range(refine):
+            half *= 0.5
+            cand = np.stack([best_d - half, best_d, best_d + half], axis=1)
+            cc = np.stack([_c_of(cand[:, j], s1, s2, ang1_deg, fib_deg, sT, sL, alpha)
+                           for j in range(3)], axis=1)
+            j = np.argmax(cc, axis=1)
+            idx = np.arange(len(s1))
+            best_d, best_c = cand[idx, j] % 180.0, cc[idx, j]
+    return best_c, best_d
 
 
 def main():
@@ -177,6 +205,34 @@ def main():
         cmax, dstar = inria_c(one, zero, zero, zero, sT, sT * ratio, alpha=2.0, dstep=1.0)
         print(f"  sL/sT={ratio:3.1f}: c = {cmax[0]:6.2f} (isotropic would be {50.0/sT:.2f}) "
               f"crack dir = {dstar[0]:5.1f} deg")
+
+    print("\n=== direction search: coarse scan is NOT enough, refinement fixes it ===")
+    # A crack path accumulates the direction error at every step, so the argmax must be
+    # resolved far better than the scan step. Compare against a 0.01 deg reference.
+    rc, rd = inria_c(s1r, s2r, a1r, fbr, sT, 2.5 * sT, alpha=2.0, dstep=0.01)
+    print("  config              dir err med/max (deg)     c rel-err med/max")
+    for step, ref in ((5.0, 0), (5.0, 6), (3.0, 6)):
+        cc, dd_ = inria_c(s1r, s2r, a1r, fbr, sT, 2.5 * sT, alpha=2.0,
+                          dstep=step, refine=ref)
+        e = _angdiff(dd_, rd)
+        rel = np.abs(cc - rc) / np.maximum(rc, 1e-9)
+        print(f"  step {step:4.1f} refine {ref}   {np.median(e):8.4f} / {e.max():7.3f}"
+              f"      {np.median(rel):.1e} / {rel.max():.1e}")
+    # A large direction error is legitimate where TWO local maxima are nearly tied -- the
+    # argmax then flips basin while c is essentially unchanged, which is ambiguity in the
+    # problem, not error in the search. Judge on the well-separated cases, and report how
+    # many ties there were (their c agrees to <1%, so the tear decision is unaffected).
+    cc, dd_ = inria_c(s1r, s2r, a1r, fbr, sT, 2.5 * sT, alpha=2.0, dstep=3.0, refine=6)
+    e = _angdiff(dd_, rd)
+    rel = np.abs(cc - rc) / np.maximum(rc, 1e-9)
+    # Only directions that differ MATERIALLY are suspicious; of those, a case is a genuine
+    # tie (two equally tear-prone directions) if our c matches the reference c anyway --
+    # a real search failure would return a strictly SMALLER c.
+    big = e > 0.5
+    bad = big & (rel > 1e-3)
+    print(f"  -> shipped (3 deg + 6 refine): median dir err {np.median(e):.4f} deg; "
+          f"{big.sum()}/{len(e)} differ >0.5 deg, of which {bad.sum()} are real search "
+          f"failures (c lower than reference)  {'OK' if bad.sum() == 0 else 'FAIL'}")
 
     print("\n=== fiber effect 2: concentric fibers keep the tear CIRCUMFERENTIAL ===")
     # The capsule case: fibers tangential (concentric), test a RADIAL-pull stress state
