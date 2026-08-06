@@ -41,10 +41,16 @@
                  color: #8aa0b4; font-variant-numeric: tabular-nums; }
   #legend .cap2 { color: #8aa0b4; margin-bottom: 5px; }
   /* tooltip */
-  #tip { position: fixed; pointer-events: none; display: none; z-index: 6; padding: 8px 10px;
-         max-width: 270px; box-shadow: 0 6px 22px rgba(0,0,0,.5); font-variant-numeric: tabular-nums; }
-  #tip .k { color: #8aa0b4; } #tip .v { color: #eef4fa; font-weight: 600; }
-  #tip .cls { margin-top: 5px; padding-top: 5px; border-top: 1px solid #24333f; }
+  /* docked inspector: fixed panel (screenshot-friendly), updated on hover, pin on click */
+  #insp { position: fixed; top: 118px; left: 12px; width: 288px; z-index: 6; padding: 9px 12px;
+          font-variant-numeric: tabular-nums; }
+  #insp .row { display: flex; justify-content: space-between; gap: 8px; padding: 1.5px 0; }
+  #insp .k { color: #8aa0b4; white-space: nowrap; }
+  #insp .v { color: #eef4fa; font-weight: 600; text-align: right; }
+  #insp .note { color: #607283; font-size: 11px; }
+  #insp .cls { margin-top: 5px; padding-top: 5px; border-top: 1px solid #24333f; }
+  #insp .pin { color: #f2c14e; }
+  #insp h4 { margin: 0 0 4px; color: #7fd1ff; font-size: 12px; font-weight: 600; }
   .good { color: #6ee69a; } .bad { color: #ff7d72; } .obl { color: #f2c14e; } .degen { color: #8aa0b4; }
   /* help overlay */
   #help { position: fixed; inset: 0; background: rgba(6,10,14,.72); display: none;
@@ -111,7 +117,8 @@
   (magenta); white line = crack dir (⊥σ₁). 拉高門檻;超過的格染洋紅、白線=裂向。</div>
 </div>
 
-<div id="tip" class="panel"></div>
+<div id="insp" class="panel"><h4>🔍 element inspector · 元素檢視</h4>
+<div class="note">hover a triangle · 滑到三角形上;click = 📌 pin 釘選(截圖用)</div></div>
 
 <div id="tl" class="panel">
   <button id="liveBtn" class="on" title="follow the latest frame (Space)">◉</button>
@@ -188,7 +195,8 @@
 <script>
 "use strict";
 const cv=document.getElementById("c"), ctx=cv.getContext("2d");
-const hud=document.getElementById("hud"), tip=document.getElementById("tip"), deadEl=document.getElementById("dead");
+const hud=document.getElementById("hud"), insp=document.getElementById("insp"), deadEl=document.getElementById("dead");
+let pinned=-1;      // click-pinned triangle for the docked inspector (-1 = follow hover)
 const seek=document.getElementById("seek"), tllab=document.getElementById("tllab");
 let verts=null, tris=null, cents=null, radial=null, bounds=null;
 let cur=null;                    // the frame currently displayed {s1,ang,aratio,smax,heatmax,t,i,step}
@@ -286,11 +294,13 @@ function draw(){
     ctx.fillStyle = !have ? "#22303c" : (degenerate(ar[k]) ? "#38424c" : ramp(s1[k]/scaleTop)); ctx.fill();
     if(showWire||!have){ ctx.strokeStyle=have?"rgba(0,0,0,.28)":"rgba(150,170,190,.35)"; ctx.lineWidth=1; ctx.stroke(); } }
   if(!have) return;
-  if(hover>=0 && hover<tris.length){ const [a,b,c]=tris[hover];
+  const sh=shownTri();                          // pinned triangle wins over hover
+  if(sh>=0 && sh<tris.length){ const [a,b,c]=tris[sh];
     const A=toScreen(verts[a][0],verts[a][1]),B=toScreen(verts[b][0],verts[b][1]),C=toScreen(verts[c][0],verts[c][1]);
     ctx.beginPath(); ctx.moveTo(A[0],A[1]); ctx.lineTo(B[0],B[1]); ctx.lineTo(C[0],C[1]); ctx.closePath();
-    ctx.strokeStyle="#fff"; ctx.lineWidth=2; ctx.stroke();
-    const ce=toScreen(cents[hover][0],cents[hover][1]),d=dirOf(hover),L=26*dpr;
+    ctx.strokeStyle = pinned>=0 ? "#f2c14e" : "#fff";      // gold outline when pinned
+    ctx.lineWidth=2; ctx.stroke();
+    const ce=toScreen(cents[sh][0],cents[sh][1]),d=dirOf(sh),L=26*dpr;
     ctx.beginPath(); ctx.moveTo(ce[0]-d[0]*L,ce[1]+d[1]*L); ctx.lineTo(ce[0]+d[0]*L,ce[1]-d[1]*L);
     ctx.strokeStyle="#fff"; ctx.lineWidth=2; ctx.stroke();
     ctx.beginPath(); ctx.setLineDash([5,4]);
@@ -345,36 +355,46 @@ function hitTest(){ if(!mouse||!verts||!T){ hover=-1; return; }   // T not set u
   const [wx,wy]=toWorld(mouse[0],mouse[1]); hover=-1;
   for(let k=0;k<tris.length;k++){ const [a,b,c]=tris[k];
     if(pointInTri(wx,wy,verts[a],verts[b],verts[c])){ hover=k; break; } } }
-function showTip(){
-  if(hover<0||!cur||!cur.s1||!cur.s1.length){ tip.style.display="none"; return; }
-  const k=hover,v=cur.s1[k],ar=cur.aratio[k],d=dirOf(k),rr=Math.hypot(cents[k][0],cents[k][1]);
+function shownTri(){ return pinned>=0 ? pinned : hover; }   // pinned wins over hover
+function updateInsp(){
+  const head=`<h4>🔍 element inspector · 元素檢視</h4>`;
+  const k=shownTri();
+  if(k<0||!cur||!cur.s1||!cur.s1.length||k>=tris.length){
+    insp.innerHTML=head+`<div class="note">hover a triangle · 滑到三角形上;click = 📌 pin 釘選(截圖用)</div>`;
+    return;
+  }
+  const v=cur.s1[k],ar=cur.aratio[k],d=dirOf(k),rr=Math.hypot(cents[k][0],cents[k][1]);
+  const row=(kk,vv,note)=>`<div class="row"><span class="k">${kk}</span><span class="v">${vv}</span></div>`+
+                          (note?`<div class="note">${note}</div>`:"");
   let cls;
-  if(degenerate(ar)){ cls=`<span class="degen">degenerate — σ₁ not physical · 退化格,σ₁ 不可信</span>`; }
+  if(degenerate(ar)){ cls=`<span class="degen">degenerate 退化格 — σ₁ not physical σ₁ 不可信</span>`; }
   else { const rad=radial[k]; let dot=Math.min(1,Math.abs(d[0]*rad[0]+d[1]*rad[1]));
     const ang=Math.acos(dot)*180/Math.PI;
-    cls = ang<30 ? `<span class="good">crack ⊥σ₁ = CIRCUMFERENTIAL 圓周向(good 好)</span>`
-        : ang>60 ? `<span class="bad">crack ⊥σ₁ = RADIAL 徑向(runs to periphery 裂到周邊!)</span>`
-        : `<span class="obl">crack ⊥σ₁ = oblique 斜向(${ang.toFixed(0)}° off radial 偏離徑向)</span>`; }
-  let inriaLine="";
+    cls = ang<30 ? `<span class="good">CIRCUMFERENTIAL 圓周向 — good 好(沿圓繞 = CCC 要的)</span>`
+        : ang>60 ? `<span class="bad">RADIAL 徑向 — danger 危險(往外緣衝 = 失敗撕裂)</span>`
+        : `<span class="obl">oblique 斜向(${ang.toFixed(0)}° off radial 偏離徑向)</span>`; }
+  let inriaHtml="";
   if(tearMode==="inria" && tearThr>0 && cur.s2 && cur.s2.length===tris.length && !degenerate(ar)){
     const r=inriaC(k);
-    inriaLine=`<br><span class="k">INRIA c </span><span class="v">${r.c.toFixed(2)}</span> `+
-      (r.c>=1?`<span class="bad">→ tears 裂</span>`:`<span class="good">→ holds 撐住</span>`)+
-      `  <span class="k">argmax dir </span><span class="v">${r.ang.toFixed(0)}°</span>`;
+    inriaHtml=`<div class="cls">`+
+      row("INRIA c = σ_u/σ̄_u", r.c.toFixed(2))+
+      `<div class="row"><span class="k">verdict 判定</span><span class="v">`+
+      (r.c>=1?`<span class="bad">tears 裂</span>`:`<span class="good">holds 撐住</span>`)+`</span></div>`+
+      row("argmax crack dir 裂向", r.ang.toFixed(0)+"°",
+          "考慮纖維後「最想裂」的方向 (c 最大)")+`</div>`;
   }
-  tip.innerHTML =
-    `<span class="k">σ₁ </span><span class="v">${v.toFixed(1)}</span>  `+
-    `<span class="k">σ₂ </span><span class="v">${cur.s2?cur.s2[k].toFixed(1):"–"}</span>  `+
-    `<span class="k">r </span><span class="v">${rr.toFixed(2)}</span>  `+
-    `<span class="k">areaRatio </span><span class="v">${ar.toFixed(2)}</span><br>`+
-    `<span class="k">σ₁ dir </span><span class="v">${cur.ang[k].toFixed(0)}°</span>  `+
-    `<span class="k">fiber </span><span class="v">${fibAng?fibAng[k].toFixed(0):"–"}°</span>  `+
-    `<span class="k">tri</span> ${k}${inriaLine}<div class="cls">${cls}</div>`;
-  tip.style.display="block";
-  let tx=mouse[0]+14,ty=mouse[1]+14;
-  if(tx+tip.offsetWidth>innerWidth) tx=mouse[0]-tip.offsetWidth-14;
-  if(ty+tip.offsetHeight>innerHeight) ty=mouse[1]-tip.offsetHeight-14;
-  tip.style.left=tx+"px"; tip.style.top=ty+"px";
+  insp.innerHTML = head+
+    `<div class="note">${pinned>=0
+       ? `<span class="pin">📌 pinned tri ${k} 已釘選</span> — click again to unpin 再點解除`
+       : `tri ${k} — click to 📌 pin 點一下釘選`}</div>`+
+    row("σ₁ max principal 最大主應力", v.toFixed(1), "這格被拉最緊方向上的張力 = 熱圖顏色")+
+    row("σ₂ min principal 最小主應力", cur.s2?cur.s2[k].toFixed(1):"–", "垂直方向的張力 (負=受壓)")+
+    row("σ₁ dir 主應力方向", cur.ang[k].toFixed(0)+"°", "拉最緊的方向 (盤面角度)")+
+    row("fiber 纖維方向", fibAng?fibAng[k].toFixed(0)+"°":"–", "同心纖維 = 切線方向")+
+    row("r 半徑", rr.toFixed(2), "離圓心距離 (外緣≈6.9)")+
+    row("areaRatio 面積比", ar.toFixed(2), "現在/原本面積;≈1 健康, >4 或 <0.25 退化")+
+    `<div class="cls"><div class="row"><span class="k">crack ⊥σ₁ 預測裂向</span></div>${cls}</div>`+
+    inriaHtml;
 }
 function updateHud(){
   const tp=document.getElementById("tearPeak");
@@ -419,7 +439,7 @@ async function tick(){
   // reset detection: the frame counter only grows within a session, so a DROP means the
   // SOFA scene was reloaded/restarted -> re-fetch geometry, clear cache, snap back to LIVE.
   if(meta.count < prevCount){
-    verts=null; cache.clear(); cur=null; following=true; playing=false; curIdx=-1;
+    verts=null; cache.clear(); cur=null; following=true; playing=false; curIdx=-1; pinned=-1;
     prevCount=0; setTimeout(tick, 30); return;      // reload geometry on the next tick
   }
   prevCount=meta.count;
@@ -433,14 +453,18 @@ async function tick(){
   }
   // Never let a render error kill the loop (that is what left the page stuck on
   // "loading..."): draw first so the transform exists, then hit-test, all guarded.
-  try{ draw(); hitTest(); showTip(); updateHud(); updateTimeline(); }
+  try{ draw(); hitTest(); updateInsp(); updateHud(); updateTimeline(); }
   catch(e){ console.error("render error (loop keeps going):", e); }
   setTimeout(tick, 55);
 }
 
 // interaction
 cv.addEventListener("mousemove",e=>{ const r=cv.getBoundingClientRect(); mouse=[e.clientX-r.left,e.clientY-r.top]; });
-cv.addEventListener("mouseleave",()=>{ mouse=null; hover=-1; tip.style.display="none"; });
+cv.addEventListener("mouseleave",()=>{ mouse=null; hover=-1; });   // pinned survives leaving
+cv.addEventListener("click",()=>{                                   // click = pin / unpin
+  if(hover>=0) pinned = (pinned===hover ? -1 : hover);
+  else pinned = -1;                                                 // click empty space clears
+});
 function goLive(){ following=true; playing=false; }
 function goReview(i){ following=false; curIdx=Math.max(meta.first,Math.min(meta.last,i)); }
 document.getElementById("liveBtn").onclick=()=>{ following?goReview(meta.last):goLive(); };
