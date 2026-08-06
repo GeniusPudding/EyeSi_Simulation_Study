@@ -168,10 +168,21 @@
     <p>Shows σ₁, radius r, area ratio, the σ₁ direction, and the <b>crack class</b>. A crack
     would run <b>perpendicular to σ₁</b> (Rankine). Comparing that to the radial direction:</p>
     <ul>
-      <li><span class="good">CIRCUMFERENTIAL</span> — the good, curvilinear tear (stays a circle). 圓周向,好的圓弧撕。</li>
-      <li><span class="bad">RADIAL</span> — the dangerous one that runs out to the periphery. 徑向,危險(裂到周邊)。</li>
-      <li><span class="obl">oblique</span> — in between. 斜向,介於之間。</li>
+      <li><span class="good">CIRCUMFERENTIAL 圓周向 (0–30°) = good 好</span> — the crack runs
+      AROUND the circle and closes back on itself: a clean round opening. That is literally what
+      CCC stands for (<i>Continuous Curvilinear Capsulorhexis</i>). 裂縫沿圓繞回起點 → 完整圓孔。</li>
+      <li><span class="bad">RADIAL 徑向 (60–90°) = danger 危險</span> — the crack runs straight
+      OUTWARD to the rim, escapes to the periphery and cannot be steered back. Clinically this is
+      the <b>Argentinian flag sign</b>, the classic capsulorhexis failure (posterior capsule rupture).
+      裂縫朝外緣直衝、逃走 = 撕囊失敗。</li>
+      <li><span class="obl">oblique 斜向 (30–60°) = warning 警訊</span> — between the two: the tear
+      is drifting off the circle toward radial. 正在偏離圓周,再偏就危險。</li>
     </ul>
+    <p>So good/danger is not arbitrary — it is just <b>one angle</b>: crack direction vs the
+    circumferential direction. It changes as you pull, which is exactly the point: it tells you
+    whether the way you are pulling steers the tear safely around, or out to the edge.
+    <br>good/危險不是隨機標的,就是<b>一個角度</b>(裂向 vs 圓周向)的分級;它隨你拉動而變,
+    告訴你「這樣拉會把裂縫導向安全還是危險」。</p>
     <p lang="zh">顯示 σ₁、半徑 r、面積比、σ₁ 方向、以及<b>裂向分類</b>。裂縫會<b>垂直於 σ₁</b>
     (Rankine);拿它跟徑向比:上面三類。被指的三角形會畫出白線=σ₁ 方向、紅虛線=裂縫方向。</p>
 
@@ -366,13 +377,27 @@ function updateInsp(){
   const v=cur.s1[k],ar=cur.aratio[k],d=dirOf(k),rr=Math.hypot(cents[k][0],cents[k][1]);
   const row=(kk,vv,note)=>`<div class="row"><span class="k">${kk}</span><span class="v">${vv}</span></div>`+
                           (note?`<div class="note">${note}</div>`:"");
+  // Crack-direction class = where the tear would RUN, and what that means clinically.
+  // The angle compared is between the crack (perp sigma1) and the CIRCUMFERENTIAL
+  // (tangential) direction, so 0 deg = runs around the circle. Reported as one scale
+  // with a fixed legend, so the good/danger label never looks arbitrary.
   let cls;
   if(degenerate(ar)){ cls=`<span class="degen">degenerate 退化格 — σ₁ not physical σ₁ 不可信</span>`; }
   else { const rad=radial[k]; let dot=Math.min(1,Math.abs(d[0]*rad[0]+d[1]*rad[1]));
+    // angle(sigma1, radial); crack is perp to sigma1, so angle(crack, circumferential)
+    // is the SAME number -- small = the tear circles the disc.
     const ang=Math.acos(dot)*180/Math.PI;
-    cls = ang<30 ? `<span class="good">CIRCUMFERENTIAL 圓周向 — good 好(沿圓繞 = CCC 要的)</span>`
-        : ang>60 ? `<span class="bad">RADIAL 徑向 — danger 危險(往外緣衝 = 失敗撕裂)</span>`
-        : `<span class="obl">oblique 斜向(${ang.toFixed(0)}° off radial 偏離徑向)</span>`; }
+    const verdict = ang<30
+        ? `<span class="good">✅ CIRCUMFERENTIAL 圓周向 — good 好</span>`
+        : ang>60 ? `<span class="bad">⚠️ RADIAL 徑向 — danger 危險</span>`
+        : `<span class="obl">🟡 oblique 斜向 — warning 警訊</span>`;
+    const why = ang<30
+        ? "裂縫沿圓繞 → 收成完整圓孔 = CCC 成功。The tear circles back = a clean round opening."
+        : ang>60 ? "裂縫朝外緣直衝 → 逃到囊袋周邊、無法控制(Argentinian flag),CCC 最典型的失敗。"
+        : "介於兩者:裂縫正偏離圓周、往外傾斜 — 再偏下去就變徑向。Drifting toward radial.";
+    cls = `${verdict}<div class="note">crack vs 圓周 = <b>${ang.toFixed(0)}°</b> `+
+          `<span style="color:#4b5b6a">(0–30 好 · 30–60 警訊 · 60–90 危險)</span></div>`+
+          `<div class="note">${why}</div>`; }
   let inriaHtml="";
   if(tearMode==="inria" && tearThr>0 && cur.s2 && cur.s2.length===tris.length && !degenerate(ar)){
     const r=inriaC(k);
