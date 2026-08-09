@@ -57,12 +57,13 @@ USE_MASS_SPRING = os.environ.get("CAP_MODE", "spring").lower() != "fem"
 # on one side onto the duplicates. Nothing about the pull mechanics changes -- the membrane
 # is still the tuned mass-spring, the rim is NOT anchored, and the mouse spring is untouched.
 CAP_TEAR = os.environ.get("CAP_TEAR", "0") == "1"
-# sigma_bar_T. Measured, NOT guessed: the crack-tip NEIGHBOURHOOD AVERAGE near the nick runs
-# only ~7-20 (it is an average over a disc, an order of magnitude below the single-element
-# peaks the heatmap shows at the pull front). Sweep with a hand-like pull: 150 and 30 never
-# tear at all, 10 propagates the crack from the centre to the rim (4 -> 67 vertices), 5 and 2
-# behave the same. So 8 is a responsive default; raise it to make the capsule tougher.
-TEAR_THRESH = float(os.environ.get("CAP_TEAR_THRESH", "220"))
+# sigma_bar_T, the capsule's toughness. Calibrated by sweeping on an identical hand-like
+# pull: 220 gives a controlled 179-vertex tear, 20 gives a long smooth 563-vertex tear with
+# the mesh still healthy (0.1% degenerate) and the capsule still on the lens, and 1 is WORSE
+# than 20 (only 204 vertices) because it shreds the mesh into 24.8% degenerate elements,
+# which poisons the stress and stalls the tear -- see the guard below. 20 is the sweet spot;
+# raise for a tougher capsule (600 barely tears at all), lower for a fragile one.
+TEAR_THRESH = float(os.environ.get("CAP_TEAR_THRESH", "20"))
 TEAR_FIB_RATIO = float(os.environ.get("CAP_TEAR_FIBRATIO", "2.5"))   # sigma_bar_L / sigma_bar_T
 TEAR_FIB_ALPHA = float(os.environ.get("CAP_TEAR_ALPHA", "2.0"))      # Eq.4 steepness
 TEAR_TURN_MAX = float(os.environ.get("CAP_TEAR_TURN", "70"))     # theta_P, max turn per advance
@@ -89,6 +90,15 @@ TEAR_REACH = float(os.environ.get("CAP_TEAR_REACH", "2.5"))
 # short radial slit of this many edges starting at radius TEAR_START_R.
 TEAR_START_R = float(os.environ.get("CAP_TEAR_START_R", "1.0"))
 TEAR_START_LEN = int(os.environ.get("CAP_TEAR_START_LEN", "3"))
+# Mesh-quality brake. Tearing and the stress field are coupled through mesh quality, and the
+# loop can eat itself: tear too fast -> elements go degenerate -> their stress is garbage
+# (sigma1 in the thousands from a collapsed triangle) -> that garbage drives the criterion
+# even harder -> more tearing. Measured at sigma_T=1: 24.8% of elements degenerate, only 39
+# of 2156 spots still glued, and the tear ended up SHORTER (204 vertices) than at a sane
+# threshold (563), because the tip neighbourhood became all-degenerate and the criterion
+# could no longer be evaluated. Above this fraction the tear pauses so the membrane can
+# relax; it resumes by itself once the mesh recovers.
+TEAR_DEGEN_MAX = float(os.environ.get("CAP_TEAR_DEGEN_MAX", "0.04"))
 
 # --- material ----------------------------------------------------------------
 CLOTH_YOUNG = 120.0       # FEM-only: soft opening phase
@@ -219,6 +229,19 @@ STRESS_MARKER = False    # 3D peak marker (off: terminal report only)
 STRESS_TOP_N = 0         # extra markers beyond the peak
 STRESS_TABLE_N = 5       # rows in the terminal sigma1 table
 DEGEN_LO, DEGEN_HI = 0.25, 4.0   # area_ratio outside this = degenerate, sigma1 invalid
+
+
+def area_ratios(P, R, tris):
+    """Per-triangle deformed/rest area -- the |det F| that principal_stress() also returns,
+    but on its own. Purely geometric (two cross products), so callers that only need to know
+    which elements have collapsed can skip the strain, the material law and the eigenvalues."""
+    import numpy as np
+    P, R, tris = np.asarray(P, float), np.asarray(R, float), np.asarray(tris, int)
+    cur = np.linalg.norm(np.cross(P[tris[:, 1]] - P[tris[:, 0]],
+                                  P[tris[:, 2]] - P[tris[:, 0]]), axis=1)
+    rest = np.linalg.norm(np.cross(R[tris[:, 1]] - R[tris[:, 0]],
+                                   R[tris[:, 2]] - R[tris[:, 0]]), axis=1)
+    return cur / np.maximum(rest, 1e-12)
 STRESS_LOG_EVERY = 1.0   # [s] between terminal reports
 STRESS_HOT_FRAC = 0.5    # 'loaded' = above this fraction of the peak
 SHOW_STRESS = True       # compute sigma1 every STRESS_EVERY steps
@@ -1323,6 +1346,20 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 return
             if self.vtris is None or len(self.vtris) != len(P):
                 self._build_vtris()
+            # Mesh-quality brake (see TEAR_DEGEN_MAX): stop driving the tear while the mesh is
+            # in bad shape, otherwise garbage stress from collapsed elements feeds the
+            # criterion and the tear destroys the thing it is tearing.
+            if TEAR_DEGEN_MAX > 0.0 and self.tris is not None and len(self.tris):
+                ar_all = area_ratios(P, self._rest_now(), self.tris)
+                frac = float(((ar_all < DEGEN_LO) | (ar_all > DEGEN_HI)).mean())
+                if frac > TEAR_DEGEN_MAX:
+                    _TEAR_STATE.update(on=True, len=len(self.crack), c=0.0,
+                                       thr=TEAR_THRESH, why=f"paused: mesh {frac:.0%} degenerate")
+                    if t - self.tear_log_t >= 1.0:
+                        self.tear_log_t = t
+                        print(f"[Tear] paused at t={t:.2f}s: {frac:.1%} of elements degenerate "
+                              f"(limit {TEAR_DEGEN_MAX:.0%}) -- letting the mesh recover")
+                    return
             budget, done = max(1, TEAR_MAX_ADVANCE), 0
             while done < budget:
                 done += 1

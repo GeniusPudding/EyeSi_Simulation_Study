@@ -147,6 +147,24 @@ def main():
     print(f"self-check vs shipped principal_stress(): max |diff| = {err:.2e}  "
           f"({'OK' if err < 1e-6 else 'MISMATCH'})")
 
+    # (0b) area_ratios() is a cheap standalone |det F| used by the tear's degeneracy brake.
+    # It must agree with the area_ratio principal_stress() derives from the full gradient,
+    # otherwise the brake would trip on a different notion of "collapsed" than the stress
+    # field masks on. Checked under a NON-uniform, rotated deformation so a formula that
+    # only happens to work for isotropic scaling cannot pass.
+    from cap_membrane import area_ratios
+    th = 0.4
+    posd = rest.copy()
+    posd[:, 0] *= 1.3; posd[:, 1] *= 0.7
+    posd[:, :2] = posd[:, :2] @ np.array([[np.cos(th), -np.sin(th)],
+                                          [np.sin(th), np.cos(th)]]).T
+    posd[:, 2] += 0.2 * rest[:, 0]
+    _, _, _, ar_ps = principal_stress(posd, rest, tris, E=E, nu=NU)
+    ar_cheap = area_ratios(posd, rest, tris)
+    aerr = float(np.max(np.abs(ar_cheap - ar_ps)))
+    print(f"area_ratios() vs principal_stress() |det F|: max |diff| = {aerr:.2e}  "
+          f"({'OK' if aerr < 1e-9 else 'MISMATCH'})")
+
     print("\n=== ours (Green) vs SOFA co-rotational (linear), uniform stretch s ===")
     print(" s      strain   dir diff (deg)     sigma1 ratio corot/green")
     print("                 median   max       median   min")
