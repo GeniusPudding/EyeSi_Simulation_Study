@@ -1110,6 +1110,51 @@ blocked: needs a 150deg turn, limit is 100deg
 
 ---
 
+### 4.30 §4.29 的副作用:它在**你的**使用情境下會把撕裂弄得更亂
+
+使用者回報「這一版比上一版更亂」。原因是 §4.29 的成核改動在 probe 與真實使用下觸發頻率
+差了兩個數量級:
+
+| | 被擋比例 | 成核觸發 |
+|---|---|---|
+| 腳本 probe | 0.0–0.7% | 900 步內 2 次 |
+| **真實 session(§4.27)** | **73.7%** | 幾乎每 40 次機會就一次 |
+
+成核的動作是**放棄目前的裂縫、從別處的單一頂點重新開始**。在 73.7% 被擋的情況下,
+這會不斷發生 → 畫面上就是**一堆零散的短切口**,而不是一條持續長大的裂縫。
+
+**修正**:把「被擋」與「閒置」的耐心分開。`TEAR_NUC_BLOCKED_EVERY`(預設 **300**,
+對比閒置的 40)—— 閒置很罕見,代表真的什麼都沒發生;**被擋代表裂縫還活著、只是被困住**,
+應該給它多得多的時間才放棄。實測新裂痕數 2 → 1,一般情況無回歸(裂口 8.34、抬升 8.94)。
+
+> ⚠️ **這個調校無法被驗證**,原因與 §4.28 相同:本地 probe 重現不出 73.7% 的被擋率
+> (只有 0.0–0.7%)。300 是依「比 40 大一個量級」推得,不是量出來的。**要真正調對,
+> 得先做出能重現該被擋率的 probe。** 這已經是同一個缺口第二次擋住驗證了。
+
+### 4.31 為何 SofaPython3 有 `addPoints` 卻沒有 `addTriangles`
+
+不是設計上的取捨,單純是**沒有人寫那個 binding**。查 SOFA 安裝目錄即可確認:
+
+```
+plugins/SofaPython3/include/SofaPython3/Sofa/Core/
+    Binding_PointSetTopologyModifier.h     ← 存在,手寫的 pybind11 binding
+    (沒有 Binding_TriangleSetTopologyModifier.h)
+```
+
+SofaPython3 對**每個**想暴露方法的類別都要**手寫一份 pybind11 binding**。目前只有
+`PointSetTopologyModifier` 有(甚至附了範例 `share/SofaPython3/examples/pointSetTopologyModifier.py`),
+`TriangleSetTopologyModifier` 沒有。
+
+至於 `site-packages/Sofa/Component/Topology/Container/Dynamic/TriangleSetTopologyModifier.py`
+——**那不是 binding**,是自動產生的**工廠說明樁**(內容只有 docstring 與 `autofunction`),
+只讓你能 `addObject("TriangleSetTopologyModifier")`,不會暴露任何方法。
+
+> 所以這是**可以補的**:替 `TriangleSetTopologyModifier` 寫一份 binding 並不困難,
+> 但那等於改 SofaPython3 本身(或另外做一個提供 binding 的 plugin)。我們選的是
+> §4.26 的路 —— 在自己的 plugin 裡放一個 C++ 元件,由 Data 驅動。
+
+---
+
 ---
 
 ## 5. 做不到什麼、為什麼(這是重點)

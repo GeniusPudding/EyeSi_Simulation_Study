@@ -189,6 +189,13 @@ TEAR_NUCLEATE = os.environ.get("CAP_TEAR_NUCLEATE", "1") == "1"
 # momentary lull mid-tear discarded a front that was still growing and restarted from
 # a single vertex, which measured as the tear collapsing (5 vertices -> 1).
 TEAR_NUCLEATE_EVERY = int(os.environ.get("CAP_TEAR_NUCEVERY", "40"))
+# Separate, MUCH larger patience for abandoning a BLOCKED front, as opposed to an idle one.
+# Being blocked is common -- 73.7% of steps in a recorded session -- so reusing the idle
+# threshold made the tear give up and restart somewhere else over and over, leaving scattered
+# short cuts instead of one growing tear ("this version tears more messily"). Idle is rare and
+# genuinely means nothing is happening; blocked means the tear is alive but cornered, and it
+# deserves far more time before it is written off.
+TEAR_NUC_BLOCKED_EVERY = int(os.environ.get("CAP_TEAR_NUCBLOCKED", "300"))
 TEAR_NUC_MAX = int(os.environ.get("CAP_TEAR_NUCMAX", "40"))   # elements searched per scan
 # The initial nick: capsulorhexis starts with a cystotome puncture near the centre, and
 # without one there is no crack tip to push -- the membrane would just stretch. This seeds a
@@ -1768,7 +1775,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             a0 = max(2.0 * TEAR_START_R, 1e-6)
             return float(np.sqrt(max(ext, a0) / a0))
 
-        def _try_nucleate(self, P):
+        def _try_nucleate(self, P, blocked=False):
             """Give up on this tip and start a tear where the membrane is most overloaded.
 
             Called both when the tip is idle AND when it is loaded but cannot move. The second
@@ -1779,7 +1786,8 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             ever start anywhere -- exactly the "after the first crack I cannot tear anywhere
             else" report. Blocked is at least as good a reason to look elsewhere as idle is."""
             self.nuc_tick += 1
-            if not TEAR_NUCLEATE or self.nuc_tick < TEAR_NUCLEATE_EVERY:
+            need = TEAR_NUC_BLOCKED_EVERY if blocked else TEAR_NUCLEATE_EVERY
+            if not TEAR_NUCLEATE or self.nuc_tick < need:
                 return False
             self.nuc_tick = 0
             hit = self._scan_nucleation(P)
@@ -2316,7 +2324,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                         _TEAR_STATE["why"] = self.block
                     # A boxed-in tip is a dead tip. Look for somewhere else to start, exactly
                     # as we do when it is idle -- otherwise the whole tear is over for good.
-                    self._try_nucleate(P)
+                    self._try_nucleate(P, blocked=True)
                     return
                 if t - self.tear_log_t >= 0.5:
                     self.tear_log_t = t
