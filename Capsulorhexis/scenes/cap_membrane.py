@@ -156,6 +156,23 @@ TOPO_API = os.environ.get("CAP_TOPO_API", "0") == "1"
 # below its own recent peak. With a jittery probe pull, 0.6/0.4 tears 54 vertices against 35,
 # still never self-starts, and still stops dead on release.
 TEAR_ARREST = float(os.environ.get("CAP_TEAR_ARREST", "0.6"))
+# ...but a SPLIT also unloads the tip -- that is what tearing IS -- and taking max() above
+# meant the ref remembered the PRE-split peak, so every successful bite immediately arrested
+# the next one. Read out of a real 2165-step session: 36.3% of all steps were "arrested" and
+# only 11.8% were tearing, while c sat at a median of 392 against a threshold of 20. The gate
+# was refusing a criterion that was satisfied twentyfold. After our own split, re-baseline the
+# ref to the post-split drive instead, so the gate still catches the hand LETTING GO but no
+# longer catches the crack doing its job.
+TEAR_ARREST_REBASE = os.environ.get("CAP_TEAR_REBASE", "1") == "1"
+# Escape hatch for the turn limit. Restricting the crack to existing edges is the papers' own
+# simple strategy, and Dequidt 2013 section 4.3 says outright that it makes propagation "highly
+# dependent on the original mesh"; their alternative is to cut in an arbitrary direction and
+# remesh. On our mesh the cheap version DEADLOCKS: the same session sat 551 consecutive steps
+# (11 s) at exactly c=392.36 with the crack frozen at 22 vertices because every remaining edge
+# needed a 131 deg turn and the limit is 100. That is not a difficulty, it is a dead end. So
+# after this many consecutive blocked opportunities with the criterion still met, take the
+# sharp turn anyway -- a real membrane at 20x its tearing stress does not simply stop.
+TEAR_BLOCK_ESCAPE = int(os.environ.get("CAP_TEAR_ESCAPE", "8"))
 TEAR_ARREST_DECAY = float(os.environ.get("CAP_TEAR_ARREST_DECAY", "0.97"))
 # Minimum sigma1 in the tip's OWN elements before its direction is trusted. Measured, the
 # local reading is 0.3 with no load and 5-20 under a real pull, and it is the only source
@@ -210,7 +227,13 @@ TEAR_START_LEN = int(os.environ.get("CAP_TEAR_START_LEN", "3"))
 # threshold (563), because the tip neighbourhood became all-degenerate and the criterion
 # could no longer be evaluated. Above this fraction the tear pauses so the membrane can
 # relax; it resumes by itself once the mesh recovers.
-TEAR_DEGEN_MAX = float(os.environ.get("CAP_TEAR_DEGEN_MAX", "0.04"))
+# Raised 0.04 -> 0.10 once the arrest gate stopped self-arresting: with the rebase in place
+# the brake became the SECOND-biggest blocker (25% of probe steps at 0.04) and it was braking
+# on 4-7% degenerate, nowhere near the 24.8% that actually shreds. Measured on the same pull,
+# 0.10 gives crack 154 -> 170 and tearing 50.0% -> 55.3%, and the mesh SATURATES there -- 0.20
+# is identical (5.0% degenerate, stretch 8.31 concentrated in 28 torn-lip edges of ~12500,
+# p99 1.70), so above 0.10 the brake is no longer what limits the tear anyway.
+TEAR_DEGEN_MAX = float(os.environ.get("CAP_TEAR_DEGEN_MAX", "0.10"))
 
 # --- material ----------------------------------------------------------------
 CLOTH_YOUNG = float(os.environ.get('CAP_CLOTH_YOUNG', '120.0'))       # FEM-only: soft opening phase
@@ -1215,6 +1238,8 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.crack_hist = []       # finished fronts, kept so the drawing shows every cut
             self.nuc_tick = 0          # opportunities since the last nucleation scan
             self._drive_ref = None     # decaying peak tip drive, for arrest-on-unloading
+            self._just_split = False   # last opportunity ended in a split (see ARREST_REBASE)
+            self._blocked_runs = 0     # consecutive turn-blocked opportunities
             self.crack_dir = None      # current heading (unit xy), for the Eq.2 turn limit
             self.vtris = None          # vertex -> [triangle ids], rebuilt on topology change
             self.tear_log_t = -1.0
@@ -2339,6 +2364,13 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 # 98 -> 133 vertices and the tip out to r=6.58 of 6.89, because residual
                 # elastic stress holds c far above 1 long after the hand has gone.
                 ref = self._drive_ref
+                if TEAR_ARREST_REBASE and self._just_split:
+                    # The drop we are about to measure is OUR doing, not the hand's: the
+                    # previous opportunity split a vertex and that released the tip. Re-baseline
+                    # rather than compare against the pre-split peak, or the tear can never take
+                    # two bites in a row.
+                    ref = None
+                self._just_split = False
                 self._drive_ref = S1 if ref is None else max(S1, ref * TEAR_ARREST_DECAY)
                 if ref is not None and S1 < ref * TEAR_ARREST:
                     _TEAR_STATE.update(on=True, len=len(self.crack), c=round(float(c), 2),
@@ -2361,15 +2393,28 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 self.crack_dir = d
                 self.nuc_tick = 0      # this front is alive; do not go looking elsewhere
                 self.block = None
-                if not self._advance_to_best_neighbour(P):
+                # Take the sharp turn once the tip has been boxed in long enough. Only the turn
+                # limit is escaped; "no usable edge" and "ran into its own path" are real
+                # topological dead ends and forcing them would re-split existing lips.
+                escape = (TEAR_BLOCK_ESCAPE > 0
+                          and self._blocked_runs >= TEAR_BLOCK_ESCAPE)
+                if not self._advance_to_best_neighbour(P, forced=escape):
                     # The criterion passed but the mesh had nowhere legal to go. Report THAT,
                     # not "tearing" -- it is a completely different problem to fix.
                     if self.block:
                         _TEAR_STATE["why"] = self.block
+                        if "deg turn" in self.block:
+                            self._blocked_runs += 1
+                        else:
+                            self._blocked_runs = 0   # a real dead end; escaping cannot help
                     # A boxed-in tip is a dead tip. Look for somewhere else to start, exactly
                     # as we do when it is idle -- otherwise the whole tear is over for good.
                     self._try_nucleate(P, blocked=True)
                     return
+                self._just_split = True
+                if escape:
+                    print(f"[Tear] escaped a {self._blocked_runs}-step turn block")
+                self._blocked_runs = 0
                 if t - self.tear_log_t >= 0.5:
                     self.tear_log_t = t
                     tp = self.crack[-1]
