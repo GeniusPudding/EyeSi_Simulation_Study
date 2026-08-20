@@ -208,6 +208,24 @@ ADHESION_STIFF = 120.0    # spring pulling each glued node to its rest spot
 # released 65 of 2153 spots). 30 gives break_lift 0.250, comfortably inside the limit and
 # 282 spots released on the same pull. Do not raise it past ~45 without also raising
 # MAX_STRETCH; _check_peel_reachable() below warns if this is ever violated again.
+# Adhesion acts only IN THE PLANE OF THE LENS SURFACE, not as a downward suction.
+# The anterior capsule lies ON the lens; what holds it is in-plane continuity and the zonular
+# insertion, not something pulling it onto the dome. Modelled as a plain rest-shape spring it
+# was pulling every node back toward its rest spot in FULL 3D, so lifting a flap fought a
+# spring dragging it down again -- which is why the membrane barely moved however hard it was
+# pulled, and why a torn piece could never be folded over. The spring stays (it is implicit,
+# so it stays stable), but its anchor now follows the node along the surface NORMAL, leaving
+# only the tangential component. Lifting is then resisted by membrane stretch and by the
+# neighbours' in-plane anchors -- which is the real mechanism -- and not by glue.
+#
+# OFF BY DEFAULT, because measuring it did not show the benefit it was built for. On an
+# identical pull it moved the grab lift only 2.34 -> 2.36 and the lifted-node count 287 -> 303,
+# while HALVING the tear (crack 100 -> 47) and leaving more of the capsule stuck (1044 -> 1388
+# glued) -- the membrane gives more easily, so less stress builds and less tears. So the
+# downward pull was never what stopped a flap lifting; the limiter is membrane stretch plus
+# the neighbours' in-plane anchors. Kept and switchable (CAP_ADH_TANGENTIAL=1) because it is
+# still the more faithful model, and it is the right foundation once flap lifting is solved.
+ADH_TANGENTIAL = os.environ.get("CAP_ADH_TANGENTIAL", "0") == "1"
 BREAK_FORCE = 30.0
 # NOTE: tear mode deliberately keeps the DEFAULT adhesion. Weakening it to help the flap lift
 # was a mistake -- the flap does not need it (splitting a vertex already ungluesthat spot and
@@ -1044,7 +1062,8 @@ def _start_stress_server(port, open_browser):
 
 
 def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
-                     topo, display, camera, root, probe, stitch, central, lift):
+                     topo, display, camera, root, probe, stitch, central, lift,
+                     anchor_mo=None):
     import Sofa
     import numpy as np
 
@@ -1056,6 +1075,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.mouse, self.damper = mouse, damper
             self.topo, self.display = topo, display
             self.camera, self.root = camera, root
+            self.anchor_mo = anchor_mo   # adhesion anchors (tangential-only mode)
             self.probe = probe
             self.last_stress_log = -1e9
             self.stitch = stitch
@@ -2447,6 +2467,35 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                         del self.peel_fade[nd]
                 self._push_adhesion()
 
+            # Slide the adhesion anchors along the lens NORMAL so the spring can only pull
+            # in the surface plane (see ADH_TANGENTIAL). anchor = rest + n*((P-rest).n), which
+            # by construction leaves the spring force k*(anchor-P) with no normal component.
+            if self.anchor_mo is not None:
+                try:
+                    P = np.asarray(pos, dtype=float)
+                    R = self._rest_now()
+                    m = min(len(P), len(R))
+                    if m:
+                        # outward normal of the oblate lens at the REST spot
+                        n = np.stack([R[:m, 0] / (G.A * G.A),
+                                      R[:m, 1] / (G.A * G.A),
+                                      (R[:m, 2] - G.Z0) / (G.C * G.C)], axis=1)
+                        ln = np.linalg.norm(n, axis=1, keepdims=True)
+                        n = n / np.maximum(ln, 1e-12)
+                        d = P[:m] - R[:m]
+                        anch = R[:m] + n * (d * n).sum(axis=1, keepdims=True)
+                        cur_a = np.asarray(self.anchor_mo.position.value, dtype=float)
+                        if len(cur_a) != len(P):
+                            # a split appended vertices: grow the anchors to match
+                            if len(cur_a) < len(P):
+                                pad = np.asarray(P[len(cur_a):], dtype=float)
+                                cur_a = np.vstack([cur_a, pad]) if len(cur_a) else pad
+                            cur_a = cur_a[:len(P)]
+                        cur_a[:m] = anch
+                        self.anchor_mo.position.value = cur_a.tolist()
+                except Exception:  # noqa: BLE001
+                    pass
+
             # Publish what is still stuck to the lens (see _ADH_STATE).
             if self.adhered is not None:
                 n = len(pos)
@@ -2766,9 +2815,21 @@ def createScene(root):
                   center=[0.0, 0.0, G.Z0], vradius=[G.A, G.A, G.C],
                   stiffness=LENS_REPULSION, damping=1.0)
 
-    # adhesion: springs pulling every node to its rest spot on the lens
-    adhesion = cap.addObject("RestShapeSpringsForceField", name="Adhesion",
-                             stiffness=ADHESION_STIFF, drawSpring=False)
+    # adhesion: springs holding every node to its spot on the lens. With ADH_TANGENTIAL the
+    # anchors live in their own child node (no solver, no dynamics of their own) and the
+    # controller slides them along the surface normal each step, which removes the normal
+    # component of the spring force -- see ADH_TANGENTIAL.
+    if ADH_TANGENTIAL:
+        anchors = cap.addChild("AdhAnchors")
+        anchor_mo = anchors.addObject("MechanicalObject", name="AdhAnchor", template="Vec3d",
+                                      position=list(mo.rest_position.value))
+        adhesion = cap.addObject("RestShapeSpringsForceField", name="Adhesion",
+                                 stiffness=ADHESION_STIFF, drawSpring=False,
+                                 external_rest_shape=anchor_mo.getLinkPath())
+    else:
+        anchor_mo = None
+        adhesion = cap.addObject("RestShapeSpringsForceField", name="Adhesion",
+                                 stiffness=ADHESION_STIFF, drawSpring=False)
 
     # Stitch springs hold the pre-slit tear circle closed (coincident vertex pairs,
     # rest length 0), angle-sorted so a scripted tear can run around progressively.
@@ -2924,7 +2985,8 @@ def createScene(root):
 
     cap.addObject(_make_controller(fem, springs, bending, mo, adhesion, pull,
                                    _mouse, _damper, topo, _display, _camera, root,
-                                   _probe, stitch, central, lift))
+                                   _probe, stitch, central, lift,
+                                   anchor_mo=anchor_mo))
 
 
 

@@ -21,8 +21,8 @@
      and the long explanatory paragraphs (.note) hide behind one switch, because they are
      reference material you need once and then never again while actually working. */
   .panel > h4, .panel > .cap2 { cursor: pointer; user-select: none; }
-  .panel > h4::before, .panel > .cap2::before { content: "be "; color: #7f93a4; }
-  .panel.folded > h4::before, .panel.folded > .cap2::before { content: "b8 "; }
+  .panel > h4::before, .panel > .cap2::before { content: "▾ "; color: #7f93a4; }
+  .panel.folded > h4::before, .panel.folded > .cap2::before { content: "▸ "; }
   .panel.folded > *:not(:first-child) { display: none !important; }
   body.lean .note { display: none !important; }
   #prose { position: fixed; top: 10px; right: 300px; z-index: 9; background: #16212c;
