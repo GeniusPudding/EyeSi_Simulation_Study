@@ -1768,6 +1768,37 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             a0 = max(2.0 * TEAR_START_R, 1e-6)
             return float(np.sqrt(max(ext, a0) / a0))
 
+        def _try_nucleate(self, P):
+            """Give up on this tip and start a tear where the membrane is most overloaded.
+
+            Called both when the tip is idle AND when it is loaded but cannot move. The second
+            case used to be missing, and it is the common one: with the crack boxed in, the tip
+            reports a huge c (274 was observed on screen) yet every neighbour needs a ~150 deg
+            turn, so the advance is refused every single opportunity. Because the scan lived
+            inside the 'tip not loaded' branch it was never even reached, and no new tear could
+            ever start anywhere -- exactly the "after the first crack I cannot tear anywhere
+            else" report. Blocked is at least as good a reason to look elsewhere as idle is."""
+            self.nuc_tick += 1
+            if not TEAR_NUCLEATE or self.nuc_tick < TEAR_NUCLEATE_EVERY:
+                return False
+            self.nuc_tick = 0
+            hit = self._scan_nucleation(P)
+            if hit is None:
+                return False
+            k, cval, d = hit
+            tri = self.tris[k]
+            v = int(tri[int(np.argmax(np.hypot(P[tri][:, 0], P[tri][:, 1])))])
+            if self.crack and len(self.crack) > 1:
+                self.crack_hist.append(list(self.crack))
+            self.crack = [v]
+            self.crack_dir = np.asarray(d, dtype=float)
+            self.closed = False
+            self._drive_ref = None
+            self._tear_reinit()
+            print(f"[Tear] NEW tear nucleated at element {k} (c={cval:.2f}), "
+                  f"where the membrane is most overloaded")
+            return True
+
         def _scan_nucleation(self, P):
             """Best fracture site over the WHOLE membrane, per Dequidt 2013 section 4.3: the
             criterion is evaluated at the tip of an existing fracture *or at the centre of each
@@ -2188,24 +2219,8 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                     # The tip is idle. Per Dequidt 2013 section 4.3 the criterion is evaluated
                     # at an existing tip OR at the centre of each element, so look for a place
                     # that IS overloaded rather than insisting the user pull near this tip.
-                    self.nuc_tick += 1
-                    if TEAR_NUCLEATE and self.nuc_tick >= TEAR_NUCLEATE_EVERY:
-                        self.nuc_tick = 0
-                        hit = self._scan_nucleation(P)
-                        if hit is not None:
-                            k, cval, d = hit
-                            tri = self.tris[k]
-                            v = int(tri[int(np.argmax(np.hypot(P[tri][:, 0], P[tri][:, 1])))])
-                            if self.crack and len(self.crack) > 1:
-                                self.crack_hist.append(list(self.crack))
-                            self.crack = [v]
-                            self.crack_dir = np.asarray(d, dtype=float)
-                            self.closed = False
-                            self._drive_ref = None
-                            self._tear_reinit()
-                            print(f"[Tear] NEW tear nucleated at element {k} (c={cval:.2f}), "
-                                  f"where the membrane is most overloaded")
-                            return
+                    if self._try_nucleate(P):
+                        return
                     # Report the values THIS evaluation measured. Leaving the previous ones in
                     # place made the panel contradict itself -- it showed a local sigma1 above
                     # the gate next to the message saying the gate had refused, because that
@@ -2299,6 +2314,9 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                     # not "tearing" -- it is a completely different problem to fix.
                     if self.block:
                         _TEAR_STATE["why"] = self.block
+                    # A boxed-in tip is a dead tip. Look for somewhere else to start, exactly
+                    # as we do when it is idle -- otherwise the whole tear is over for good.
+                    self._try_nucleate(P)
                     return
                 if t - self.tear_log_t >= 0.5:
                     self.tear_log_t = t
