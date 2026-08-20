@@ -66,7 +66,15 @@ CAP_TEAR = os.environ.get("CAP_TEAR", "0") == "1"
 TEAR_THRESH = float(os.environ.get("CAP_TEAR_THRESH", "20"))
 TEAR_FIB_RATIO = float(os.environ.get("CAP_TEAR_FIBRATIO", "2.5"))   # sigma_bar_L / sigma_bar_T
 TEAR_FIB_ALPHA = float(os.environ.get("CAP_TEAR_ALPHA", "2.0"))      # Eq.4 steepness
-TEAR_TURN_MAX = float(os.environ.get("CAP_TEAR_TURN", "70"))     # theta_P, max turn per advance
+# Largest turn the crack may make in one edge (Eq.2's H term). Must be bigger than the
+# MESH's own angular resolution, not just "a plausible angle for a crack": vertices here
+# have ~6 edges at ~60deg spacing, so once the forward edges have been cut the nearest
+# legal option sits at 85-95deg. At the old 70 that was illegal, and the crack simply
+# stopped -- measured, 55% of all the steps where the criterion said TEAR were refused
+# by this limit rather than by any physics, every one of them asking for ~90deg.
+# Raising it to 100 doubled the tear (45 -> 90 vertices) and removed the blocking
+# entirely; 130 was no better, so the limit is no longer what binds.
+TEAR_TURN_MAX = float(os.environ.get("CAP_TEAR_TURN", "100"))
 TEAR_EVERY = int(os.environ.get("CAP_TEAR_EVERY", "3"))          # steps between advances
 TEAR_TIP_RADIUS = float(os.environ.get("CAP_TEAR_RADIUS", "0.6"))    # tip neighbourhood
 # Edges the crack may run in ONE opportunity. A real tear is unstable: once the criterion is
@@ -113,6 +121,15 @@ TEAR_ARREST_DECAY = float(os.environ.get("CAP_TEAR_ARREST_DECAY", "0.97"))
 # local reading is 0.3 with no load and 5-20 under a real pull, and it is the only source
 # that points at the hand -- but only once there is something to point with.
 TEAR_LOCAL_MIN = float(os.environ.get("CAP_TEAR_LOCALMIN", "0.4"))
+# Crack-length amplification, the K = sigma*sqrt(pi*a) of linear elastic fracture mechanics.
+# THIS is why a tear "runs" in reality and never did here. The stress delivered to a crack tip
+# grows with the SQUARE ROOT OF CRACK LENGTH, so a long tear extends far more easily than a
+# fresh nick -- that is the whole sensation of tearing skin or paper. The criterion had no
+# crack-length term at all, so a 100-vertex tear was exactly as hard to extend as the opening
+# puncture, which is precisely why it advanced in isolated bursts and never took off.
+# Amplify by sqrt(a / a0), a = the crack's physical extent, capped so it cannot run away.
+TEAR_LEFM = os.environ.get("CAP_TEAR_LEFM", "1") == "1"
+TEAR_LEFM_CAP = float(os.environ.get("CAP_TEAR_LEFMCAP", "6.0"))
 # The initial nick: capsulorhexis starts with a cystotome puncture near the centre, and
 # without one there is no crack tip to push -- the membrane would just stretch. This seeds a
 # short radial slit of this many edges starting at radius TEAR_START_R.
@@ -581,7 +598,8 @@ _STRESS_GEOM_VER = 0
 # tell "-Tear was not passed" from "the threshold is too high" was reading the console.
 _TEAR_STATE = {"on": False, "len": 0, "c": 0.0, "thr": 0.0, "tipr": 0.0, "why": "off",
                "tipx": 0.0, "tipy": 0.0, "s1": 0.0, "s2": 0.0, "th1": 0.0,
-               "fib": 0.0, "dang": 0.0, "su": 0.0, "sbu": 0.0, "loc": 0.0}
+               "fib": 0.0, "dang": 0.0, "su": 0.0, "sbu": 0.0, "loc": 0.0,
+               "lefm": 1.0}
 # The crack itself, for the browser to DRAW rather than just count. A tear is a CHAIN OF
 # MESH EDGES: "path" is the ordered vertex list, so consecutive entries are the edges the
 # tear has cut, and the last entry is the live tip. "lips" pairs each duplicated vertex with
@@ -805,6 +823,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                                        # map in the browser. Grows with duplicates only.
             self.crack = None          # vertex path of the tear; last entry is the live tip
             self.closed = False        # True once the tear has met its own path
+            self.block = None          # why the last advance attempt failed
             self._drive_ref = None     # decaying peak tip drive, for arrest-on-unloading
             self.crack_dir = None      # current heading (unit xy), for the Eq.2 turn limit
             self.vtris = None          # vertex -> [triangle ids], rebuilt on topology change
@@ -1331,8 +1350,40 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             k = int(min(max(TEAR_DRIVE_TOPK, 1), v.size))
             drive = float(np.mean(np.partition(v, -k)[-k:]))
 
+            # LEFM crack-length amplification (see TEAR_LEFM). A coarse linear mesh has no
+            # stress singularity at the tip -- measured on a real session, the tip's own sigma1
+            # is about 3% of the field's p98 (ratios 0.006-0.106 over most of the pull), so the
+            # tip under-reads by roughly 30x and the criterion could only ever fire when the
+            # hand was almost on top of it (median instrument-to-tip distance was 4.30 on a
+            # disc of radius 6.89). A flat gain cannot fix that, because what is missing is not
+            # a constant: K = sigma*sqrt(pi*a) grows with crack length, which is what makes a
+            # tear accelerate once it has started instead of needing the same effort forever.
+            if TEAR_LEFM:
+                drive *= min(self._crack_extent_factor(), TEAR_LEFM_CAP)
             scale = drive / l1 if l1 > 1e-9 else 0.0
             return l1 * scale, l2 * scale, th1, l1
+
+        def _crack_extent_factor(self):
+            """sqrt(a / a0): how much easier this crack is to extend than the opening nick.
+
+            'a' is the crack's SPATIAL EXTENT -- the diagonal of the box containing its path.
+            Not the vertex count, which rewards a jagged path that doubles back and cuts little
+            new ground; and not tip-to-seed distance, which was the first attempt and collapses
+            to nothing for exactly the crack shape a capsulorhexis wants: a curve that comes
+            back around, whose endpoints are close together while the crack itself is large.
+            Measured, that version returned 1.00 for a 41-vertex tear, i.e. no amplification at
+            all. a0 is the seeded nick, so the factor starts at 1."""
+            if not self.crack or len(self.crack) < 2:
+                return 1.0
+            P = np.asarray(self.mo.position.value)
+            idx = [v for v in self.crack if v < len(P)]
+            if len(idx) < 2:
+                return 1.0
+            xy = P[idx][:, :2]
+            span = xy.max(axis=0) - xy.min(axis=0)
+            ext = float(np.hypot(span[0], span[1]))
+            a0 = max(2.0 * TEAR_START_R, 1e-6)
+            return float(np.sqrt(max(ext, a0) / a0))
 
         def _argmax_c(self, S1, S2, th1_deg, fib_deg, heading):
             """INRIA criterion (Eq.1-4). Returns (c, unit direction) for the crack direction
@@ -1501,7 +1552,14 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             print(f"[Tear] initial nick: {len(self.crack)} vertices from r={TEAR_START_R:g}")
 
         def _advance_to_best_neighbour(self, P, forced=False):
-            """Move the tip one edge along self.crack_dir, splitting the vertex left behind."""
+            """Move the tip one edge along self.crack_dir, splitting the vertex left behind.
+
+            Sets self.block to why it could not move, if it could not. The telemetry used to
+            report "tearing" whenever the criterion passed, whether or not the crack actually
+            advanced -- so a tear that met the criterion and then failed to move looked, in the
+            recording, exactly like one that was tearing. Measured, that is the common case:
+            c sat at 1.92 with the crack frozen at 41 vertices, and the black box called it
+            "tearing" the whole time."""
             tip = self.crack[-1]
             # Exclude only the RECENT tail, not the whole history. Excluding every vertex the
             # crack ever visited is what dead-ended it: a capsulorhexis is a CLOSED circle, so
@@ -1537,6 +1595,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 cand = [j for j in cand
                         if np.hypot(P[j][0], P[j][1]) < lim]
             if not cand:
+                self.block = "blocked: the crack ran into its own path (no free edge left)"
                 return False
             pv = P[tip][:2]
             best, bj = -2.0, -1
@@ -1549,8 +1608,12 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 if dot > best:
                     best, bj = dot, j
             if bj < 0:
+                self.block = "blocked: no usable edge at the tip"
                 return False
-            if not forced and np.degrees(np.arccos(np.clip(best, -1, 1))) > TEAR_TURN_MAX:
+            turn = float(np.degrees(np.arccos(np.clip(best, -1, 1))))
+            if not forced and turn > TEAR_TURN_MAX:
+                self.block = (f"blocked: needs a {turn:.0f}deg turn, limit is "
+                              f"{TEAR_TURN_MAX:.0f}deg")
                 return False
             if bj in visited:
                 # The tear has come back onto its own path: the rhexis is closed. Split the
@@ -1639,6 +1702,8 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                                    th1=round(float(th1), 1), fib=round(float(fib), 1),
                                    dang=round(float(dang), 1), su=round(float(su), 1),
                                    sbu=round(float(sbu), 1), loc=round(float(s1_local), 2),
+                                   lefm=round(float(min(self._crack_extent_factor(),
+                                                        TEAR_LEFM_CAP)), 2),
                                    why="tearing" if c >= 1.0 else "c<1: pull harder near the tip")
                 if c < 1.0:
                     self._drive_ref = (S1 if self._drive_ref is None
@@ -1669,7 +1734,12 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 # STOPS when the pull stops.
                 budget = 1
                 self.crack_dir = d
+                self.block = None
                 if not self._advance_to_best_neighbour(P):
+                    # The criterion passed but the mesh had nowhere legal to go. Report THAT,
+                    # not "tearing" -- it is a completely different problem to fix.
+                    if self.block:
+                        _TEAR_STATE["why"] = self.block
                     return
                 if t - self.tear_log_t >= 0.5:
                     self.tear_log_t = t
