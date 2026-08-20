@@ -125,6 +125,16 @@ TEAR_CLOSE_MIN = int(os.environ.get("CAP_TEAR_CLOSEMIN", "40"))
 # Splits between full rebuilds of the edge springs. 1 = every split (most correct,
 # ~27 ms each); higher trades accuracy of the cut for framerate.
 TEAR_SPRING_REBUILD = int(os.environ.get("CAP_TEAR_SPRINGREBUILD", "1"))
+# Use the Capsulorhexis plugin's TopologySplitEngine (official topology API) instead of
+# writing topo.triangles directly. OFF BY DEFAULT: the component is correct in isolation
+# (tests/test_topology_split.py -- the split lands, positions are interpolated from the
+# ancestor, and topo.edges comes out with zero stale and zero missing entries), but merely
+# CREATING it inside this scene aborts SOFA with SIGABRT during scene load. The stack points
+# at SceneLoaderPY3::doLoad, so it fails while the graph is being built, before any split is
+# ever requested; moving it after the geometry algorithms -- the order that works in the unit
+# test -- does not help. Not yet diagnosed. With CAP_TOPO_API=0 the scene behaves exactly as
+# before, so this costs nothing to leave in place until it is understood.
+TOPO_API = os.environ.get("CAP_TOPO_API", "0") == "1"
 # Arrest-on-unloading. A crack is driven by work being DONE on it, so letting go should let
 # the stored energy run it a little further and then stop it. The criterion alone cannot do
 # that: c stays far above 1 on residual stress. Advance only while the tip drive is within
@@ -1132,7 +1142,7 @@ def _start_stress_server(port, open_browser):
 
 def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                      topo, display, camera, root, probe, stitch, central, lift,
-                     anchor_mo=None):
+                     anchor_mo=None, splitter=None):
     import Sofa
     import numpy as np
 
@@ -1145,6 +1155,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.topo, self.display = topo, display
             self.camera, self.root = camera, root
             self.anchor_mo = anchor_mo   # adhesion anchors (tangential-only mode)
+            self.splitter = splitter     # official-API topology splitter, or None
             self.probe = probe
             self.last_stress_log = -1e9
             self.stitch = stitch
@@ -1174,6 +1185,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self._field_cache = None   # (key, s1, area_ratio, centroids) per step
             self._spring_debt = 0      # splits since the edge springs were rebuilt
             self._spring_dirty = False # a split changed the topology; rebuild after the step
+            self._split_req = 0        # request counter for TopologySplitEngine
             self.rest0 = None          # PRISTINE rest shape for the reference disc. NOT
                                        # rest_position: plasticity creeps that toward the
                                        # deformed shape, which was warping the "undeformed"
@@ -1864,8 +1876,35 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             # simulation deforms or how much plasticity has crept
             if self.rest0 is not None and v < len(self.rest0):
                 self.rest0 = np.vstack([self.rest0, self.rest0[v]])
-            self.mo.position.value = np.vstack([P, P[v]]).tolist()
-            self.mo.rest_position.value = np.vstack([R, R[v]]).tolist()
+            used_api = False
+            if self.splitter is not None:
+                # OFFICIAL TOPOLOGY API (Capsulorhexis plugin, TopologySplitEngine). It calls
+                # addPoints with the original as ancestor -- SOFA then interpolates the new
+                # DOF, so position, rest position and velocity are all created correctly and
+                # none of the manual array surgery below is needed -- then removes and re-adds
+                # the moved triangles, which is what keeps the container's EDGE list right.
+                # Writing topo.triangles directly (the fallback) cannot do that, and the stale
+                # edges become springs stapling the cut shut (docs 4.24).
+                try:
+                    self.splitter.splitPoint.value = int(v)
+                    self.splitter.movedTriangles.value = [int(t) for t in neg]
+                    self._split_req += 1
+                    self.splitter.request.value = self._split_req
+                    # READING newPoint is what runs the split: the component registers an
+                    # update callback on 'request', so the work happens when its output is
+                    # asked for. That makes it synchronous, which this caller needs -- it
+                    # appends the new vertex to the crack and rebuilds its caches right here.
+                    got = int(self.splitter.newPoint.value)
+                    if got < 0:
+                        used_api = False          # component refused; fall back
+                    else:
+                        nv = got
+                        used_api = True
+                except Exception:  # noqa: BLE001
+                    used_api = False
+            if not used_api:
+                self.mo.position.value = np.vstack([P, P[v]]).tolist()
+                self.mo.rest_position.value = np.vstack([R, R[v]]).tolist()
             # Grow the rewind snapshot with the mesh. The runaway guard refuses to rewind
             # when the snapshot has a different vertex count than the mesh, so without this
             # every split disarmed it until a healthy frame happened to be re-cached -- and
@@ -1876,13 +1915,14 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 self.last_good = self.last_good + [list(self.last_good[v])]
             if self.last_good_rest is not None and len(self.last_good_rest) == nv:
                 self.last_good_rest = list(self.last_good_rest) + [list(self.last_good_rest[v])]
-            V = np.array(self.mo.velocity.value)
-            if len(V) == nv:
-                self.mo.velocity.value = np.vstack([V, V[v]]).tolist()
-            T = self.tris.copy()
-            for ti in neg:
-                T[ti][T[ti] == v] = nv
-            self.topo.triangles.value = T.tolist()
+            if not used_api:
+                V = np.array(self.mo.velocity.value)
+                if len(V) == nv:
+                    self.mo.velocity.value = np.vstack([V, V[v]]).tolist()
+                T = self.tris.copy()
+                for ti in neg:
+                    T[ti][T[ti] == v] = nv
+                self.topo.triangles.value = T.tolist()
             # Release the adhesion along the cut. Without this the tear is invisible: both
             # lips stay glued flat to the lens by RestShapeSprings (they share a rest
             # position), so the mesh is topologically open but nothing can separate. A real
@@ -2963,7 +3003,24 @@ def createScene(root):
 
     topo = cap.addObject("TriangleSetTopologyContainer", name="topo", src="@../loader")
     cap.addObject("TriangleSetTopologyModifier")
+
     cap.addObject("TriangleSetGeometryAlgorithms", template="Vec3d")
+    # Open the mesh through the OFFICIAL topology API when the Capsulorhexis plugin is
+    # loadable. Writing topo.triangles directly leaves the container's edge list stale, and
+    # those stale edges become springs stapling the cut shut (docs 4.24). The API is only
+    # reachable from C++, hence the plugin; without it the scene falls back to the direct
+    # write and simply behaves as before.
+    splitter = None
+    if TOPO_API:
+        try:
+            root.addObject("RequiredPlugin", name="Capsulorhexis")
+            splitter = cap.addObject("TopologySplitEngine", name="Splitter")
+            print("[Topology] official API in use (TopologySplitEngine); "
+                  "edges stay consistent across splits")
+        except Exception as e:  # noqa: BLE001
+            splitter = None
+            print(f"[Topology] Capsulorhexis plugin unavailable ({str(e)[:60]}); "
+                  f"falling back to direct topology writes")
 
     mo = cap.addObject("MechanicalObject", name="Mo", src="@../loader")
     cap.addObject("DiagonalMass",
@@ -3187,7 +3244,7 @@ def createScene(root):
     cap.addObject(_make_controller(fem, springs, bending, mo, adhesion, pull,
                                    _mouse, _damper, topo, _display, _camera, root,
                                    _probe, stitch, central, lift,
-                                   anchor_mo=anchor_mo))
+                                   anchor_mo=anchor_mo, splitter=splitter))
 
 
 

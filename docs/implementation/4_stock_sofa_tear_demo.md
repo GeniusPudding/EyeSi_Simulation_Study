@@ -949,6 +949,48 @@ springs 集合 == topo.edges ?  True
 
 ---
 
+### 4.26 改用正規拓樸 API:元件做好了,但整合進場景會 SIGABRT(未解)
+
+§4.24 的根治方向是「用 `TriangleSetTopologyModifier` 的正規 API 改拓樸」。實作結果與現況:
+
+**(1) 這件事在 Python 做不到。** 實測 SofaPython3 的繫結:我們的 modifier 在 Python 裡**確實是**
+`Sofa.Core.PointSetTopologyModifier`,`addPoints` / `removePoints` **可以呼叫**;但
+`TriangleSetTopologyModifier` **沒有被繫結**,所以 `addTriangles` / `removeTriangles`
+從場景腳本**完全取不到**(列出物件屬性只有 Data 欄位加 `propagateToDOF`)。而分裂正好需要那兩個。
+
+**(2) 因此寫成 C++ 元件** `TopologySplitEngine`(`Capsulorhexis` plugin,已可建置)。
+因為 Python 也不能呼叫任意 C++ 方法,所以設計成 **Data 驅動**:場景寫入 `splitPoint`、
+`movedTriangles`,再遞增 `request`。內部流程:
+
+```
+addPoints(1, ancestors={v}, coefs={1})   ← SOFA 自動內插新 DOF,位置/靜止位置/速度都正確,
+                                            不需要場景手動接陣列
+removeTriangles(moved, removeIsolatedEdges=true, removeIsolatedPoints=false)
+addTriangles(同一批三角形,但把 v 換成新頂點)
+```
+
+`removeIsolatedEdges=true` 正是重點 —— **它會讓容器的邊表保持正確**。
+(三角形的頂點組合必須在移除**之前**擷取,因為 `removeTriangles` 會把倖存者重新編號。)
+
+**(3) 元件本身驗證通過**(`Capsulorhexis/tests/test_topology_split.py`,6 三角形扇形):
+分裂成功、複製點位置與原點一致、扇形正確地 3/3 分給原點與複製點、
+**`topo.edges` 由 12 變 14,陳舊 0、遺漏 0**。
+
+**(4) 但整合進 `cap_membrane` 會 SIGABRT。** 而且是**建圖階段**就掛掉(堆疊指向
+`SceneLoaderPY3::doLoad`),**還沒有請求過任何一次分裂**;把元件改到
+`TriangleSetGeometryAlgorithms` 之後建立(單元測試裡可行的順序)也一樣。**尚未診斷。**
+
+> **順帶一個重要發現**:即使走正規 API,**`MeshSpringForceField` 仍然不會更新**
+> (單元測試中仍留下 2 條陳舊彈簧)。它在 `init()` 一次建好彈簧,**不訂閱拓樸變更**。
+> 所以 §4.24 的「重建彈簧元件」無論如何都免不了;正規 API 的好處在別處 ——
+> 邊表由 SOFA 維護、新 DOF 自動內插、以及 **FEM / 彎曲彈簧這些會訂閱拓樸的元件能自動跟上**
+> (直接寫 `triangles` 的路徑從來沒給過它們這個機會)。
+
+**現況**:`CAP_TOPO_API` **預設 0**,場景行為與先前完全相同(裂口 8.34、抬升 8.94、
+回歸測試全過)。元件與整合程式碼都留在 repo 裡,等 SIGABRT 被查清楚就能打開。
+
+---
+
 ---
 
 ## 5. 做不到什麼、為什麼(這是重點)

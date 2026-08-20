@@ -34,6 +34,8 @@ void TopologySplitEngine::init()
     if (!m_modifier)
         msg_error() << "no TriangleSetTopologyModifier in this context; splits will be refused";
     m_lastRequest = d_request.getValue();
+
+    // (a synchronous update-callback version was tried here; see the header)
 }
 
 void TopologySplitEngine::handleEvent(core::objectmodel::Event* event)
