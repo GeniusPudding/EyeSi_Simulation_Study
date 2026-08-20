@@ -122,6 +122,9 @@ TEAR_NOBACK = int(os.environ.get("CAP_TEAR_NOBACK", "8"))
 # Minimum crack length before reaching the seed counts as the rhexis closing,
 # so the tear cannot "complete" a few edges after it starts.
 TEAR_CLOSE_MIN = int(os.environ.get("CAP_TEAR_CLOSEMIN", "40"))
+# Splits between full rebuilds of the edge springs. 1 = every split (most correct,
+# ~27 ms each); higher trades accuracy of the cut for framerate.
+TEAR_SPRING_REBUILD = int(os.environ.get("CAP_TEAR_SPRINGREBUILD", "1"))
 # Arrest-on-unloading. A crack is driven by work being DONE on it, so letting go should let
 # the stored energy run it a little further and then stop it. The criterion alone cannot do
 # that: c stays far above 1 on residual stress. Advance only while the tip drive is within
@@ -184,8 +187,8 @@ TEAR_START_LEN = int(os.environ.get("CAP_TEAR_START_LEN", "3"))
 TEAR_DEGEN_MAX = float(os.environ.get("CAP_TEAR_DEGEN_MAX", "0.04"))
 
 # --- material ----------------------------------------------------------------
-CLOTH_YOUNG = 120.0       # FEM-only: soft opening phase
-PAPER_YOUNG = 1200.0      # FEM-only: stiffened at SWITCH_T; 4000+ risks blow-up
+CLOTH_YOUNG = float(os.environ.get('CAP_CLOTH_YOUNG', '120.0'))       # FEM-only: soft opening phase
+PAPER_YOUNG = float(os.environ.get('CAP_PAPER_YOUNG', '1200.0'))      # FEM-only: stiffened at SWITCH_T; 4000+ risks blow-up
 SWITCH_T = 1.0            # [s] cloth -> paper transition
 EDGE_STIFFNESS = float(os.environ.get('CAP_EDGE_STIFFNESS', '2500.0'))   # per-edge in-plane stiffness = THE membrane stiffness in
                           # mass-spring mode (raise if the sheet feels too soft)
@@ -1169,6 +1172,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self._visual = None        # rendered skin; must be re-pushed after every split
             self._rest_cache = None    # (step, rest array) so a step re-reads it once
             self._field_cache = None   # (key, s1, area_ratio, centroids) per step
+            self._spring_debt = 0      # splits since the edge springs were rebuilt
             self.rest0 = None          # PRISTINE rest shape for the reference disc. NOT
                                        # rest_position: plasticity creeps that toward the
                                        # deformed shape, which was warping the "undeformed"
@@ -1916,12 +1920,53 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 print(f"[Tear] visual update failed: {type(e).__name__}: {e}")
 
         def _tear_reinit(self):
-            """Rebuild everything that caches the topology after a split."""
-            for comp in (self.springs, self.bending):
+            """Rebuild everything that caches the topology after a split.
+
+            FIRST rebuild the topology's own EDGE list. A split rewires triangles by writing
+            topo.triangles directly, which never updates topo.edges -- and MeshSpringForceField
+            builds its springs from topo.edges, exactly (verified: the spring set and the edge
+            set were identical). The consequences were both of the tear's worst symptoms:
+
+              topo.edges 6321 vs 6389 real triangle edges
+                129 stale edges  -> springs STAPLING the cut shut. Measured, every one of them
+                                    sat within one edge length of the crack, holding it at
+                                    1.04x rest, which is why the cut would not open however
+                                    hard it was pulled (lip gap stuck at 0.2-0.7).
+                197 missing edges -> real edges with NO spring at all, i.e. unsupported
+                                    material, which is where the runaway stretch came from.
+            """
+            try:
+                T = np.asarray(self.topo.triangles.value)
+                if len(T):
+                    E = np.unique(np.sort(np.concatenate(
+                        [T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]]), axis=1), axis=0)
+                    self.topo.edges.value = E.tolist()
+            except Exception:  # noqa: BLE001
+                pass
+            # RECREATE the edge springs rather than reinit() them. Measured: with topo.edges
+            # corrected above, reinit() still left the spring set at its old 6321 entries,
+            # while removing the component and adding a fresh one rebuilt it to match the mesh
+            # (stale 125 -> 0). MeshSpringForceField only reads the topology when it is
+            # initialised. Throttled by TEAR_SPRING_REBUILD because it costs ~27 ms.
+            self._spring_debt += 1
+            if self._spring_debt >= TEAR_SPRING_REBUILD:
+                self._spring_debt = 0
                 try:
-                    comp.reinit()
+                    node = self.springs.getContext()
+                    node.removeObject(self.springs)
+                    self.springs = node.addObject("MeshSpringForceField", name="EdgeSprings",
+                                                  linesStiffness=EDGE_STIFFNESS,
+                                                  linesDamping=1.0)
+                    self.springs.init()
                 except Exception:  # noqa: BLE001
-                    pass
+                    try:
+                        self.springs.reinit()
+                    except Exception:  # noqa: BLE001
+                        pass
+            try:
+                self.bending.reinit()
+            except Exception:  # noqa: BLE001
+                pass
             self._push_visual()
             self._build_vtris()
             self.edges = self.edge_rest = None      # strain clamp rebuilds
