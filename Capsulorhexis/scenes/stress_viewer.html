@@ -782,9 +782,14 @@ function draw(){
   // Same reasoning as the adhesion layer above: indices stay valid across versions because
   // splits only append, so the cut is drawn for every frame instead of only the newest ones.
   if(LAYER("LcrackOn") && cur.crack && cur.crack.length>1){
-    const pts=[];
-    for(const v of cur.crack) if(v<verts.length) pts.push(toScreen(verts[v][0],verts[v][1]));
-    if(pts.length>1){
+    // Draw EVERY front. A tear can nucleate somewhere else when the current tip goes idle
+    // (Dequidt 2013 s4.3 evaluates the criterion per element, not only at a tip), so there can
+    // be more than one cut and the older ones must not vanish.
+    const fronts = (cur.paths && cur.paths.length) ? cur.paths : [cur.crack];
+    for(const front of fronts){
+      const pts=[];
+      for(const v of front) if(v<verts.length) pts.push(toScreen(verts[v][0],verts[v][1]));
+      if(pts.length<2) continue;
       ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
       for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);
       // Thick, high-contrast and round-jointed: the cut has to read at a glance against a
@@ -795,25 +800,29 @@ function draw(){
       ctx.strokeStyle="#ff2d95";         ctx.lineWidth=4*dpr/2;   ctx.stroke(); // the cut
       ctx.beginPath(); ctx.arc(pts[0][0],pts[0][1],5*dpr/2,0,6.284);
       ctx.fillStyle="#ff2d95"; ctx.strokeStyle="#fff"; ctx.lineWidth=1.5*dpr/2;
-      ctx.fill(); ctx.stroke();                                               // seed nick
-      // live tip: ringed and pulsing, so the eye finds it immediately
+      ctx.fill(); ctx.stroke();                                                // start point
       const tp=pts[pts.length-1];
-      ctx.beginPath(); ctx.arc(tp[0],tp[1],10*dpr/2,0,6.284);
-      ctx.strokeStyle="rgba(255,45,149,.45)"; ctx.lineWidth=3*dpr/2; ctx.stroke();
-      ctx.beginPath(); ctx.arc(tp[0],tp[1],6*dpr/2,0,6.284);
-      ctx.fillStyle="#fff"; ctx.fill();
-      ctx.strokeStyle="#ff2d95"; ctx.lineWidth=3*dpr/2; ctx.stroke();         // live tip
-      // the direction the criterion picked for the NEXT step, from this frame's own record
-      if(cur.tear && cur.tear.on && cur.tear.dang!=null && cur.tear.c>=1){
-        const a=cur.tear.dang*Math.PI/180, L=34*dpr/2;
-        ctx.beginPath();
-        ctx.moveTo(tp[0]-Math.cos(a)*L, tp[1]+Math.sin(a)*L);
-        ctx.lineTo(tp[0]+Math.cos(a)*L, tp[1]-Math.sin(a)*L);
-        ctx.setLineDash([6,4]); ctx.strokeStyle="#7fffd4"; ctx.lineWidth=2.5*dpr/2;
-        ctx.stroke(); ctx.setLineDash([]);
+      if(front===fronts[fronts.length-1]){
+        // live tip: ringed, so the eye finds it immediately
+        ctx.beginPath(); ctx.arc(tp[0],tp[1],10*dpr/2,0,6.284);
+        ctx.strokeStyle="rgba(255,45,149,.45)"; ctx.lineWidth=3*dpr/2; ctx.stroke();
+        ctx.beginPath(); ctx.arc(tp[0],tp[1],6*dpr/2,0,6.284);
+        ctx.fillStyle="#fff"; ctx.fill();
+        ctx.strokeStyle="#ff2d95"; ctx.lineWidth=3*dpr/2; ctx.stroke();
+        // the direction the criterion picked for the NEXT step. Only for the ACTIVE front --
+        // a finished one has no next step.
+        if(cur.tear && cur.tear.on && cur.tear.dang!=null && cur.tear.c>=1){
+          const a=cur.tear.dang*Math.PI/180, L=34*dpr/2;
+          ctx.beginPath();
+          ctx.moveTo(tp[0]-Math.cos(a)*L, tp[1]+Math.sin(a)*L);
+          ctx.lineTo(tp[0]+Math.cos(a)*L, tp[1]-Math.sin(a)*L);
+          ctx.setLineDash([6,4]); ctx.strokeStyle="#7fffd4"; ctx.lineWidth=2.5*dpr/2;
+          ctx.stroke(); ctx.setLineDash([]);
+        }
       }
     }
   }
+
   // --- the instrument: WHERE you are pulling, and which way ------------------------------
   // Read from SOFA's own force vector (argmax|f| is the grabbed node), recorded per frame,
   // so scrubbing shows where the hand was at that instant -- not just its consequences.

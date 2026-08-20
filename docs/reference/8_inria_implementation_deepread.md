@@ -255,3 +255,100 @@ BarycentricMapping                   # 粗↔細兩層網格
 
 ## 來源
 Comas et al. 2008 · Allard/Marchal/Cotin 2009 · Courtecuisse et al. 2010(PBMB,非同步預條件子/GPU-CG)· Courtecuisse/…/Dequidt 2013(本機 `papers/`)。相關:[`ccc_method/4`](../ccc_method/4_inria_fiber_fracture.md)、[`engines/6`](../engines/6_realtime_fem_pillars.md)、[`reference/3`](3_inria_fem_lineage.md)、[`reference/4`](4_inria_fem_realtime.md)、[`reference/5`](5_dequidt2013_vs_demo.md)。
+
+
+---
+
+## 附錄 A:INRIA 原文如何判定「剝離」與「裂痕產生」(2026-08-20 回原文查證)
+
+問題:INRIA 系列論文怎麼判定**剝離(脫離水晶體)**與**裂痕產生**?我們能復現嗎?
+以下每一條都直接引自 `papers/Dequidt_2013_INRIA_CataractTrainingSystem.pdf` 與
+`papers/Marchal_2009_FiberFracture_SoftTissue.pdf` 的抽取全文。
+
+### A.1 剝離:**論文裡根本沒有這個機制**
+
+對 Dequidt 2013 全文(1199 行抽取文字)搜尋 `adhes|glue|peel|debond|delamin|stick|
+attached to the lens|rest on|lying on`,**沒有任何一處在描述囊膜與水晶體之間的黏附或剝離**
+(唯一的 `adhesions` 出現在 §6 談 IOL haptics 與眼球壁的沾黏,與撕囊無關)。
+
+論文對囊膜的建模只有(§4.1–4.2、Marchal §2.1):
+
+> "The membrane of the lens capsule is modeled as an anisotropic material and a co-rotational
+> finite element formulation (to allow for large displacements). **Concentric fiber
+> orientations** are defined on the mesh to describe the actual structure of the lens capsule.
+> An implicit integration scheme is used to enforce robustness of the deformation process."
+
+而撕裂的驅動力,Fig.6 圖說寫得很明確:
+
+> "This technique relies essentially on the application of **shear and stretch forces** to
+> propagate a fracture throughout the membrane."
+
+**結論:INRIA 只有「膜 + 纖維 + 撕裂」,沒有「黏在水晶體上再剝下來」這件事。**
+本 demo 的黏附/剝離系統(`RestShapeSpringsForceField` + peel front + `PEEL_*` 一整組參數)
+**完全是本專案自己加的**,不是復現論文。§4.11 量到的「剝離跑贏撕裂並把撕裂餓死」因此是
+**自找的衝突** —— 論文裡沒有這個競爭對手。
+
+> [推論] 這也解釋了為何我們反覆在「剝離太難 → 拉不開」與「剝離太easy → 撕裂餓死」之間擺盪:
+> 兩個機制在搶同一份拉力,而論文的模型裡只有一個機制。
+
+### A.2 裂痕產生:**判據在每一個元素上評估,不是只在單一裂尖**
+
+Dequidt 2013 §4.3 的關鍵句(原文,`deq.txt:512`):
+
+> "This criterion is **typically evaluated at the tip of a pre-existing fracture or at the
+> center of each potentially fracturing element**."
+
+**我們先前只在唯一的裂尖評估**,所以拉力必須落在該裂尖附近才有反應 —— 這正是使用者反覆回報的
+「裂痕跟我拉哪裡無關」「怎麼拉都只有小裂縫」。
+
+論文對粗網格的應力誤差也早有說明,與 §4.10 實測到的「裂尖只感受到全場 3%」完全一致:
+
+> "in the case of linear materials, the computed stress inside each element does not precisely
+> represent the real material stress, **unless very fine meshes are used**. To approximate the
+> stress σ at the tip of the fracture, we propose to compute a **weighted average of the stress
+> inside each element in the neighborhood** of the point of interest."
+
+(後者正是我們 `_tip_stress` 在做的事。)
+
+### A.3 傳播:論文自己預告了我們的鋸齒路徑
+
+§4.4 / Marchal §2.3 給出**兩種**策略:
+
+> "it is possible to **restrict the potential fracture direction to an existing edge**. This
+> solution is simple to implement... **However the resulting fracture will be highly dependent
+> on the original mesh.** For a precise, mesh-independent, tearing propagation, it is necessary
+> to allow for **arbitrary fracture directions**... triangles need to be split... Particular
+> care must be taken to **avoid creating degenerated triangles**."
+
+我們用的是第一種(沿現有邊)。**路徑對網格高度相依是論文明說的已知代價**,不是實作瑕疵;
+§4.15 的航向慣性只是緩解。要根治就得走第二條路(任意方向 + 沿路徑重網格)。
+
+### A.4 公式對照:我們的實作與原文一致
+
+| 原文 | 我們的實作 | 一致? |
+|---|---|---|
+| Eq.1 `c(d,σ,f,p) > 1` | `if c < 1.0: return` | ✅ |
+| Eq.2 的 `H((d·p) − cos θ_P)` 限制轉角 | `TEAR_TURN_MAX` | ✅(§4.15 另加航向慣性,屬**我們的補充**) |
+| Eq.3 `σ_u = σ_x cos²u + σ_y sin²u + 2 sin u cos u σ_xy` | 由 (σ₁,σ₂,θ₁) 重建張量後同式 | ✅ |
+| Eq.4 `σ̄_u = σ̄_T + (σ̄_L−σ̄_T)(1 − (2/π)cos⁻¹\|u·f\|)^α` | `σ̄_T + (σ̄_L−σ̄_T)(1 − fold/90)^α` | ✅ `(2/π)·arccos`(弧度)= 夾角度數/90,**兩式等價** |
+| 各向同性特例 = 最大主應力準則 | `verify_stress.py` 已數值驗證 | ✅ |
+| 裂尖鄰域加權平均應力 | `_tip_stress` | ✅ |
+| **每個元素都評估判據** | **先前沒有 → 本次補上** | ✅(見 A.5) |
+
+### A.5 復現結果:改成「每個元素都評估」之後
+
+`TEAR_NUCLEATE`(預設開)依 §4.3 掃描**所有健康元素**,用論文自己的界 `c ≤ σ₁/σ̄_T` 先濾掉
+不可能達標的(只有 σ₁ ≥ σ̄_T 的元素需要搜尋方向),再取 c 最大者起裂。**[實測]** 把手放在
+遠離初始缺口的位置拉:
+
+| | 裂痕條數 | 最靠近手的切口距離 |
+|---|---|---|
+| 只在裂尖評估(先前) | 1(初始缺口原封不動,4 格) | **4.28** |
+| 每元素評估(§4.3) | 2 | **0.60**(新裂痕在手底下成核,長到 92 格) |
+
+> ⚠️ 起初把「閒置 10 次機會」就改到別處成核,會把**還在推進**的裂痕丟掉、從單一頂點重來
+> (實測裂痕 5 → 1)。改為 40 次**連續**閒置才另尋他處,且任何一次成功推進都會把計數歸零。
+
+**尚未復現的**:§4.4 的第二條路徑(任意方向 + 重網格 + 退化三角形處理),以及論文引用的
+[21](Sifakis 等的虛擬節點/退化處理)。這是目前與原文最大的落差,也是 §4.10「裂尖無應力
+奇異性」的根治方向。

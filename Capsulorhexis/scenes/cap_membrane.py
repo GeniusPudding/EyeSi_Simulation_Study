@@ -138,6 +138,18 @@ TEAR_LEFM_CAP = float(os.environ.get("CAP_TEAR_LEFMCAP", "6.0"))
 # back-and-forth path. Separating the two: the tip may still CHOOSE among widely-spread
 # neighbours, while the heading it steers by turns smoothly. 0 = no inertia (old behaviour).
 TEAR_DIR_INERTIA = float(os.environ.get("CAP_TEAR_INERTIA", "0.6"))
+# Nucleation anywhere, straight from the paper. Dequidt 2013 section 4.3: "This criterion is
+# typically evaluated at the tip of a pre-existing fracture OR AT THE CENTER OF EACH
+# POTENTIALLY FRACTURING ELEMENT." We only ever evaluated it at one tip, which is why the tear
+# answered the hand only when the hand was near that tip -- a tear could never simply start
+# where the membrane was most overloaded. Scanning every healthy element is affordable because
+# c <= sigma1/sigma_bar_T, so only elements already above the threshold can possibly reach 1.
+TEAR_NUCLEATE = os.environ.get("CAP_TEAR_NUCLEATE", "1") == "1"
+# CONSECUTIVE idle opportunities before looking elsewhere. Must be generous: at 10 a
+# momentary lull mid-tear discarded a front that was still growing and restarted from
+# a single vertex, which measured as the tear collapsing (5 vertices -> 1).
+TEAR_NUCLEATE_EVERY = int(os.environ.get("CAP_TEAR_NUCEVERY", "40"))
+TEAR_NUC_MAX = int(os.environ.get("CAP_TEAR_NUCMAX", "40"))   # elements searched per scan
 # The initial nick: capsulorhexis starts with a cystotome puncture near the centre, and
 # without one there is no crack tip to push -- the membrane would just stretch. This seeds a
 # short radial slit of this many edges starting at radius TEAR_START_R.
@@ -624,7 +636,8 @@ def _stress_build_frame(i, step, t, s1, s2, sdir, aratio):
         "i": i, "step": int(step), "t": round(float(t), 3),
         "gver": _STRESS_GEOM_VER,        # topology version these arrays belong to
         "tear": dict(_TEAR_STATE),       # live tearing status for the viewer
-        "crack": list(_TEAR_PATH["path"]),   # ordered vertex chain = the cut edges
+        "crack": list(_TEAR_PATH["path"]),   # active front (ordered vertex chain)
+        "paths": [list(x) for x in _TEAR_PATH["paths"]],   # every front, incl. finished ones
         "lips": list(_TEAR_PATH["lips"]),    # [duplicate, original] split pairs
         "pull": dict(_PULL_STATE),           # where the instrument is pulling, and how hard
         "adh": _ADH_STATE["glued"],          # per-vertex "1"=still on the lens, "0"=peeled off
@@ -650,7 +663,7 @@ _TEAR_STATE = {"on": False, "len": 0, "c": 0.0, "thr": 0.0, "tipr": 0.0, "why": 
 # the original it was split from -- the two sides of the cut, whose separation is the crack
 # opening. Both index the CURRENT reference disc, so they are only meaningful together with
 # the frame's "gver".
-_TEAR_PATH = {"path": [], "lips": []}
+_TEAR_PATH = {"path": [], "lips": [], "paths": []}
 # WHERE THE INSTRUMENT IS PULLING, and how hard. WHETHER a pull is happening comes from
 # _is_grabbing() -- the mouse interactor's own objects in the scene graph -- not from the
 # force magnitude. Magnitude cannot tell the two apart: measured, max|F| is 0.0 with nobody
@@ -1110,6 +1123,8 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.crack = None          # vertex path of the tear; last entry is the live tip
             self.closed = False        # True once the tear has met its own path
             self.block = None          # why the last advance attempt failed
+            self.crack_hist = []       # finished fronts, kept so the drawing shows every cut
+            self.nuc_tick = 0          # opportunities since the last nucleation scan
             self._drive_ref = None     # decaying peak tip drive, for arrest-on-unloading
             self.crack_dir = None      # current heading (unit xy), for the Eq.2 turn limit
             self.vtris = None          # vertex -> [triangle ids], rebuilt on topology change
@@ -1671,6 +1686,38 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             a0 = max(2.0 * TEAR_START_R, 1e-6)
             return float(np.sqrt(max(ext, a0) / a0))
 
+        def _scan_nucleation(self, P):
+            """Best fracture site over the WHOLE membrane, per Dequidt 2013 section 4.3: the
+            criterion is evaluated at the tip of an existing fracture *or at the centre of each
+            potentially fracturing element*. Returns (element, c, direction) or None.
+
+            Cheap because of the paper's own bound: sigma_u <= sigma1 and sigma_bar_u >=
+            sigma_bar_T, so c <= sigma1/sigma_bar_T and only elements already past the
+            threshold can possibly reach 1. Everything else is rejected without a search."""
+            if self.tris is None or not len(self.tris):
+                return None
+            s1, s2, sdir, ar, cen = self._field_now(P)
+            ok = ((ar >= DEGEN_LO) & (ar <= DEGEN_HI) & (s1 >= TEAR_THRESH))
+            cand = np.flatnonzero(ok)
+            if not cand.size:
+                return None
+            # strongest first, and only a bounded number of them per scan
+            cand = cand[np.argsort(-s1[cand])[:TEAR_NUC_MAX]]
+            R0 = self._rest_now()
+            best = None
+            for k in cand:
+                th1 = float(np.degrees(np.arctan2(sdir[k][1], sdir[k][0])))
+                tri = self.tris[k]
+                if tri.max() >= len(R0):
+                    continue
+                rc = R0[tri][:, :2].mean(axis=0)          # fibre from the REST shape
+                fib = float(np.degrees(np.arctan2(rc[1], rc[0])) + 90.0)
+                # heading=None: nothing to continue from, so Eq.2's H term does not apply
+                c, d, dang, su, sbu = self._argmax_c(float(s1[k]), float(s2[k]), th1, fib, None)
+                if c >= 1.0 and (best is None or c > best[1]):
+                    best = (int(k), float(c), d)
+            return best
+
         def _argmax_c(self, S1, S2, th1_deg, fib_deg, heading):
             """INRIA criterion (Eq.1-4). Returns (c, unit direction) for the crack direction
             that maximises c, restricted to turns within TEAR_TURN_MAX of the heading
@@ -1828,6 +1875,10 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             # Hand the browser the crack itself, not just its length, so the tear can be seen
             # and replayed edge by edge on the timeline.
             _TEAR_PATH["path"] = [int(v) for v in self.crack] if self.crack else []
+            # Every front ever opened, so a nucleated second tear does not erase the
+            # drawing of the first one.
+            _TEAR_PATH["paths"] = ([[int(v) for v in c] for c in self.crack_hist]
+                                   + ([_TEAR_PATH["path"]] if self.crack else []))
             _TEAR_PATH["lips"] = [[int(d), int(p)] for d, p in self.dup_of.items()]
             if self.rest0 is not None:
                 _publish_geometry(self.rest0, np.array(self.topo.triangles.value))
@@ -1976,6 +2027,27 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 S1, S2, th1, s1_local = S
                 # The tip must actually be loaded before its direction means anything.
                 if s1_local < TEAR_LOCAL_MIN:
+                    # The tip is idle. Per Dequidt 2013 section 4.3 the criterion is evaluated
+                    # at an existing tip OR at the centre of each element, so look for a place
+                    # that IS overloaded rather than insisting the user pull near this tip.
+                    self.nuc_tick += 1
+                    if TEAR_NUCLEATE and self.nuc_tick >= TEAR_NUCLEATE_EVERY:
+                        self.nuc_tick = 0
+                        hit = self._scan_nucleation(P)
+                        if hit is not None:
+                            k, cval, d = hit
+                            tri = self.tris[k]
+                            v = int(tri[int(np.argmax(np.hypot(P[tri][:, 0], P[tri][:, 1])))])
+                            if self.crack and len(self.crack) > 1:
+                                self.crack_hist.append(list(self.crack))
+                            self.crack = [v]
+                            self.crack_dir = np.asarray(d, dtype=float)
+                            self.closed = False
+                            self._drive_ref = None
+                            self._tear_reinit()
+                            print(f"[Tear] NEW tear nucleated at element {k} (c={cval:.2f}), "
+                                  f"where the membrane is most overloaded")
+                            return
                     # Report the values THIS evaluation measured. Leaving the previous ones in
                     # place made the panel contradict itself -- it showed a local sigma1 above
                     # the gate next to the message saying the gate had refused, because that
@@ -2062,6 +2134,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 # STOPS when the pull stops.
                 budget = 1
                 self.crack_dir = d
+                self.nuc_tick = 0      # this front is alive; do not go looking elsewhere
                 self.block = None
                 if not self._advance_to_best_neighbour(P):
                     # The criterion passed but the mesh had nowhere legal to go. Report THAT,
