@@ -6,3 +6,10 @@ __pycache__/
 # Stray in-repo vendor dirs (older layout) stay ignored just in case.
 docs/vendor/
 **/vendor/
+
+# Session recordings written by the scene (black box + heatmap takes).
+# Regenerated on every run and often hundreds of MB; not source.
+Capsulorhexis/scenes/diag_last*.csv
+Capsulorhexis/scenes/stress_log*.jsonl
+Capsulorhexis/scenes/last_run*.log
+*.mp4
