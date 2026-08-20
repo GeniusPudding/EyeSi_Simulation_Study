@@ -130,6 +130,14 @@ TEAR_LOCAL_MIN = float(os.environ.get("CAP_TEAR_LOCALMIN", "0.4"))
 # Amplify by sqrt(a / a0), a = the crack's physical extent, capped so it cannot run away.
 TEAR_LEFM = os.environ.get("CAP_TEAR_LEFM", "1") == "1"
 TEAR_LEFM_CAP = float(os.environ.get("CAP_TEAR_LEFMCAP", "6.0"))
+# Heading inertia: how much of the crack's PREVIOUS direction is kept when the criterion picks
+# a new one. A real tear does not swing wildly from edge to edge -- it carries momentum, and
+# the surgeon's pull direction changes slowly. TEAR_TURN_MAX had to be opened up to 100 deg to
+# stop the crack dead-ending on the mesh's own 60 deg edge spacing, but that also let the
+# heading itself swing that far every single step, which is what produced the jagged
+# back-and-forth path. Separating the two: the tip may still CHOOSE among widely-spread
+# neighbours, while the heading it steers by turns smoothly. 0 = no inertia (old behaviour).
+TEAR_DIR_INERTIA = float(os.environ.get("CAP_TEAR_INERTIA", "0.6"))
 # The initial nick: capsulorhexis starts with a cystotome puncture near the centre, and
 # without one there is no crack tip to push -- the membrane would just stretch. This seeds a
 # short radial slit of this many edges starting at radius TEAR_START_R.
@@ -390,6 +398,8 @@ STRESS_HEAT_MAX = float(os.environ.get("CAP_HEAT_MAX", "300"))
 # without watching, then review any past moment. Log is overwritten each run.
 STRESS_LOG = os.environ.get("CAP_STRESS_LOG", "1") == "1"
 STRESS_LOG_PATH = os.path.join(_HERE, "stress_log.jsonl")
+# Stamped once per process, so every launch's takes get their own filenames.
+_RUN_STAMP = __import__("time").strftime("%m%d_%H%M%S")
 STRESS_HISTORY = int(os.environ.get("CAP_STRESS_HISTORY", "1500"))   # frames kept for scrub
 # How many FINISHED takes (one per scene reset) stay replayable in the browser. Each holds
 # up to STRESS_HISTORY frames in memory, so keep this small; the JSONL on disk is per-take
@@ -865,18 +875,15 @@ def _stress_record(js):
     if STRESS_LOG:
         try:
             if _STRESS_LOG_FH is None:
-                # ONE FILE PER TAKE: stress_log_<session>.jsonl, so a reset never overwrites
-                # the pull you wanted to analyse. stress_log.jsonl stays as a copy of the
-                # newest take for the existing tools/docs that reference that name.
-                if _STRESS_SESSION_ID > 0:
-                    path = STRESS_LOG_PATH.replace(".jsonl", f"_{_STRESS_SESSION_ID}.jsonl")
-                else:
-                    path = STRESS_LOG_PATH
-                    if os.path.exists(path):
-                        try:
-                            os.replace(path, path + ".prev")
-                        except OSError:
-                            pass
+                # ONE FILE PER TAKE, named by WHEN it ran, not by its number within the run.
+                # Session ids restart at 1 in every new process, so numbering alone meant each
+                # launch reopened stress_log_1.jsonl with mode "w" and destroyed the previous
+                # launch's first take -- exactly the recording you would want to go back to.
+                # A timestamp makes takes accumulate across runs, which is the whole point of
+                # being able to reopen an earlier pull in the browser.
+                stamp = _RUN_STAMP
+                path = STRESS_LOG_PATH.replace(
+                    ".jsonl", f"_{stamp}_{max(_STRESS_SESSION_ID, 1)}.jsonl")
                 _STRESS_LOG_FH = open(path, "w", buffering=1)
             _STRESS_LOG_FH.write(js + "\n")
         except Exception:  # noqa: BLE001
@@ -1977,6 +1984,17 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 rt = R0[tip] if tip < len(R0) else P[tip]
                 fib = np.degrees(np.arctan2(rt[1], rt[0])) + 90.0
                 c, d, dang, su, sbu = self._argmax_c(S1, S2, th1, fib, self.crack_dir)
+                # Smooth the heading (see TEAR_DIR_INERTIA) rather than snapping to the new
+                # argmax every step. The criterion still decides WHERE it wants to go; this
+                # only stops the path zigzagging as the stress direction jitters.
+                if TEAR_DIR_INERTIA > 0.0 and self.crack_dir is not None:
+                    prev = np.asarray(self.crack_dir, dtype=float)[:2]
+                    if float(prev @ d) < 0.0:
+                        prev = -prev          # crack direction is a LINE, not an arrow
+                    mix = TEAR_DIR_INERTIA * prev + (1.0 - TEAR_DIR_INERTIA) * d
+                    n = float(np.linalg.norm(mix))
+                    if n > 1e-9:
+                        d = mix / n
                 # Everything the criterion used, mirrored to the viewer: with all of Eq.3/Eq.4
                 # on screen per frame, "why did it not tear" is readable instead of guessed.
                 _TEAR_STATE.update(on=True, len=len(self.crack), c=round(float(c), 2),

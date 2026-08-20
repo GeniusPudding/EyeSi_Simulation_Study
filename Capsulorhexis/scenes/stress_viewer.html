@@ -734,12 +734,20 @@ function draw(){
   // wrong. Detached triangles get a translucent wash (the stress colour still reads through),
   // and the PEEL FRONT, the boundary between the two, is drawn as a cyan line: that front is
   // where the next spot will let go, so it is the part worth watching.
-  if(LAYER("LadhOn") && cur.adh && cur.adh.length>=verts.length && cur.gver===geomVer){
+  // NOT gated on cur.gver===geomVer. The page holds ONE reference disc (the newest), while a
+  // take contains a new version after every vertex split -- 42 of them in a 166-frame take --
+  // so an exact-version test drew this layer on almost nothing except the final frames. That
+  // is what made the capsule look untouched all the way through and then suddenly ringed at
+  // the end, when the data had actually been changing smoothly (2153 glued down to 1170).
+  // Version equality is not needed: splits only APPEND vertices, so every index an older
+  // frame refers to still means the same place on the disc. Vertices that did not exist yet
+  // simply have no entry, and unknown means still attached.
+  if(LAYER("LadhOn") && cur.adh && cur.adh.length>1){
     const A=cur.adh;
     ctx.save();
     for(let k=0;k<tris.length;k++){
       const [a,b,c]=tris[k];
-      const nOff=(A[a]==="0")+(A[b]==="0")+(A[c]==="0");
+      const nOff=(A[a]==="0")+(A[b]==="0")+(A[c]==="0");   // beyond A = undefined = attached
       if(nOff<2) continue;                                  // 2 of 3 loose = detached
       const A1=toScreen(verts[a][0],verts[a][1]),B1=toScreen(verts[b][0],verts[b][1]),
             C1=toScreen(verts[c][0],verts[c][1]);
@@ -771,7 +779,9 @@ function draw(){
   // a prediction. Every frame carries it, so scrubbing the timeline replays the tear edge by
   // edge, and switching take replays a different pull. Indices belong to the frame's own
   // topology version, so skip while the page is still catching up to a newer mesh.
-  if(LAYER("LcrackOn") && cur.crack && cur.crack.length>1 && cur.gver===geomVer){
+  // Same reasoning as the adhesion layer above: indices stay valid across versions because
+  // splits only append, so the cut is drawn for every frame instead of only the newest ones.
+  if(LAYER("LcrackOn") && cur.crack && cur.crack.length>1){
     const pts=[];
     for(const v of cur.crack) if(v<verts.length) pts.push(toScreen(verts[v][0],verts[v][1]));
     if(pts.length>1){
@@ -970,7 +980,7 @@ function updateTimeline(){
   if(!isLive && document.activeElement!==seek){
     seek.value = Math.min(Math.max(shown, rng.first), rng.last);
   }
-  const tk = viewTake!==null ? ` · take <b>${viewTake}</b>` : "";
+  const tk = viewTake!==null ? ` · <b>${takeLabel(viewTake)}</b>` : "";
   if(isLive){ tllab.innerHTML=`<span id="liveDot">◉ LIVE</span>  ·  frame <b>${shown}</b>  t <b>${cur?cur.t.toFixed(2):"--"}</b>s`; }
   else { tllab.innerHTML=`<span id="reviewTag">❚❚ REVIEW</span>${tk}  ·  frame <b>${shown}</b> / ${rng.last}  t <b>${cur?cur.t.toFixed(2):"--"}</b>s`; }
   document.getElementById("liveBtn").classList.toggle("on",following);
@@ -1034,6 +1044,13 @@ function takeRange(){
     return {first:0, last:s? s.n-1 : 0}; }
   return {first:meta.first, last:meta.last};
 }
+// Take files are named stress_log_<MMDD>_<HHMMSS>_<n>.jsonl so they accumulate across runs;
+// show that as a readable date rather than the raw filename.
+function takeLabel(id){
+  const m = String(id).match(/^f:stress_log_(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})_(\d+)\.jsonl$/);
+  if(m) return `${m[1]}-${m[2]} ${m[3]}:${m[4]} #${m[6]}`;
+  return String(id).replace(/^f:stress_log_?/, "take ").replace(/\.jsonl$/, "") || "take";
+}
 function rebuildTakeSel(){
   const sel=document.getElementById("takeSel");
   const sig=sessions.map(s=>s.id+"/"+s.n+(s.live?"L":"")).join(",");
@@ -1045,7 +1062,7 @@ function rebuildTakeSel(){
     const o=document.createElement("option");
     o.value = s.live ? "-1" : String(s.id);
     o.textContent = s.live ? `● take ${s.id} (live 進行中)`
-      : `${s.disk ? "🗀 " : ""}${String(s.id).replace(/^f:stress_log_?/, "take ")          .replace(/\.jsonl$/, "")} · ${s.n}f · ${s.t0.toFixed(1)}–${s.t1.toFixed(1)}s`        + (s.writing ? " (本次)" : "");
+      : `${s.disk ? "🗀 " : ""}${takeLabel(s.id)} · ${s.n}f · ${s.t0.toFixed(1)}–${s.t1.toFixed(1)}s`        + (s.writing ? " (本次)" : "");
     sel.appendChild(o);
   }
   sel.value = viewTake===null ? "-1" : String(viewTake);
