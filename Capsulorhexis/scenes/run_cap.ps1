@@ -13,6 +13,9 @@
             ./scenes/run_cap.ps1 -SofaHeatmap -Gui qt   # SOFA's OWN heatmap (DataDisplay),
                                                         # in the Qt GUI (imgui crashes it)
             ./scenes/run_cap.ps1 -NoLog            # no stdout tee (max FPS, best for feel)
+            ./scenes/run_cap.ps1 -Paper -Tear -Heatmap   # the INRIA published setup only:
+                                                        # anisotropic FEM + concentric fibres,
+                                                        # no adhesion, no peeling
 #>
 [CmdletBinding()]
 param(
@@ -52,8 +55,16 @@ param(
     # smoothness: DISP_CLAMP limits per-STEP displacement while the mouse target moves in REAL
     # time, so a slower loop means the cursor travels further between steps, more nodes hit the
     # clamp, and you see the whole sheet snap inward. Use -NoLog when judging interactive feel.
-    [switch]$NoLog
+    [switch]$NoLog,
+    # -Paper runs the INRIA published setup and nothing else: a transversely isotropic
+    # co-rotational triangular FEM with CONCENTRIC fibres (TriangularAnisotropicFEMForceField,
+    # fiberCenter on the lens axis) held only at the zonular rim, torn by the argmax-c
+    # criterion. NO adhesion and NO peeling -- searching Dequidt 2013 for
+    # adhes/glue/peel/debond finds nothing, so all of that is this demo's own addition and is
+    # switched off here. Use it to judge the published method on its own. Via CAP_PAPER.
+    [switch]$Paper
 )
+if ($Paper) { $env:CAP_PAPER = "1" } else { $env:CAP_PAPER = "0" }
 # Every session writes a BLACK BOX you can read afterwards:
 #   scenes/diag_last.csv          one row per step, always on. Mechanics + the tear, including
 #                                 WHY the tear did or did not advance that step.

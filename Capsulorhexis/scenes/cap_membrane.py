@@ -50,6 +50,24 @@ LENS_OBJ = os.path.join(_HERE, "lens.obj")  # the flattened (oblate) base it sti
 # giving back the real continuum stress tensor and citable E/nu.
 USE_MASS_SPRING = os.environ.get("CAP_MODE", "spring").lower() != "fem"
 
+# --- PAPER MODE: reproduce the INRIA capsulorhexis setup, and nothing else ----------------
+# Dequidt 2013 / Marchal 2009 model the capsule as a transversely isotropic co-rotational
+# triangular FEM with CONCENTRIC fibre orientations, integrated implicitly, and tear it with
+# the argmax-c criterion. Searching the whole of Dequidt 2013 for adhes/glue/peel/debond finds
+# nothing: there is NO bond to the lens and no peeling anywhere in that work -- the tear is
+# driven purely by, in the paper's words, "the application of shear and stretch forces".
+# Everything this demo has around that (breakable adhesion, peel fronts, PEEL_* parameters) is
+# our own addition, and it competes with the tear for the same pull (docs 4.11). Paper mode
+# removes it so the published method can be judged on its own.
+PAPER_MODE = os.environ.get("CAP_PAPER", "0") == "1"
+# Fibre-direction (E_F) and transverse (E_T) Young's moduli. The ratio is the anisotropy;
+# the capsule's collagen runs concentrically, so E_F is the circumferential stiffness.
+PAPER_E_FIBER = float(os.environ.get("CAP_PAPER_EF", "1200"))
+PAPER_E_TRANSVERSE = float(os.environ.get("CAP_PAPER_ET", "400"))
+PAPER_POISSON = float(os.environ.get("CAP_PAPER_NU", "0.3"))
+if PAPER_MODE:
+    USE_MASS_SPRING = False          # the paper uses FEM, not a mass-spring approximation
+
 # --- real tearing (CAP_TEAR=1 / run_cap.ps1 -Tear) -----------------------------------
 # Built on THIS scene's stress observer, not on any plugin: the crack advances along the
 # INRIA argmax-c direction (Dequidt Eq.1-4) evaluated on the crack-tip neighbourhood, and
@@ -484,6 +502,11 @@ FIX_OUTER_RIM = os.environ.get("CAP_FIX_RIM", "0") == "1"
 RIM_ANCHOR_FRAC = float(os.environ.get("CAP_RIM_FRAC", "0.96"))
 if CAP_TEAR:
     FIX_OUTER_RIM = os.environ.get("CAP_FIX_RIM", "1") == "1"
+if PAPER_MODE:
+    # With no adhesion, the rim anchor is the ONLY thing holding the capsule, and it is also
+    # the anatomically right boundary (the zonules insert at the periphery). Without it the
+    # whole membrane simply follows the instrument.
+    FIX_OUTER_RIM = True
 
 # --- automatic plasticity (viscoplastic creep) ---------------------------------
 # Peeled nodes slowly adopt their current shape as rest shape, so releasing the
@@ -641,6 +664,7 @@ def _stress_build_frame(i, step, t, s1, s2, sdir, aratio):
         "lips": list(_TEAR_PATH["lips"]),    # [duplicate, original] split pairs
         "pull": dict(_PULL_STATE),           # where the instrument is pulling, and how hard
         "adh": _ADH_STATE["glued"],          # per-vertex "1"=still on the lens, "0"=peeled off
+        "paper": PAPER_MODE,                 # INRIA setup only: no adhesion exists to report
         "s1": np.round(s1, 1).tolist(),
         "s2": np.round(s2, 1).tolist(),
         "ang": np.round(ang, 1).tolist(),
@@ -1160,6 +1184,8 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             # points list makes RestShapeSpringsForceField apply to ALL nodes (snapping
             # the whole membrane back), so when nothing is left, zero the stiffness
             # instead of emptying the points.
+            if self.adhesion is None:
+                return                      # paper mode: there is no bond to maintain
             fading = sorted(self.peel_fade)
             pts = sorted(self.adhered) + fading
             if pts:
@@ -1177,8 +1203,9 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             if self.adhered is not None:
                 self.adhered.clear()
             self.peel_fade.clear()
-            self.adhesion.points.value = []
-            self.adhesion.stiffness.value = [0.0]
+            if self.adhesion is not None:
+                self.adhesion.points.value = []
+                self.adhesion.stiffness.value = [0.0]
             if RELEASE_AFTER_FREEZE and self.pull is not None:
                 self.pull.indices.value = []
             self.frozen = True
@@ -2398,7 +2425,8 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                         for k in range(n_break):
                             self.enabled[k] = False
                         self.stitch.enabled.value = list(self.enabled)
-                    if not self.tear_detached and self.adhered is not None:
+                    if (not self.tear_detached and self.adhered is not None
+                            and self.adhesion is not None):
                         # unglue the central disc so it can lift; the rim stays glued
                         self.adhered.difference_update(self.central)
                         if self.adhered:
@@ -2413,7 +2441,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
 
             pos = self.mo.position.value
             rest = self.mo.rest_position.value
-            if self.adhered is None:
+            if self.adhesion is not None and self.adhered is None:
                 self.adhered = set(range(len(pos)))
                 self._check_peel_reachable(np.asarray(pos))
                 self.adhesion.points.value = sorted(self.adhered)
@@ -2455,11 +2483,11 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 _ts = _TEAR_STATE
                 self.diag.write(f"{self.step},{t:.3f},{float(np.abs(P).max()):.3f},"
                                 f"{maxspeed:.3f},{maxstretch:.3f},{self.last_jump:.3f},"
-                                f"{len(self.adhered)},{self.rewinds},"
+                                f"{len(self.adhered) if self.adhered else 0},{self.rewinds},"
                                 f"{self.clamped},{self.disp_clamped},"
                                 f"{_ts.get('len', 0)},{_ts.get('c', 0)},"
                                 f"{_ts.get('tipr', 0)},'{_ts.get('why', '')}'\n")
-            if self.adhered and not self.frozen:
+            if self.adhesion is not None and self.adhered and not self.frozen:
                 idx = np.fromiter(self.adhered, dtype=int)
                 lift = np.linalg.norm(pos[idx] - rest[idx], axis=1)
                 front_lift = self.break_lift * PEEL_FRONT_EASE
@@ -2570,7 +2598,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                     pass
 
             # Publish what is still stuck to the lens (see _ADH_STATE).
-            if self.adhered is not None:
+            if self.adhesion is not None and self.adhered is not None:
                 n = len(pos)
                 if _ADH_STATE["n"] != n or self.step % 3 == 0:
                     a = np.full(n, ord("0"), dtype=np.uint8)
@@ -2864,7 +2892,20 @@ def createScene(root):
     # REST mesh (no divide-by-zero on a collapsed current triangle) and takes
     # youngModulus as a scalar.
     fem = None
-    if not USE_MASS_SPRING:
+    if PAPER_MODE:
+        # The paper's own material: transversely isotropic triangular FEM, co-rotational
+        # ("large"), with the fibres running CONCENTRICALLY around the lens axis --
+        # fiberCenter gives exactly that, so the fibre field needs no custom code.
+        fem = cap.addObject("TriangularAnisotropicFEMForceField", name="FEM", method="large",
+                            youngModulus=PAPER_E_FIBER,
+                            transverseYoungModulus=PAPER_E_TRANSVERSE,
+                            poissonRatio=PAPER_POISSON,
+                            fiberCenter=[[0.0, 0.0, G.Z0]])
+        print(f"[Paper] INRIA mode: transversely isotropic FEM, concentric fibres "
+              f"(E_fiber={PAPER_E_FIBER:g}, E_transverse={PAPER_E_TRANSVERSE:g}, "
+              f"nu={PAPER_POISSON:g}); NO adhesion, NO peeling -- the capsule is held only "
+              f"at the zonular rim, exactly as in Dequidt 2013 / Marchal 2009.")
+    elif not USE_MASS_SPRING:
         fem = cap.addObject("TriangularFEMForceFieldOptim", name="FEM", method="large",
                             youngModulus=CLOTH_YOUNG, poissonRatio=0.3)
         # SOFA's OWN principal-stress calc + vectors: an INDEPENDENT method to compare with
@@ -2892,7 +2933,13 @@ def createScene(root):
     # anchors live in their own child node (no solver, no dynamics of their own) and the
     # controller slides them along the surface normal each step, which removes the normal
     # component of the spring force -- see ADH_TANGENTIAL.
-    if ADH_TANGENTIAL:
+    if PAPER_MODE:
+        # No bond to the lens: the papers have none. The capsule is held only by the zonular
+        # rim (FIX_OUTER_RIM below), and the lens stays as a one-sided obstacle so the membrane
+        # cannot pass through it -- an obstacle only ever pushes, so it adds no hidden hold.
+        anchor_mo = None
+        adhesion = None
+    elif ADH_TANGENTIAL:
         anchors = cap.addChild("AdhAnchors")
         anchor_mo = anchors.addObject("MechanicalObject", name="AdhAnchor", template="Vec3d",
                                       position=list(mo.rest_position.value))

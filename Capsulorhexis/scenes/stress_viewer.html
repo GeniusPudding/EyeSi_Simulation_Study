@@ -544,6 +544,9 @@ function noteCrack(f){
   while(crackHist.length>240) crackHist.shift();
 }
 function adhesionLine(){
+  // Paper mode has no bond to the lens at all (the INRIA papers model none), so say so
+  // rather than leaving the attach layer mysteriously blank.
+  if(cur && cur.paper) return "\nPAPER MODE · 無黏附(INRIA 論文設定:僅懸韌帶錨定)";
   if(!cur||!cur.adh||!cur.adh.length) return "";
   let off=0; for(let i=0;i<cur.adh.length;i++) if(cur.adh[i]==="0") off++;
   const pct=(off/cur.adh.length*100).toFixed(0);

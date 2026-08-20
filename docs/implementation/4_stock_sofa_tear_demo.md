@@ -685,6 +685,49 @@ t=14.8      glued 1323   crack 16     裂縫已死,剝離又多放開 424 個點
 
 ---
 
+### 4.17 論文模式(`-Paper`):只跑 INRIA 發表的設定
+
+依 [`reference/8` 附錄 A](../reference/8_inria_implementation_deepread.md) 的查證結果建立,
+用來把**論文的方法本身**和**本 demo 自己加的東西**分開評估。
+
+**開啟**:`./Capsulorhexis/scenes/run_cap.ps1 -Paper -Tear -Heatmap`(或 `CAP_PAPER=1`)
+
+| 成分 | 論文模式 | 依據 |
+|---|---|---|
+| 材料 | `TriangularAnisotropicFEMForceField`,co-rotational(`method="large"`) | Marchal §2.1「transversely isotropic FEM formulation using triangular elements」 |
+| 纖維 | **同心圓**,由 `fiberCenter` 設在水晶體軸上直接產生 | 「**Concentric fiber orientations** are defined on the mesh」 |
+| 參數 | `youngModulus`=E_F(沿纖維)、`transverseYoungModulus`=E_T、`poissonRatio` | Eq. 的 K 矩陣需要 E_F/E_T/ν |
+| 積分 | 隱式 | 「An implicit integration scheme is used to enforce robustness」 |
+| 撕裂 | argmax-c(Eq.1–4)+ 每元素成核(§4.3) | §4.3 |
+| **黏附/剝離** | **完全沒有** | 全文查無 adhes/glue/peel/debond |
+| 邊界條件 | 僅懸韌帶(外緣)錨定 | 沒有黏附時,這是唯一的固定;解剖上也是懸韌帶在周邊插入 |
+
+> [補充] 水晶體的 `EllipsoidForceField` **保留**,因為它是**單向障礙**(只往外推、不會拉),
+> 不會提供任何隱藏的固定力,只是避免膜穿過水晶體。這是我們的補充,論文未提。
+
+**stock SOFA 就有論文要的材料**:`TriangularAnisotropicFEMForceField` 具備
+`youngModulus` / `transverseYoungModulus` / `poissonRatio` / **`fiberCenter`**,
+所以同心纖維場**不需要任何自訂程式碼**。
+
+### 4.18 論文模式的實測:拿掉黏附,幾乎沒有差別
+
+同一段拉動,唯一差別是有沒有黏附/剝離 **[實測]**:
+
+| | 切開長度 | 抓取點抬升 | 抬升>0.5 的節點 |
+|---|---|---|---|
+| 目前預設(mass-spring + 黏附 + 剝離) | **131** | 2.15 | 202 |
+| 論文模式(**完全無黏附**) | **128** | 1.62 | 176 |
+
+**把黏附整個拿掉,撕裂長度 131 → 128、抬升 2.15 → 1.62 —— 幾乎沒有差別。**
+
+> **這推翻了一個一直以來的假設。** 先前把「拉不起一整片」歸咎於黏附把膜按在水晶體上
+> (§4.6 的死鎖、§4.16 的切向改造都是往這個方向修)。但在**完全沒有黏附**的論文模式下,
+> 膜依然只抬起 1.62、依然撕不出可翻摺的大片。**限制不在黏附**,而在膜本身的可拉伸量
+> (應變夾限)與懸韌帶錨定的邊界條件 —— 亦即 §4.10 的粗網格問題,而非任何附加機制。
+> §4.16 的切向黏附實測(2.34 → 2.36)當時已指向同一個結論,這裡是獨立的第二個證據。
+
+---
+
 ---
 
 ## 5. 做不到什麼、為什麼(這是重點)
