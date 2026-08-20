@@ -256,7 +256,11 @@ ADHESION_STIFF = 120.0    # spring pulling each glued node to its rest spot
 # the neighbours' in-plane anchors. Kept and switchable (CAP_ADH_TANGENTIAL=1) because it is
 # still the more faithful model, and it is the right foundation once flap lifting is solved.
 ADH_TANGENTIAL = os.environ.get("CAP_ADH_TANGENTIAL", "0") == "1"
-BREAK_FORCE = 30.0
+# break_lift = BREAK_FORCE/ADHESION_STIFF must sit ABOVE the elastic noise floor (p99 0.234,
+# max 0.261 measured) and BELOW what the strain clamp lets a lone node reach (0.375, see
+# _check_peel_reachable). 30 gave 0.250, inside the noise; 40 gives 0.333, which clears the
+# p99 with margin and still leaves room to be reached.
+BREAK_FORCE = 40.0
 # NOTE: tear mode deliberately keeps the DEFAULT adhesion. Weakening it to help the flap lift
 # was a mistake -- the flap does not need it (splitting a vertex already ungluesthat spot and
 # its ring, see _split_vertex), while a low break force let the pull peel the ENTIRE cap off
@@ -289,7 +293,14 @@ PEEL_NUCLEATE = float(os.environ.get("CAP_PEEL_NUCLEATE", "1.2"))
 # only ever come off in the small patch the hand lifted directly -- "no matter how I pull it
 # is always a small crack, never a sheet coming away". A front node is already half free, so
 # it lets go far more easily than fresh bonded material.
-PEEL_FRONT_EASE = float(os.environ.get("CAP_PEEL_EASE", "0.15"))
+# MEASURED FLOOR, do not go below it. A node that is nowhere near the hand still moves,
+# purely from the membrane's elastic response: median 0.081, p90 0.218, max 0.261 on this
+# mesh. Any debond threshold under that detaches the capsule for no physical reason -- at the
+# 0.15 this was set to (threshold 0.0375) 58.8% of FAR nodes already qualified, so half the
+# sheet came away while visibly sitting still on the lens, which is exactly what it looked
+# like. At 1.0 only 0.1% do. The front-concentration idea is sound, but it has to stay above
+# the elastic noise floor, and on this mesh there is no room below break_lift for it.
+PEEL_FRONT_EASE = float(os.environ.get("CAP_PEEL_EASE", "1.0"))
 # How far ahead of the CRACK the debond front may run, in world units. In a real
 # capsulorhexis the flap comes away BECAUSE the tear advances -- they are one event. Modelled
 # as two independent mechanisms they compete for the same pull, and peeling wins: measured, a

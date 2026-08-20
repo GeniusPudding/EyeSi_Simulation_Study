@@ -28,7 +28,11 @@ C = 1.5        # semi-axis in z (smaller = flatter lens)
 
 # --- membrane ---------------------------------------------------------------
 CAP_ANGLE_DEG = 80.0   # 90 = cover the WHOLE upper half (rim on the equator, z=0)
-TARGET_EDGE = 0.30     # desired triangle edge length -> THE resolution knob
+import os as _os
+# Desired triangle edge length -- THE resolution knob. Dequidt 2013 s4.3 notes that a
+# linear element's stress does not represent the material "unless very fine meshes are
+# used", so this is the parameter their own prescription points at.
+TARGET_EDGE = float(_os.environ.get('CAP_EDGE', '0.30'))
 MIN_SEG = 6            # minimum segments on the innermost ring
 
 # --- pre-slit tear circle ---------------------------------------------------
