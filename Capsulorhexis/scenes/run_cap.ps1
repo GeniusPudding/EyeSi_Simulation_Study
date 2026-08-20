@@ -54,6 +54,12 @@ param(
     # clamp, and you see the whole sheet snap inward. Use -NoLog when judging interactive feel.
     [switch]$NoLog
 )
+# Every session writes a BLACK BOX you can read afterwards:
+#   scenes/diag_last.csv          one row per step, always on. Mechanics + the tear, including
+#                                 WHY the tear did or did not advance that step.
+#   scenes/stress_log_<take>.jsonl  full per-triangle stress field + crack path per frame,
+#                                 written when -Heatmap is on.
+# Read either with:  py -3.12 scenes/analyze_take.py
 if ($Fem) { $env:CAP_MODE = "fem" } else { $env:CAP_MODE = "spring" }
 if ($Heatmap) { $env:CAP_HEATMAP = "1" } else { $env:CAP_HEATMAP = "0" }
 if ($Tear) { $env:CAP_TEAR = "1"; $env:CAP_TEAR_THRESH = "$Thresh" } else { $env:CAP_TEAR = "0" }

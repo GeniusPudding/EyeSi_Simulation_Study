@@ -101,12 +101,18 @@ TEAR_CLOSE_MIN = int(os.environ.get("CAP_TEAR_CLOSEMIN", "40"))
 # that: c stays far above 1 on residual stress. Advance only while the tip drive is within
 # TEAR_ARREST of its recent peak, where that peak itself decays by TEAR_ARREST_DECAY each
 # opportunity so a slow steady pull still counts as loading.
-TEAR_ARREST = float(os.environ.get("CAP_TEAR_ARREST", "0.9"))
+# CALIBRATED AGAINST A REAL SESSION, not a probe. At 0.9 this gate refused 35.8% of all
+# opportunities and TEAR_LOCAL_MIN=1.5 refused another 55.8%, leaving 8.3% actually tearing --
+# read straight out of the recorded frames' "why" field. It passed the probe only because the
+# probe pulled in a perfectly smooth ramp; a real hand jitters, so the drive keeps dipping
+# below its own recent peak. With a jittery probe pull, 0.6/0.4 tears 54 vertices against 35,
+# still never self-starts, and still stops dead on release.
+TEAR_ARREST = float(os.environ.get("CAP_TEAR_ARREST", "0.6"))
 TEAR_ARREST_DECAY = float(os.environ.get("CAP_TEAR_ARREST_DECAY", "0.97"))
 # Minimum sigma1 in the tip's OWN elements before its direction is trusted. Measured, the
 # local reading is 0.3 with no load and 5-20 under a real pull, and it is the only source
 # that points at the hand -- but only once there is something to point with.
-TEAR_LOCAL_MIN = float(os.environ.get("CAP_TEAR_LOCALMIN", "1.5"))
+TEAR_LOCAL_MIN = float(os.environ.get("CAP_TEAR_LOCALMIN", "0.4"))
 # The initial nick: capsulorhexis starts with a cystotome puncture near the centre, and
 # without one there is no crack tip to push -- the membrane would just stretch. This seeds a
 # short radial slit of this many edges starting at radius TEAR_START_R.
@@ -248,10 +254,12 @@ MOUSE_STIFFNESS = float(os.environ.get("CAP_MOUSE_STIFF", "600"))
 # SofaGLFW hard-codes left-drag = orbit (not remappable from the scene), so pulling
 # and orbiting share the same button.
 LOCK_CAMERA = False              # True = disable orbiting entirely
-# Freeze-orbit-while-grabbing: both object-count-based grab detectors failed
-# (SofaImGui keeps adding graph objects, so any count baseline goes stale and the
-# camera locks forever). Needs a name-based detector (see CAM_PROBE); off until then.
-FREEZE_CAMERA_WHILE_PULLING = False
+# Freeze-orbit-while-grabbing. Left-drag both orbits and pulls (SofaGLFW hard-codes the
+# binding), so without this the view swings around while you are trying to tear. The two
+# object-COUNT detectors this used to rely on could not work -- SofaImGui keeps adding graph
+# objects, so any baseline goes stale and the camera locks forever -- so it was left off.
+# _is_grabbing() is now name-based and reliable, so it is on by default.
+FREEZE_CAMERA_WHILE_PULLING = os.environ.get("CAP_FREEZE_CAM", "1") == "1"
 CAM_PROBE = False                # diagnostic: print graph-object changes per step
 # Keyboard (needs viewport focus): W/A/S/D or arrows pan, R re-centres, V locks orbit.
 CAM_PAN_STEP = 1.5               # world units per pan key press
@@ -1038,13 +1046,22 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             return out
 
         def _is_grabbing(self):
-            # Grab detector via graph-object count above the resting minimum.
-            # Unreliable under SofaImGui (see FREEZE_CAMERA_WHILE_PULLING); kept for
-            # a future name-based version.
-            n = self._count_objs()
-            if self.rest_objs is None or n < self.rest_objs:
-                self.rest_objs = n
-            return n > self.rest_objs
+            """True while SOFA's mouse interactor is actually holding the membrane.
+
+            Detected BY NAME. The previous version compared the graph's object COUNT against a
+            self-calibrating resting minimum, which cannot work: SofaImGui keeps adding objects
+            of its own, so the baseline goes stale and the camera ends up locked for good --
+            which is why FREEZE_CAMERA_WHILE_PULLING had to be left off, and why left-drag
+            orbits the view at the same time as it pulls. When you grab, SOFA's attach
+            performer adds a spring between a mouse particle and the picked node, and those
+            objects carry "mouse" in their class or name. Verified that nothing in this scene
+            does so at rest (0 of 55 objects match), and AttachBodyButtonSetting -- which is
+            only the SETTING for how stiff that spring is -- is excluded explicitly."""
+            for tag in self._obj_paths():
+                low = tag.lower()
+                if "mouse" in low and "buttonsetting" not in low:
+                    return True
+            return False
 
         def _pan_camera(self, dr, du):
             # Translate BOTH position and lookAt by dr*right + du*up (screen-plane pan), so
@@ -1880,8 +1897,12 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 if self.diag is None:
                     # line-buffered, so closing the app mid-session loses no rows
                     self.diag = open(DIAG_PATH, "w", buffering=1)
+                    # Black box: one row per STEP for the whole session. The TEAR
+                    # columns matter as much as the mechanics ones -- "why" is what
+                    # revealed that two safety gates were refusing 91.6% of all
+                    # tearing opportunities, which the viewport could never show.
                     self.diag.write("step,t,maxcoord,maxspeed,maxstretch,maxjump,glued,"
-                                    "rewinds,vclamped,dclamped\n")
+                                    "rewinds,vclamped,dclamped,crack,c,tipr,why\n")
                 P = np.asarray(pos)
                 V = np.asarray(self.mo.velocity.value)
                 if self.edges is None:
@@ -1892,10 +1913,13 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 else:
                     maxstretch = 1.0
                 maxspeed = float(np.linalg.norm(V, axis=1).max()) if len(V) else 0.0
+                _ts = _TEAR_STATE
                 self.diag.write(f"{self.step},{t:.3f},{float(np.abs(P).max()):.3f},"
                                 f"{maxspeed:.3f},{maxstretch:.3f},{self.last_jump:.3f},"
                                 f"{len(self.adhered)},{self.rewinds},"
-                                f"{self.clamped},{self.disp_clamped}\n")
+                                f"{self.clamped},{self.disp_clamped},"
+                                f"{_ts.get('len', 0)},{_ts.get('c', 0)},"
+                                f"{_ts.get('tipr', 0)},'{_ts.get('why', '')}'\n")
             if self.adhered and not self.frozen:
                 idx = np.fromiter(self.adhered, dtype=int)
                 lift = np.linalg.norm(pos[idx] - rest[idx], axis=1)
