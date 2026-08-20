@@ -10,6 +10,7 @@ namespace sofa::capsulorhexis
 
 // Component registrations (defined in each component's .cpp).
 void registerTriangularFiberFEMForceField(sofa::core::ObjectFactory* factory);
+void registerTopologySplitEngine(sofa::core::ObjectFactory* factory);
 // FiberFractureEngine needs the Tearing dependency; guard it.
 #ifdef CAPSULORHEXIS_HAVE_TEARING
 void registerFiberFractureEngine(sofa::core::ObjectFactory* factory);
@@ -48,6 +49,7 @@ void registerObjects(sofa::core::ObjectFactory* factory)
 {
     // Each component's .cpp exposes a registerX(factory) forwarded here.
     registerTriangularFiberFEMForceField(factory);
+    registerTopologySplitEngine(factory);
 #ifdef CAPSULORHEXIS_HAVE_TEARING
     registerFiberFractureEngine(factory);
 #endif

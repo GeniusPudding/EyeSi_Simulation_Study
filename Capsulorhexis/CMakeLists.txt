@@ -33,11 +33,13 @@ set(HEADER_FILES
     src/Capsulorhexis/config.h
     src/Capsulorhexis/FractureCriterion.h
     src/Capsulorhexis/TriangularFiberFEMForceField.h
+    src/Capsulorhexis/TopologySplitEngine.h
     src/Capsulorhexis/TriangularFiberFEMForceField.inl
 )
 set(SOURCE_FILES
     src/Capsulorhexis/init.cpp
     src/Capsulorhexis/TriangularFiberFEMForceField.cpp
+    src/Capsulorhexis/TopologySplitEngine.cpp
 )
 
 # FiberFractureEngine (Marchal Eq.3-6) needs the Tearing plugin's BaseTearingEngine.
