@@ -623,18 +623,30 @@ _TEAR_STATE = {"on": False, "len": 0, "c": 0.0, "thr": 0.0, "tipr": 0.0, "why": 
 # opening. Both index the CURRENT reference disc, so they are only meaningful together with
 # the frame's "gver".
 _TEAR_PATH = {"path": [], "lips": []}
-# WHERE THE INSTRUMENT IS PULLING, and how hard. Read from the MechanicalObject's own force
-# vector: the mouse spring loads essentially one node, so argmax|f| identifies the grab
-# exactly (verified against a known pulled node -- argmax matched it, with only 5 of 2171
-# nodes above 10% of the peak). Without this the viewer showed the consequences of a pull
-# with no way to see the pull itself.
-_PULL_STATE = {"on": False, "x": 0.0, "y": 0.0, "fx": 0.0, "fy": 0.0, "mag": 0.0}
+# WHERE THE INSTRUMENT IS PULLING, and how hard. WHETHER a pull is happening comes from
+# _is_grabbing() -- the mouse interactor's own objects in the scene graph -- not from the
+# force magnitude. Magnitude cannot tell the two apart: measured, max|F| is 0.0 with nobody
+# touching the capsule and ~137 during a drag, but the recoil AFTER letting go peaks at 1754,
+# far above the drag itself. A threshold that ignores the recoil would also ignore gentle
+# pulls. Given that a grab IS happening, argmax|f| then identifies WHICH node is held, exactly
+# (checked against a known pulled node: argmax matched, 5 of 2171 nodes above 10% of peak).
+_PULL_STATE = {"on": False, "x": 0.0, "y": 0.0, "fx": 0.0, "fy": 0.0, "mag": 0.0,
+               "seg": -1}
 # Which vertices are STILL GLUED to the lens, as a compact "1"/"0" string (one character per
 # vertex, ~2 KB against the ~100 KB of stress arrays already in a frame). The map started out
 # uniformly attached and there was no way to see what had come away -- so "the capsule is
 # being stripped wherever I drag" could be felt but not checked.
 _ADH_STATE = {"glued": "", "n": 0}
-PULL_MIN_FORCE = float(os.environ.get("CAP_PULL_MINF", "5.0"))
+# Retained only as a floor on what counts as a meaningful grab force.
+PULL_MIN_FORCE = float(os.environ.get("CAP_PULL_MINF", "0.0"))
+# A TAKE is one scene run: reloading the scene in SOFA archives the previous recording and
+# starts a new file. Inside one take you normally pull, let go, pull somewhere else, pause,
+# carry on -- so a take is not a single gesture. Each grab-to-release is numbered as a PULL
+# so the timeline can show where they are and jump between them; frames between pulls carry
+# seg = -1. PULL_GAP is how long the force may stay below PULL_MIN_FORCE before the pull is
+# considered over, so a momentary dip mid-drag does not split one gesture into two.
+PULL_GAP = float(os.environ.get("CAP_PULL_GAP", "0.35"))
+_PULL_SEG = {"n": 0, "cur": -1, "last_t": -1e9}
 
 
 _GEOM_PENDING = None      # (rest, tris) waiting to be serialised on demand
@@ -771,6 +783,62 @@ def _disk_frame(path, i):
         return b"{}"
 
 
+_SEG_CACHE = {}
+
+
+def _segments_of(lines_iter, n):
+    """Turn a per-frame [(t, seg)] stream into contiguous pull ranges."""
+    out, cur = [], None
+    for i, (t, seg) in enumerate(lines_iter):
+        if seg is not None and seg > 0:
+            if cur is None or cur["seg"] != seg:
+                if cur is not None:
+                    out.append(cur)
+                cur = {"seg": seg, "i0": i, "i1": i, "t0": t, "t1": t}
+            else:
+                cur["i1"], cur["t1"] = i, t
+        elif cur is not None:
+            out.append(cur)
+            cur = None
+    if cur is not None:
+        out.append(cur)
+    return out
+
+
+def _scan_segments(path):
+    """Pull ranges of a take on disk, WITHOUT parsing whole frames.
+
+    A frame is ~100 KB, almost all of it the per-triangle arrays, and json-decoding 1600 of
+    them to read two small fields would take seconds. The dict is written with "t" and "pull"
+    near the FRONT, so a bounded prefix of each line is enough."""
+    import re
+    key = _disk_stat(path)
+    if key is None:
+        return []
+    hit = _SEG_CACHE.get(path)
+    if hit and hit[0] == key:
+        return hit[1]
+    offs = _disk_index(path)
+    if not offs:
+        return []
+    rt = re.compile(rb'"t":\s*([-0-9.eE]+)')
+    rs = re.compile(rb'"seg":\s*(-?\d+)')
+    rows = []
+    try:
+        with open(path, "rb") as f:
+            for o in offs:
+                f.seek(o)
+                head = f.read(4096)
+                mt, ms = rt.search(head), rs.search(head)
+                rows.append((float(mt.group(1)) if mt else 0.0,
+                             int(ms.group(1)) if ms else None))
+    except OSError:
+        return []
+    res = _segments_of(rows, len(rows))
+    _SEG_CACHE[path] = (key, res)
+    return res
+
+
 def _disk_takes():
     out = []
     live = None
@@ -859,6 +927,47 @@ def _start_stress_server(port, open_browser):
                     except Exception:  # noqa: BLE001
                         pass
                     self._send(_json.dumps({"sessions": out}).encode(), "application/json")
+                elif self.path.startswith("/segments"):
+                    # where the PULLS are inside a take: one take is one scene run, but a run
+                    # normally contains several grab-release gestures, and the timeline should
+                    # show them rather than presenting a single undifferentiated span.
+                    q = parse_qs(urlparse(self.path).query)
+                    sid = q.get("s", [""])[0]
+                    if sid.startswith("f:"):
+                        base = os.path.dirname(STRESS_LOG_PATH) or "."
+                        segs = _scan_segments(os.path.join(base, os.path.basename(sid[2:])))
+                    else:
+                        rows = []
+                        src = _STRESS_HISTORY
+                        if sid != "" and int(sid) != _STRESS_SESSION_ID:
+                            arc = next((x for x in _STRESS_SESSIONS
+                                        if x["id"] == int(sid)), None)
+                            src = arc["frames"] if arc else []
+                        # Read "t" and "pull.seg" out of the FRONT of each frame instead of
+                        # decoding it. A frame is ~100 KB and the buffer holds up to 1500 of
+                        # them, so json-parsing the lot -- on every poll, which the page does
+                        # several times a second -- saturated the server and starved /stress:
+                        # the page froze while the simulation was still happily publishing.
+                        import re as _re
+                        _rt = _re.compile(r'"t":\s*([-0-9.eE]+)')
+                        _rs = _re.compile(r'"seg":\s*(-?\d+)')
+                        for fr in list(src):
+                            head = fr[:4096]
+                            mt, ms = _rt.search(head), _rs.search(head)
+                            rows.append((float(mt.group(1)) if mt else 0.0,
+                                         int(ms.group(1)) if ms else None))
+                        segs = _segments_of(rows, len(rows))
+                        if sid == "" or int(sid) == _STRESS_SESSION_ID:
+                            # The live take is scrubbed by GLOBAL frame index, while the
+                            # history buffer these were computed over is 0-based, so the
+                            # bands landed in the wrong place and "next pull" could never
+                            # find one ahead of the live frame.
+                            off = _STRESS_TOTAL - len(_STRESS_HISTORY)
+                            for g in segs:
+                                g["i0"] += off
+                                g["i1"] += off
+                    self._send(_json.dumps({"segments": segs}).encode(),
+                               "application/json")
                 elif self.path.startswith("/meta"):
                     n = len(_STRESS_HISTORY)
                     meta = {"count": _STRESS_TOTAL, "n": n,
@@ -2337,15 +2446,25 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 if F.ndim == 2 and len(F):
                     mag = np.linalg.norm(F, axis=1)
                     k = int(np.argmax(mag))
-                    if float(mag[k]) >= PULL_MIN_FORCE and k < len(pos):
+                    t_now = float(self.mo.getContext().getTime())
+                    if self._is_grabbing() and k < len(pos):
+                        if _PULL_SEG["cur"] < 0 or t_now - _PULL_SEG["last_t"] > PULL_GAP:
+                            _PULL_SEG["n"] += 1
+                            _PULL_SEG["cur"] = _PULL_SEG["n"]
+                        _PULL_SEG["last_t"] = t_now
                         r0 = self._rest_now()
                         rx, ry = (float(r0[k][0]), float(r0[k][1])) if k < len(r0) else (0.0, 0.0)
                         _PULL_STATE.update(on=True, x=round(rx, 3), y=round(ry, 3),
                                            fx=round(float(F[k][0]), 1),
                                            fy=round(float(F[k][1]), 1),
-                                           mag=round(float(mag[k]), 1))
+                                           mag=round(float(mag[k]), 1),
+                                           seg=_PULL_SEG["cur"])
                     else:
+                        if (_PULL_SEG["cur"] > 0
+                                and t_now - _PULL_SEG["last_t"] > PULL_GAP):
+                            _PULL_SEG["cur"] = -1
                         _PULL_STATE["on"] = False
+                        _PULL_STATE["seg"] = _PULL_SEG["cur"]
             except Exception:  # noqa: BLE001
                 _PULL_STATE["on"] = False
 

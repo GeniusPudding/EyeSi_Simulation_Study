@@ -17,6 +17,17 @@
   #cap { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); padding: 6px 12px;
          color: #9fb3c4; pointer-events: none; text-align: center; }
   #cap b { color: #cfe0ee; }
+  /* Clutter control. Every panel earns its place, but not all of them at once: headers fold,
+     and the long explanatory paragraphs (.note) hide behind one switch, because they are
+     reference material you need once and then never again while actually working. */
+  .panel > h4, .panel > .cap2 { cursor: pointer; user-select: none; }
+  .panel > h4::before, .panel > .cap2::before { content: "be "; color: #7f93a4; }
+  .panel.folded > h4::before, .panel.folded > .cap2::before { content: "b8 "; }
+  .panel.folded > *:not(:first-child) { display: none !important; }
+  body.lean .note { display: none !important; }
+  #prose { position: fixed; top: 10px; right: 300px; z-index: 9; background: #16212c;
+           color: #9fb3c4; border: 1px solid #2b3a49; border-radius: 6px; padding: 4px 8px;
+           font-size: 11px; cursor: pointer; }
   #ctrls { position: fixed; top: 10px; right: 12px; display: flex; gap: 8px; align-items: center; }
   /* criterion readout: every term of the formula, for the frame you are looking at */
   #layers { position: fixed; right: 12px; bottom: 70px; width: 250px; padding: 8px 10px;
@@ -43,7 +54,17 @@
   #ctrls button.on { background: #2a4258; border-color: #4a6076; color: #bfe4ff; }
   /* timeline */
   #tl { position: fixed; left: 12px; right: 12px; bottom: 12px; padding: 8px 12px 10px;
-        display: grid; grid-template-columns: auto auto 1fr auto auto; gap: 10px; align-items: center; }
+        display: grid; grid-template-columns: auto auto 1fr auto auto auto auto;
+        gap: 10px; align-items: center; }
+  /* A take is ONE SCENE RUN; inside it each grab-release is a numbered pull, shown
+     as a band so a long run is navigable instead of one undifferentiated span. */
+  #seekwrap { position: relative; }
+  #segbar { position: absolute; left: 0; right: 0; top: -7px; height: 6px;
+            border-radius: 3px; background: #16212c; overflow: hidden; }
+  #segbar i { position: absolute; top: 0; bottom: 0; background: #ffd24a;
+              opacity: .75; cursor: pointer; }
+  #segbar i.on { background: #37e6d9; opacity: 1; }
+  #seekwrap #seek { width: 100%; }
   #tl button { background: #16212c; color: #dfe6ee; border: 1px solid #2b3a49; border-radius: 6px;
                width: 30px; height: 28px; cursor: pointer; font-size: 13px; }
   #tl button:hover { border-color: #4a6076; }
@@ -167,6 +188,7 @@
 <div id="insp" class="panel"><h4>🔍 element inspector · 元素檢視</h4>
 <div class="note">hover a triangle · 滑到三角形上;click = 📌 pin 釘選(截圖用)</div></div>
 
+<button id="prose" title="hide the long explanations · 收起說明文字">說明文字</button>
 <div id="layers" class="panel">
   <h4>◧ 圖層 · layers <span class="sub">(獨立勾選,可全選疊看)</span></h4>
   <label><input type="checkbox" id="LstressOn" checked> <b>應力 σ₁</b> stress heat</label>
@@ -183,10 +205,15 @@
 <div id="tl" class="panel">
   <button id="liveBtn" class="on" title="follow the latest frame (Space)">◉</button>
   <button id="playBtn" title="replay">▶</button>
-  <input id="seek" type="range" min="0" max="0" value="0" step="1">
+  <div id="seekwrap">
+    <div id="segbar" title="每一段 = 一次「抓住→放開」。點一下跳到該次拉動"></div>
+    <input id="seek" type="range" min="0" max="0" value="0" step="1">
+  </div>
   <select id="takeSel" title="which recorded pull to replay · 選擇要回放哪一次拉動"
           style="background:#16212c;color:#dfe6ee;border:1px solid #2b3a49;border-radius:6px;
                  padding:4px 6px;font-size:12px;max-width:190px"></select>
+  <button id="prevPull" title="上一次拉動">⟨</button>
+  <button id="nextPull" title="下一次拉動">⟩</button>
   <div id="tllab"><span id="liveDot">◉ LIVE</span></div>
 </div>
 
@@ -570,6 +597,31 @@ const LAYER = id => { const e = document.getElementById(id); return !e || e.chec
   if (e) e.addEventListener("change", draw);
 });
 
+// Fold/unfold panels, and remember it. The page carries a lot of simultaneous readouts and
+// most of them are not needed at the same moment.
+function initFolding(){
+  for(const el of document.querySelectorAll(".panel")){
+    const h = el.firstElementChild;
+    if(!(h && (h.tagName==="H4" || h.classList.contains("cap2")))) continue;
+    if(!h || !el.id) continue;
+    if(localStorage.getItem("fold:"+el.id)==="1") el.classList.add("folded");
+    h.addEventListener("click", ()=>{
+      el.classList.toggle("folded");
+      localStorage.setItem("fold:"+el.id, el.classList.contains("folded")?"1":"0");
+    });
+  }
+  const lean = localStorage.getItem("lean")==="1";
+  if(lean) document.body.classList.add("lean");
+  const b=document.getElementById("prose");
+  const sync=()=>b.textContent = document.body.classList.contains("lean") ? "說明文字 ▸" : "說明文字 ▾";
+  sync();
+  b.addEventListener("click", ()=>{
+    document.body.classList.toggle("lean");
+    localStorage.setItem("lean", document.body.classList.contains("lean")?"1":"0");
+    sync(); draw();
+  });
+}
+
 function draw(){
   if(!bounds||!verts) return;
   T=fit(); ctx.clearRect(0,0,T.W,T.H);
@@ -779,6 +831,7 @@ function draw(){
   }
   drawLegend();
   renderCrit();
+  drawSegs();
 }
 function drawLegend(){ const lg=document.getElementById("lg"),g=lg.getContext("2d");
   for(let x=0;x<lg.width;x++){ g.fillStyle=ramp(x/(lg.width-1)); g.fillRect(x,0,1,lg.height); }
@@ -904,9 +957,19 @@ function updateHud(){
 function updateTimeline(){
   const rng=takeRange();
   seek.min=rng.first; seek.max=Math.max(rng.first,rng.last);
-  const isLive = viewTake<0 && following;
+  const isLive = viewTake===null && following;
+  // Follow the live frame, but in review the thumb must also track wherever we were moved
+  // to -- the pull-jump buttons and the segment bands set the frame programmatically, and
+  // without this the slider stayed where it was and disagreed with the frame being shown.
   if(isLive) seek.value=rng.last;
   const shown = cur? (viewTake!==null ? curIdx : cur.i) : rng.last;
+  // Placed AFTER `shown` exists: it was written above the declaration, so every entry into
+  // review mode threw a temporal-dead-zone ReferenceError out of updateTimeline and the
+  // label never switched away from LIVE -- which looked exactly like the jump buttons and
+  // the segment bands doing nothing at all.
+  if(!isLive && document.activeElement!==seek){
+    seek.value = Math.min(Math.max(shown, rng.first), rng.last);
+  }
   const tk = viewTake!==null ? ` · take <b>${viewTake}</b>` : "";
   if(isLive){ tllab.innerHTML=`<span id="liveDot">◉ LIVE</span>  ·  frame <b>${shown}</b>  t <b>${cur?cur.t.toFixed(2):"--"}</b>s`; }
   else { tllab.innerHTML=`<span id="reviewTag">❚❚ REVIEW</span>${tk}  ·  frame <b>${shown}</b> / ${rng.last}  t <b>${cur?cur.t.toFixed(2):"--"}</b>s`; }
@@ -924,6 +987,46 @@ async function fetchFrame(i){
   catch(e){}
   return null;
 }
+// Pull segments of whatever take is being viewed. Refetched when the take changes, and
+// while live refreshed occasionally so new pulls appear as they happen.
+let segs=[], segSig="", segTake=undefined, lastSegFetch=0;
+async function loadSegs(force){
+  const id = viewTake===null ? liveSession : viewTake;
+  if(!force && segTake===id) return;
+  segTake=id;
+  try{
+    const q = viewTake===null ? "/segments" : `/segments?s=${encodeURIComponent(viewTake)}`;
+    const j = await jfetch(q); segs = (j&&j.segments)||[];
+  }catch(e){ segs=[]; }
+  drawSegs();
+}
+function drawSegs(){
+  const bar=document.getElementById("segbar"); if(!bar) return;
+  const r=takeRange(), span=Math.max(1,(r.last-r.first));
+  const cur = cur_i();
+  const sig = segs.map(s=>s.seg+":"+s.i0+"-"+s.i1).join(",")+"|"+span+"|"+curSeg();
+  if(sig===segSig) return;
+  segSig=sig;
+  bar.innerHTML="";
+  for(const s of segs){
+    const el=document.createElement("i");
+    el.style.left  = ((s.i0-r.first)/span*100)+"%";
+    el.style.width = (Math.max(1,(s.i1-s.i0))/span*100)+"%";
+    el.title = `pull ${s.seg} · frames ${s.i0}–${s.i1} · t ${s.t0.toFixed(2)}–${s.t1.toFixed(2)}s`;
+    if(s.seg===curSeg()) el.className="on";
+    el.addEventListener("click",()=>goReview(s.i0));
+    bar.appendChild(el);
+  }
+}
+function cur_i(){ return cur ? (viewTake!==null?curIdx:cur.i) : 0; }
+function curSeg(){ return (cur&&cur.pull&&cur.pull.seg)||-1; }
+function jumpPull(dir){
+  if(!segs.length) return;
+  const i=cur_i();
+  const list = dir>0 ? segs.filter(s=>s.i0>i) : segs.filter(s=>s.i0<i).reverse();
+  if(list.length) goReview(list[0].i0);
+}
+
 function takeRange(){
   // frame index range of whatever is being viewed: archived takes are 0..n-1, the live
   // recording uses the global counter window from /meta.
@@ -962,13 +1065,19 @@ async function tick(){
   catch(e){ if(++miss>6) deadEl.style.display="grid"; setTimeout(tick, 400); return; }
   try{ const sj=await jfetch("/sessions"); sessions=sj.sessions||[];
        const lv=sessions.find(s=>s.live); if(lv) liveSession=lv.id; rebuildTakeSel(); }catch(e){}
+    // Refresh the live pull list occasionally, not every tick: it is a scan on the
+    // server side and nothing about it changes at frame rate.
+    const nowMs = Date.now();
+    if(viewTake!==null || nowMs - lastSegFetch > 2000){
+      lastSegFetch = nowMs; loadSegs(viewTake===null);
+    }
   // reset detection: within one take the frame counter only grows, so a DROP means the SOFA
   // scene was reloaded -> the previous take is now archived (still replayable via the take
   // selector). Reload geometry, drop the live cache, and follow the NEW take.
   if(meta.count < prevCount){
     verts=null; cur=null; following=true; playing=false; curIdx=-1; pinned=-1;
     for(const k of [...cache.keys()]) if(k.startsWith("-1:")) cache.delete(k);
-    if(viewTake<0) sessSig="";                    // force the selector to refresh
+    if(viewTake===null) sessSig="";                    // force the selector to refresh
     prevCount=0; setTimeout(tick, 30); return;    // reload geometry on the next tick
   }
   prevCount=meta.count;
@@ -981,7 +1090,7 @@ async function tick(){
   }
   // (3) the frame to show
   const rng=takeRange();
-  if(viewTake<0 && following){
+  if(viewTake===null && following){
     try{ const f=await jfetch("/stress"); if(f&&f.s1){ cur=f; curIdx=f.i; noteCrack(f); } }catch(e){}
   } else {
     if(playing){ curIdx++; if(curIdx>rng.last){ curIdx=rng.last; playing=false; } }
@@ -1002,14 +1111,23 @@ cv.addEventListener("click",()=>{        // click a triangle = pin it (click it 
   if(hover>=0){ pinned = (pinned===hover ? -1 : hover); lastHover=hover; }
 });                                       // clicking empty space leaves the panel as it is
 function goLive(){ viewTake=null; following=true; playing=false;
-  const s=document.getElementById("takeSel"); if(s) s.value="-1"; }
+  const s=document.getElementById("takeSel"); if(s) s.value="-1";
+  try{ updateTimeline(); }catch(e){ console.error("updateTimeline", e); }
+}
 function goReview(i){ const r=takeRange();
-  following=false; curIdx=Math.max(r.first,Math.min(r.last,i)); }
+  following=false; playing=false; curIdx=Math.max(r.first,Math.min(r.last,i));
+  // Reflect the switch immediately rather than waiting for the next poll. The jump buttons
+  // and the segment bands set the frame directly, and if the loop happens to be busy the UI
+  // would keep showing LIVE at the old frame -- indistinguishable from the click not working.
+  try{ updateTimeline(); }catch(e){ console.error("updateTimeline", e); }
+  try{ fetchFrame(curIdx).then(f=>{ if(f){ cur=f; try{ draw(); updateHud(); updateTimeline(); }catch(e){} } }); }catch(e){}
+}
 document.getElementById("liveBtn").onclick=()=>{
-  (viewTake<0 && following) ? goReview(takeRange().last) : goLive(); };
+  (viewTake===null && following) ? goReview(takeRange().last) : goLive(); };
 document.getElementById("playBtn").onclick=()=>{
-  if(viewTake<0 && following) goReview(takeRange().first); playing=!playing; };
+  if(viewTake===null && following) goReview(takeRange().first); playing=!playing; };
 seek.addEventListener("input",()=>{ goReview(parseInt(seek.value)); });
+try{ initFolding(); }catch(e){ console.error("initFolding", e); }
 document.getElementById("takeSel").addEventListener("change",e=>{
   const raw=e.target.value;
   if(raw==="-1"){ goLive(); return; }
@@ -1019,6 +1137,17 @@ document.getElementById("takeSel").addEventListener("change",e=>{
   viewTake = (raw!=="" && !Number.isNaN(n) && !raw.startsWith("f:")) ? n : raw;
   following=false; playing=false; curIdx=0; pinned=-1;
 });
+// Small introspection hook. Everything here lives in one script scope, so an automated
+// check cannot see any of it -- and reading el.onclick from a test harness returns null even
+// when a handler IS attached, which sent one debugging session chasing a handler that was
+// never actually missing. Exposing the few things worth asserting on makes the UI testable.
+window.__vw = {
+  state: () => ({viewTake, following, playing, curIdx, curSeg: curSeg(), i: cur_i()}),
+  segs:  () => segs.map(s => ({seg: s.seg, i0: s.i0, i1: s.i1})),
+  jumpPull, goReview, goLive,
+};
+document.getElementById("prevPull").onclick=()=>jumpPull(-1);
+document.getElementById("nextPull").onclick=()=>jumpPull(1);
 document.getElementById("scaleBtn").onclick=e=>{ scaleMode=scaleMode==="auto"?"fixed":"auto"; e.target.textContent="Scale: "+scaleMode; };
 document.getElementById("wireBtn").onclick=e=>{ showWire=!showWire; e.target.classList.toggle("on",showWire); };
 document.getElementById("tearThr").addEventListener("input",e=>{ tearThr=parseInt(e.target.value);
