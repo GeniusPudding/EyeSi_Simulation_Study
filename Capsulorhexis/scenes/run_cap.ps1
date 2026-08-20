@@ -63,6 +63,10 @@ param(
     # adhes/glue/peel/debond finds nothing, so all of that is this demo's own addition and is
     # switched off here. Use it to judge the published method on its own. Via CAP_PAPER.
     [switch]$Paper,
+    # -FreeRim unclamps the zonular rim in tear mode. NO LONGER RECOMMENDED (docs 4.34):
+    # the folding it used to buy is now available with the rim anchored, and freeing it
+    # costs 7x the per-step jitter (0.500 -> 3.715) and tears less (42 -> 11 vertices).
+    # Kept only for comparison.
     # -FreeRim unclamps the zonular rim in tear mode. Tear mode anchors it by default, and an
     # anchored rim CANNOT be lifted: measured on the same rim-grab-and-fold, anchored gives a
     # 0.98 lift with zero nodes above 1.0, free gives 5.69 with 728 -- which is why folding
