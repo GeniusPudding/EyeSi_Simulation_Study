@@ -467,6 +467,24 @@ function crackPath(){
   return pathCache;
 }
 
+// Recent crack length, so "the tear has stalled" is visible at a glance instead of having
+// to watch the number. The viewer keeps no frame buffer (frames are fetched on demand), so
+// keep a tiny ring of (frame index, crack length) as they arrive.
+const crackHist=[];
+function noteCrack(f){
+  if(!f||!f.tear) return;
+  const i=f.i|0;
+  if(crackHist.length && crackHist[crackHist.length-1][0]===i) return;
+  crackHist.push([i, f.tear.len|0]);
+  while(crackHist.length>240) crackHist.shift();
+}
+function growth(){
+  if(!cur||!cur.tear||crackHist.length<2) return "";
+  const back=crackHist[Math.max(0, crackHist.length-25)];
+  const d=(cur.tear.len|0)-back[1];
+  return d>0 ? ` <b style="color:#8ef58e">+${d}</b>` : ` <b style="color:#ff9d8a">±0</b>`;
+}
+
 function draw(){
   if(!bounds||!verts) return;
   T=fit(); ctx.clearRect(0,0,T.W,T.H);
@@ -572,6 +590,30 @@ function draw(){
       : (P.info.nucleated ? `${P.info.steps} steps · stop: ${P.info.stop}`
                           : `no tear yet: max c = ${P.info.cmax.toFixed(2)} < 1 — 把門檻調低或拉更用力`);
   }
+  // --- the ACTUAL cut, not a prediction -------------------------------------------------
+  // A crack in this model IS a chain of mesh edges: consecutive vertices of cur.crack are the
+  // edges the tear has split open, and the last one is the live tip. Drawn on the REFERENCE
+  // disc, so it shows WHERE the capsule was cut, undistorted by the pull -- the SOFA window
+  // shows the same cut in its deformed shape. Magenta = already torn; the yellow path is only
+  // a prediction. Every frame carries it, so scrubbing the timeline replays the tear edge by
+  // edge, and switching take replays a different pull. Indices belong to the frame's own
+  // topology version, so skip while the page is still catching up to a newer mesh.
+  if(cur.crack && cur.crack.length>1 && cur.gver===geomVer){
+    const pts=[];
+    for(const v of cur.crack) if(v<verts.length) pts.push(toScreen(verts[v][0],verts[v][1]));
+    if(pts.length>1){
+      ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
+      for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);
+      ctx.strokeStyle="#000";    ctx.lineWidth=7*dpr/2;   ctx.stroke();   // halo
+      ctx.strokeStyle="#ff2d95"; ctx.lineWidth=3.5*dpr/2; ctx.stroke();   // the cut
+      ctx.beginPath(); ctx.arc(pts[0][0],pts[0][1],4.5*dpr/2,0,6.284);
+      ctx.fillStyle="#ff2d95"; ctx.fill();                                // seed nick
+      const tp=pts[pts.length-1];
+      ctx.beginPath(); ctx.arc(tp[0],tp[1],7*dpr/2,0,6.284);
+      ctx.fillStyle="#fff"; ctx.fill();
+      ctx.strokeStyle="#ff2d95"; ctx.lineWidth=2.5*dpr/2; ctx.stroke();   // live tip
+    }
+  }
   drawLegend();
 }
 function drawLegend(){ const lg=document.getElementById("lg"),g=lg.getContext("2d");
@@ -659,6 +701,10 @@ function updateInsp(){
      <span style="color:#ff5b4d">紅虛=⊥σ₁ 裂向</span> ·
      <span style="color:#4aa3ff">藍=纖維</span> ·
      <span style="color:#7fffd4">青虛=INRIA argmax 裂向</span></div>`+
+    `<div class="note"><span style="color:#ff2d95">洋紅粗線 = 已經撕開的裂痕</span>(mesh 邊的串接,
+     ●=起始缺口 ○=目前裂尖)· <span style="color:#ffe14a">黃線=預測路徑</span>(還沒撕)。
+     HUD 的 crack 後面 <span style="color:#8ef58e">+N</span> = 最近 25 幀長出幾格,
+     <span style="color:#ff9d8a">±0</span> = 停滯。拖時間軸可逐格回放裂痕怎麼長的。</div>`+
     row("σ₁ max principal 最大主應力", v.toFixed(1), "這格被拉最緊方向上的張力 = 熱圖顏色")+
     row("σ₂ min principal 最小主應力", cur.s2?cur.s2[k].toFixed(1):"–", "垂直方向的張力 (負=受壓)")+
     row("σ₁ dir 主應力方向", cur.ang[k].toFixed(0)+"°",
@@ -683,7 +729,7 @@ function updateHud(){
     // real-tearing status, straight from the scene: makes "-Tear was not passed" obvious
     // instead of looking like broken tearing.
     (cur.tear ? (cur.tear.on
-      ? `\n<b style="color:#ffe14a">TEAR</b>  crack <b>${cur.tear.len}</b> tip r <b>${cur.tear.tipr}</b>`+
+      ? `\n<b style="color:#ffe14a">TEAR</b>  crack <b>${cur.tear.len}</b>${growth()} tip r <b>${cur.tear.tipr}</b>`+
         `  c <b>${cur.tear.c}</b>/1  σ̄_T ${cur.tear.thr}\n         ${cur.tear.why}`
       : `\n<b style="color:#ff7d72">TEAR OFF</b> — 只會變形不會裂;用 run_cap.ps1 <b>-Tear</b>`)
      : ``);
@@ -768,7 +814,7 @@ async function tick(){
   // (3) the frame to show
   const rng=takeRange();
   if(viewTake<0 && following){
-    try{ const f=await jfetch("/stress"); if(f&&f.s1){ cur=f; curIdx=f.i; } }catch(e){}
+    try{ const f=await jfetch("/stress"); if(f&&f.s1){ cur=f; curIdx=f.i; noteCrack(f); } }catch(e){}
   } else {
     if(playing){ curIdx++; if(curIdx>rng.last){ curIdx=rng.last; playing=false; } }
     if(curIdx<rng.first) curIdx=rng.first;

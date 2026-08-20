@@ -84,7 +84,18 @@ TEAR_TIP_GAIN = float(os.environ.get("CAP_TEAR_TIPGAIN", "1.5"))
 # How far from the tip the pull still drives the crack. The membrane is glued down almost
 # everywhere, so stress does not travel; sampling only a 0.6-unit disc means a hand pulling
 # 2 units away is invisible to the tip. This widens the sampling for the DRIVING term only.
-TEAR_REACH = float(os.environ.get("CAP_TEAR_REACH", "2.5"))
+# Decay LENGTH of the tip-load kernel (NOT a cutoff radius any more -- see
+# _reach_drive). A load this far from the tip counts half.
+TEAR_REACH = float(os.environ.get("CAP_TEAR_REACH", "3.0"))
+# How many of the strongest weighted elements the drive averages. 1 = raw max,
+# which lets a single near-degenerate triangle (~100x the bulk) drive the tear.
+TEAR_DRIVE_TOPK = int(os.environ.get("CAP_TEAR_TOPK", "8"))
+# How many of the most recent crack vertices are off-limits to the advancing tip.
+# Only the tail: the tear must be able to reach its own START to close the circle.
+TEAR_NOBACK = int(os.environ.get("CAP_TEAR_NOBACK", "8"))
+# Minimum crack length before reaching the seed counts as the rhexis closing,
+# so the tear cannot "complete" a few edges after it starts.
+TEAR_CLOSE_MIN = int(os.environ.get("CAP_TEAR_CLOSEMIN", "40"))
 # The initial nick: capsulorhexis starts with a cystotome puncture near the centre, and
 # without one there is no crack tip to push -- the membrane would just stretch. This seeds a
 # short radial slit of this many edges starting at radius TEAR_START_R.
@@ -490,6 +501,8 @@ def _stress_build_frame(i, step, t, s1, s2, sdir, aratio):
         "i": i, "step": int(step), "t": round(float(t), 3),
         "gver": _STRESS_GEOM_VER,        # topology version these arrays belong to
         "tear": dict(_TEAR_STATE),       # live tearing status for the viewer
+        "crack": list(_TEAR_PATH["path"]),   # ordered vertex chain = the cut edges
+        "lips": list(_TEAR_PATH["lips"]),    # [duplicate, original] split pairs
         "s1": np.round(s1, 1).tolist(),
         "s2": np.round(s2, 1).tolist(),
         "ang": np.round(ang, 1).tolist(),
@@ -503,6 +516,13 @@ _STRESS_GEOM_VER = 0
 # is even enabled and how close the tip is to the criterion. Without this the only way to
 # tell "-Tear was not passed" from "the threshold is too high" was reading the console.
 _TEAR_STATE = {"on": False, "len": 0, "c": 0.0, "thr": 0.0, "tipr": 0.0, "why": "off"}
+# The crack itself, for the browser to DRAW rather than just count. A tear is a CHAIN OF
+# MESH EDGES: "path" is the ordered vertex list, so consecutive entries are the edges the
+# tear has cut, and the last entry is the live tip. "lips" pairs each duplicated vertex with
+# the original it was split from -- the two sides of the cut, whose separation is the crack
+# opening. Both index the CURRENT reference disc, so they are only meaningful together with
+# the frame's "gver".
+_TEAR_PATH = {"path": [], "lips": []}
 
 
 _GEOM_PENDING = None      # (rest, tris) waiting to be serialised on demand
@@ -705,11 +725,13 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.dup_of = {}           # duplicate vertex -> the lip it was split from
             self._visual = None        # rendered skin; must be re-pushed after every split
             self._rest_cache = None    # (step, rest array) so a step re-reads it once
+            self._field_cache = None   # (key, s1, area_ratio, centroids) per step
             self.rest0 = None          # PRISTINE rest shape for the reference disc. NOT
                                        # rest_position: plasticity creeps that toward the
                                        # deformed shape, which was warping the "undeformed"
                                        # map in the browser. Grows with duplicates only.
             self.crack = None          # vertex path of the tear; last entry is the live tip
+            self.closed = False        # True once the tear has met its own path
             self.crack_dir = None      # current heading (unit xy), for the Eq.2 turn limit
             self.vtris = None          # vertex -> [triangle ids], rebuilt on topology change
             self.tear_log_t = -1.0
@@ -1083,31 +1105,56 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 self._rest_cache = (self.step, np.array(self.mo.rest_position.value))
             return self._rest_cache[1]
 
-        def _reach_drive(self, P, x, y):
-            """Strongest load within reach of the tip, attenuated by distance.
+        def _field_now(self, P):
+            """Whole-mesh stress field for this step, solved once and reused. _reach_drive
+            needs the FULL field (its kernel has no cutoff), and it runs once per advance with
+            up to TEAR_MAX_ADVANCE advances per opportunity -- so without this the same solve
+            would repeat several times over identical positions. The key includes both array
+            lengths, so a vertex split invalidates it automatically."""
+            key = (self.step, len(P), len(self.tris))
+            if self._field_cache is None or self._field_cache[0] != key:
+                E_obs, nu_obs = self._stress_material()
+                s1, _s2, _sd, ar = principal_stress(P, self._rest_now(), self.tris,
+                                                    E=E_obs, nu=nu_obs)
+                cen = P[self.tris][:, :, :2].mean(axis=1)
+                self._field_cache = (key, s1, ar, cen)
+            return self._field_cache[1], self._field_cache[2], self._field_cache[3]
 
-            This must be a distance-weighted MAX, not a mean. It was implemented as a mean
-            over a disc of radius TEAR_REACH, which dilutes the very thing it is looking for:
-            most of that disc is unloaded, so a hand pulling hard nearby averaged away to
-            almost nothing. Measured consequence -- while the field's p98 was 163-235 the tip
-            saw only 4-9, a 20-50x gap, so the criterion sat at c ~ 0.5 and the capsule had to
-            be yanked until the mesh degenerated (12.5% bad elements) before anything tore."""
+        def _reach_drive(self, P, x, y):
+            """Load delivered to the crack tip from anywhere on the sheet, attenuated by
+            distance. This kernel is the single biggest lever on how the tear FEELS.
+
+            It used to be a HARD CUTOFF: elements within TEAR_REACH=2.5 counted with a linear
+            falloff to zero, everything beyond counted for nothing. That one line was what made
+            the capsule feel untearable. Measured with a faithful mouse spring (k=600 on ONE
+            node, the way AttachBodyButtonSetting actually pulls) while varying grab-to-tip
+            distance: the FIELD barely changed (p98 325 -> 149, about 2x) but the drive
+            collapsed from 2407 to 25 and the tear from 223 crack vertices to 13. A pull 4
+            units from the tip is a perfectly hard pull that simply never arrived. Widening the
+            reach to 8 on the same pull took the drive 25 -> 2199 and the tear 13 -> 87.
+            Ruled out in the same sweep: the anchored rim, which is innocent (unanchoring
+            moved 13 -> 14).
+
+            So there is no cutoff now. Load in a thin sheet spreads with distance instead of
+            stopping at a radius, so the weight is 1/(1+(d/lambda)^2) and TEAR_REACH is that
+            decay LENGTH. Grabbing near the tip is still much more effective -- it just no
+            longer goes to exactly zero a third of the way across the disc.
+
+            Robust peak rather than the raw max: isolated near-degenerate elements reach ~100x
+            the bulk (the same reason the heatmap's colour ramp uses p98), and with no cutoff
+            the max would let one bad triangle anywhere drive the whole tear. Averaging the
+            TEAR_DRIVE_TOPK largest weighted values keeps it a peak detector that no single
+            element can carry."""
             if self.tris is None or not len(self.tris):
                 return None
-            cen = P[self.tris][:, :, :2].mean(axis=1)
-            d = np.hypot(cen[:, 0] - x, cen[:, 1] - y)
-            m = np.flatnonzero(d <= TEAR_REACH)
-            if not m.size:
-                return None
-            E_obs, nu_obs = self._stress_material()
-            s1, _s2, _sd, ar = principal_stress(P, self._rest_now(), self.tris[m],
-                                                E=E_obs, nu=nu_obs)
+            s1, ar, cen = self._field_now(P)
             keep = (ar >= DEGEN_LO) & (ar <= DEGEN_HI)
             if not keep.any():
                 return None
-            # linear falloff: a load at the tip counts fully, one at the reach limit not at all
-            w = 1.0 - d[m][keep] / max(TEAR_REACH, 1e-9)
-            return float(np.max(s1[keep] * w))
+            d = np.hypot(cen[keep, 0] - x, cen[keep, 1] - y)
+            v = s1[keep] / (1.0 + (d / max(TEAR_REACH, 1e-9)) ** 2)
+            k = int(min(max(TEAR_DRIVE_TOPK, 1), v.size))
+            return float(np.mean(np.partition(v, -k)[-k:]))
 
         def _tip_stress(self, P, x, y, radius=None):
             """Crack-tip neighbourhood average (Dequidt section 4.3), returned as principal
@@ -1273,6 +1320,10 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.tri_idx = self.tri_rest_area = None
             self.last_good = self.last_good_rest = None
             self.prev_pos = None
+            # Hand the browser the crack itself, not just its length, so the tear can be seen
+            # and replayed edge by edge on the timeline.
+            _TEAR_PATH["path"] = [int(v) for v in self.crack] if self.crack else []
+            _TEAR_PATH["lips"] = [[int(d), int(p)] for d, p in self.dup_of.items()]
             if self.rest0 is not None:
                 _publish_geometry(self.rest0, np.array(self.topo.triangles.value))
 
@@ -1294,7 +1345,29 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
         def _advance_to_best_neighbour(self, P, forced=False):
             """Move the tip one edge along self.crack_dir, splitting the vertex left behind."""
             tip = self.crack[-1]
-            cand = [int(j) for j in self.nbr[tip] if j not in self.crack]
+            # Exclude only the RECENT tail, not the whole history. Excluding every vertex the
+            # crack ever visited is what dead-ended it: a capsulorhexis is a CLOSED circle, so
+            # the tear is supposed to come back and meet its own start, and that rule made the
+            # one move it must eventually make illegal. Measured stall: tip at r=6.19 with all
+            # 4 neighbours already in the crack, frozen for the rest of the run even though
+            # c was over 100. The tail guard is still needed to stop it immediately doubling
+            # back onto the edge it just split.
+            visited = set(self.crack)
+            recent = set(self.crack[-TEAR_NOBACK:])
+            # The SEED end of the tear is the one piece of its own path the crack is allowed to
+            # reach: arriving there is the rhexis closing. Everything else it has already cut
+            # stays off-limits (re-splitting a vertex that is already a lip shreds the opening),
+            # but -- unlike before -- being blocked there no longer ends the tear, it just makes
+            # the crack route around. Excluding the ENTIRE history was the dead-end: measured, a
+            # tip sat at r=6.19 with all 4 neighbours visited and never moved again while c was
+            # over 100. Detecting closure on ANY visited vertex is the opposite mistake: the
+            # jagged path touches itself early, which ended the tear at 58-115 vertices instead
+            # of 85-197.
+            seed = set(self.crack[:max(3, TEAR_START_LEN)])
+            can_close = len(self.crack) > TEAR_CLOSE_MIN
+            cand = [int(j) for j in self.nbr[tip]
+                    if int(j) not in recent
+                    and (int(j) not in visited or (can_close and int(j) in seed))]
             # Never tear into the zonular anchor ring. Those nodes are held by a
             # FixedProjectiveConstraint whose index list is fixed at build time, so a
             # duplicate created there is NOT anchored -- the tear was cutting its own anchor
@@ -1321,6 +1394,17 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 return False
             if not forced and np.degrees(np.arccos(np.clip(best, -1, 1))) > TEAR_TURN_MAX:
                 return False
+            if bj in visited:
+                # The tear has come back onto its own path: the rhexis is closed. Split the
+                # tip so the last edge actually opens, then stop -- continuing would re-split
+                # vertices that are already lips and shred the rim of the opening.
+                self._split_vertex(tip, P, np.array(self.mo.rest_position.value))
+                self.crack.append(bj)
+                self.closed = True
+                self._tear_reinit()
+                print(f"[Tear] CLOSED: the tear met its own path after {len(self.crack)} "
+                      f"vertices -- capsulorhexis complete")
+                return False
             R = np.array(self.mo.rest_position.value)
             self._split_vertex(tip, P, R)          # the old tip is now behind the front
             e = P[bj][:2] - pv
@@ -1343,6 +1427,10 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             if self.crack is None:
                 self._tear_seed(P)
                 self._tear_reinit()
+                return
+            if self.closed:
+                _TEAR_STATE.update(on=True, len=len(self.crack), c=0.0, thr=TEAR_THRESH,
+                                   why="closed: the rhexis is complete")
                 return
             if self.vtris is None or len(self.vtris) != len(P):
                 self._build_vtris()

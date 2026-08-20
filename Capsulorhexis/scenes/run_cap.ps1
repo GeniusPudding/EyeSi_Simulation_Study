@@ -23,8 +23,11 @@ param(
     # -Heatmap leaves the SOFA deformation view unchanged and additionally serves a live
     # sigma1 force-field map at http://127.0.0.1:8790/ (auto-opened in your browser): hover
     # a triangle for stress + crack direction; every frame is recorded, so drag freely and
-    # scrub the timeline to review any past moment (Space = live/replay). The full field is
-    # also logged to scenes/stress_log.jsonl for offline analysis. Via CAP_HEATMAP.
+    # scrub the timeline to review any past moment (Space = live/replay). The ACTUAL tear is
+    # drawn on the disc as a magenta chain of mesh edges (a crack IS a chain of edges here),
+    # with the live tip marked, and every frame carries it -- so the timeline replays the tear
+    # edge by edge and the HUD shows +N/0 growth. The full field is also logged to
+    # scenes/stress_log_<take>.jsonl for offline analysis. Via CAP_HEATMAP.
     [switch]$Heatmap,
     # -Tear enables real mesh tearing: a cystotome nick is seeded near the centre and the
     # crack advances from its tip along the INRIA argmax-c direction as you pull. The pull
