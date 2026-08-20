@@ -470,7 +470,10 @@ STRAIN_PANIC = float(os.environ.get("CAP_STRAIN_PANIC", "4.0"))
 # membrane is inextensible-ish, and without this an adhesion avalanche lets
 # triangles inflate 8-33x and invert. Projected back per step, Gauss-Seidel style.
 MAX_STRETCH = 1.6        # 0 = off
-STRAIN_ITERS = 3         # relaxation passes per step
+# Relaxation passes per step. Three is enough while the sheet is anchored, but a FREE
+# rim plus a running tear leaves long, nearly-detached strips that a few Gauss-Seidel
+# passes cannot pull back (measured: edges reaching 24x rest against a 1.6 limit).
+STRAIN_ITERS = int(os.environ.get('CAP_STRAIN_ITERS', '3'))
 # Anti-collapse (FEM-only): a triangle can go collinear with all edges at normal
 # length -> zero area -> the FEM divides by it. Repair below MIN_AREA_FRAC of rest
 # area by lifting the flattest vertex; if more than SEVERE_COLLAPSE collapse in one
@@ -503,10 +506,23 @@ RIM_ANCHOR_FRAC = float(os.environ.get("CAP_RIM_FRAC", "0.96"))
 if CAP_TEAR:
     FIX_OUTER_RIM = os.environ.get("CAP_FIX_RIM", "1") == "1"
 if PAPER_MODE:
-    # With no adhesion, the rim anchor is the ONLY thing holding the capsule, and it is also
-    # the anatomically right boundary (the zonules insert at the periphery). Without it the
-    # whole membrane simply follows the instrument.
-    FIX_OUTER_RIM = True
+    # With no adhesion the rim anchor is the only thing holding the capsule, and it is also
+    # the anatomically right boundary (the zonules insert at the periphery). Still overridable,
+    # because it is the single biggest lever on whether the membrane can be folded at all.
+    FIX_OUTER_RIM = os.environ.get("CAP_FIX_RIM", "1") == "1"
+# THE RIM ANCHOR IS WHY -Tear FEELS RIGID. Measured on one identical rim-grab-and-fold:
+#
+#   no -Tear, rim free   : grab lifts 8.93, 1284 nodes above 1.0, max edge stretch 1.12
+#   -Tear, rim anchored  : grab lifts 0.98, ZERO nodes above 1.0   <- cannot be folded at all
+#   -Tear, rim free      : grab lifts 5.69,  728 nodes above 1.0, and it still tears (cut 61)
+#
+# So "I could fold it before -Tear but not after" is exactly this line: tear mode anchors the
+# rim, and an anchored rim cannot be lifted. The anchor was added because a free rim let a pull
+# peel the whole cap off and crumple it -- but that trade is now measurable rather than
+# assumed, and CAP_FIX_RIM=0 (run_cap.ps1 -FreeRim) gets the folding back. The catch is real:
+# with a free rim AND a running tear, edges reach 24x their rest length (limit 1.6). More
+# relaxation passes do NOT fix it -- measured 3/12/40 iterations giving 24x/150x/38x -- so the
+# over-stretch is not the clamp being under-iterated, and it is the thing to solve next.
 
 # --- automatic plasticity (viscoplastic creep) ---------------------------------
 # Peeled nodes slowly adopt their current shape as rest shape, so releasing the
@@ -2186,11 +2202,12 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             # (0) NaN is sticky (NaN > limit == False beats every clamp below), and a
             # finite-but-runaway frame poisons everything downstream: both rewind.
             P0 = np.array(self.mo.position.value)
-            runaway = (MAX_COORD > 0.0 and P0.size > 0
-                       and np.isfinite(P0).all() and np.abs(P0).max() > MAX_COORD)
+            coord_runaway = (MAX_COORD > 0.0 and P0.size > 0
+                             and np.isfinite(P0).all() and np.abs(P0).max() > MAX_COORD)
+            runaway = coord_runaway
             # ... and a mesh stretched far past the clamp is just as ruined as one that flew
             # away, even though every coordinate is still small and finite (see STRAIN_PANIC).
-            if (not runaway and STRAIN_PANIC > 0.0 and MAX_STRETCH > 0.0
+            if (not coord_runaway and STRAIN_PANIC > 0.0 and MAX_STRETCH > 0.0
                     and np.isfinite(P0).all()):
                 if self.edges is None:
                     self._build_edges()
@@ -2208,7 +2225,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             # rewind when the snapshot still matches the current mesh.
             if (not np.isfinite(P0).all() or runaway) and (
                     self.last_good is None or len(self.last_good) == len(P0)):
-                if runaway and self.step % 15 == 0:
+                if (runaway and coord_runaway and self.step % 15 == 0):
                     print(f"[Runaway] a node passed |coord|>{MAX_COORD:g} "
                           f"(max {float(np.abs(P0).max()):.1f}) -> rewound before it "
                           f"flew off-screen")

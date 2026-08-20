@@ -62,8 +62,15 @@ param(
     # criterion. NO adhesion and NO peeling -- searching Dequidt 2013 for
     # adhes/glue/peel/debond finds nothing, so all of that is this demo's own addition and is
     # switched off here. Use it to judge the published method on its own. Via CAP_PAPER.
-    [switch]$Paper
+    [switch]$Paper,
+    # -FreeRim unclamps the zonular rim in tear mode. Tear mode anchors it by default, and an
+    # anchored rim CANNOT be lifted: measured on the same rim-grab-and-fold, anchored gives a
+    # 0.98 lift with zero nodes above 1.0, free gives 5.69 with 728 -- which is why folding
+    # worked before -Tear existed and stopped afterwards. The cost is that a free rim plus a
+    # running tear over-stretches the mesh (edges to 24x rest), so expect spikes. Via CAP_FIX_RIM.
+    [switch]$FreeRim
 )
+if ($FreeRim) { $env:CAP_FIX_RIM = "0" }
 if ($Paper) { $env:CAP_PAPER = "1" } else { $env:CAP_PAPER = "0" }
 # Every session writes a BLACK BOX you can read afterwards:
 #   scenes/diag_last.csv          one row per step, always on. Mechanics + the tear, including
