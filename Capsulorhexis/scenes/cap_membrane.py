@@ -187,7 +187,7 @@ TEAR_DEGEN_MAX = float(os.environ.get("CAP_TEAR_DEGEN_MAX", "0.04"))
 CLOTH_YOUNG = 120.0       # FEM-only: soft opening phase
 PAPER_YOUNG = 1200.0      # FEM-only: stiffened at SWITCH_T; 4000+ risks blow-up
 SWITCH_T = 1.0            # [s] cloth -> paper transition
-EDGE_STIFFNESS = 2500.0   # per-edge in-plane stiffness = THE membrane stiffness in
+EDGE_STIFFNESS = float(os.environ.get('CAP_EDGE_STIFFNESS', '2500.0'))   # per-edge in-plane stiffness = THE membrane stiffness in
                           # mass-spring mode (raise if the sheet feels too soft)
 DAMPING = float(os.environ.get("CAP_DAMPING", "2.0"))   # global viscosity; lower = snappier
                           # (mesh responds to the pull faster), higher = calmer but more
@@ -214,7 +214,9 @@ DIAG_PATH = os.path.join(_HERE, "diag_last.csv")
 # Bending stiffness = "does the lifted flap flop over, or stand up stiff?"
 # smaller -> floppy drape; bigger -> stiff wide curve. In-plane softness is a
 # different knob (EDGE_STIFFNESS / PAPER_YOUNG).
-BEND_STIFFNESS = 15.0
+# Out-of-plane bending resistance. This is the direct control on whether a torn piece can
+# FOLD OVER rather than only lift, so it has to be adjustable to be tested at all.
+BEND_STIFFNESS = float(os.environ.get('CAP_BEND', '15.0'))
 
 # Gravity stays 0: gravity weak enough to spare the adhesion cannot bend a
 # plasticity-set flap, and gravity strong enough to bend it rips the whole membrane
@@ -480,7 +482,7 @@ STRAIN_PANIC = float(os.environ.get("CAP_STRAIN_PANIC", "4.0"))
 # Strain clamp: no edge may stretch past MAX_STRETCH x its rest length -- the
 # membrane is inextensible-ish, and without this an adhesion avalanche lets
 # triangles inflate 8-33x and invert. Projected back per step, Gauss-Seidel style.
-MAX_STRETCH = 1.6        # 0 = off
+MAX_STRETCH = float(os.environ.get('CAP_MAX_STRETCH', '1.6'))        # 0 = off
 # Relaxation passes per step. Three is enough while the sheet is anchored, but a FREE
 # rim plus a running tear leaves long, nearly-detached strips that a few Gauss-Seidel
 # passes cannot pull back (measured: edges reaching 24x rest against a 1.6 limit).
