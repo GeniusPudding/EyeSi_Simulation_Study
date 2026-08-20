@@ -85,7 +85,7 @@ TEAR_TIP_GAIN = float(os.environ.get("CAP_TEAR_TIPGAIN", "1.5"))
 # everywhere, so stress does not travel; sampling only a 0.6-unit disc means a hand pulling
 # 2 units away is invisible to the tip. This widens the sampling for the DRIVING term only.
 # Decay LENGTH of the tip-load kernel (NOT a cutoff radius any more -- see
-# _reach_drive). A load this far from the tip counts half.
+# _tip_stress). A load this far from the tip counts half.
 TEAR_REACH = float(os.environ.get("CAP_TEAR_REACH", "3.0"))
 # How many of the strongest weighted elements the drive averages. 1 = raw max,
 # which lets a single near-degenerate triangle (~100x the bulk) drive the tear.
@@ -96,6 +96,17 @@ TEAR_NOBACK = int(os.environ.get("CAP_TEAR_NOBACK", "8"))
 # Minimum crack length before reaching the seed counts as the rhexis closing,
 # so the tear cannot "complete" a few edges after it starts.
 TEAR_CLOSE_MIN = int(os.environ.get("CAP_TEAR_CLOSEMIN", "40"))
+# Arrest-on-unloading. A crack is driven by work being DONE on it, so letting go should let
+# the stored energy run it a little further and then stop it. The criterion alone cannot do
+# that: c stays far above 1 on residual stress. Advance only while the tip drive is within
+# TEAR_ARREST of its recent peak, where that peak itself decays by TEAR_ARREST_DECAY each
+# opportunity so a slow steady pull still counts as loading.
+TEAR_ARREST = float(os.environ.get("CAP_TEAR_ARREST", "0.9"))
+TEAR_ARREST_DECAY = float(os.environ.get("CAP_TEAR_ARREST_DECAY", "0.97"))
+# Minimum sigma1 in the tip's OWN elements before its direction is trusted. Measured, the
+# local reading is 0.3 with no load and 5-20 under a real pull, and it is the only source
+# that points at the hand -- but only once there is something to point with.
+TEAR_LOCAL_MIN = float(os.environ.get("CAP_TEAR_LOCALMIN", "1.5"))
 # The initial nick: capsulorhexis starts with a cystotome puncture near the centre, and
 # without one there is no crack tip to push -- the membrane would just stretch. This seeds a
 # short radial slit of this many edges starting at radius TEAR_START_R.
@@ -157,7 +168,16 @@ LENS_REPULSION = 2000.0
 
 # --- adhesion of the membrane to the lens ------------------------------------
 ADHESION_STIFF = 120.0    # spring pulling each glued node to its rest spot
-BREAK_FORCE = 60.0        # pull force at which a spot peels off
+# Pull force at which a spot peels off. MUST stay low enough that break_lift
+# (= BREAK_FORCE/ADHESION_STIFF) is a lift the mesh can actually REACH: the strain clamp
+# stops a lone glued node at sqrt((MAX_STRETCH*e)^2 - e^2), which on this mesh (e=0.300,
+# MAX_STRETCH=1.6) is 0.375. At the old 60 the required lift was 0.500 -- unreachable, so
+# no spot in the interior could EVER debond however hard it was pulled, and the capsule
+# behaved as if welded to the lens (measured: a 10.6-long mouse arrow at 6384 of force
+# released 65 of 2153 spots). 30 gives break_lift 0.250, comfortably inside the limit and
+# 282 spots released on the same pull. Do not raise it past ~45 without also raising
+# MAX_STRETCH; _check_peel_reachable() below warns if this is ever violated again.
+BREAK_FORCE = 30.0
 # NOTE: tear mode deliberately keeps the DEFAULT adhesion. Weakening it to help the flap lift
 # was a mistake -- the flap does not need it (splitting a vertex already ungluesthat spot and
 # its ring, see _split_vertex), while a low break force let the pull peel the ENTIRE cap off
@@ -178,6 +198,11 @@ PEEL_FADE_MIN = 6.0
 # advances from a free boundary. So a spot may only let go on the mesh boundary (rim or
 # slit = the crack initiation sites) or once a neighbour has already let go.
 PEEL_FRONT_ONLY = os.environ.get("CAP_PEEL_FRONT", "1") == "1"
+# Lift (in units of break_lift) at which a spot may debond even with no debonded neighbour.
+# Without this the middle of the capsule can never start peeling at all -- see the peel
+# trigger. Higher = the sheet only opens from an existing front; lower = easier to start
+# lifting anywhere, at the risk of the sheet letting go in several places at once.
+PEEL_NUCLEATE = float(os.environ.get("CAP_PEEL_NUCLEATE", "1.2"))
 # ...and cap how fast that front advances. The front rule alone is not enough: each
 # freed spot makes its neighbours eligible, so a violent pull still swept the whole cap
 # (2263 -> 0). A real crack has a finite propagation speed. Only this many spots debond
@@ -240,6 +265,28 @@ STRESS_MARKER = False    # 3D peak marker (off: terminal report only)
 STRESS_TOP_N = 0         # extra markers beyond the peak
 STRESS_TABLE_N = 5       # rows in the terminal sigma1 table
 DEGEN_LO, DEGEN_HI = 0.25, 4.0   # area_ratio outside this = degenerate, sigma1 invalid
+
+
+class _Adjacency:
+    """CSR-style vertex->neighbours / vertex->triangles map that slices ON DEMAND.
+
+    Storing these as a Python list-of-arrays meant materialising one slice per VERTEX every
+    time the topology changed, and the topology changes on every vertex split while a tear
+    runs. On this mesh that was ~2250 slices per rebuild and profiled at 31 ms per call even
+    after the numpy rewrite -- the numpy work itself is about 1 ms, the rest was pure Python
+    object churn. Almost every consumer wants exactly ONE vertex's neighbours (the crack tip),
+    so keep the flat arrays and slice when asked."""
+
+    __slots__ = ("flat", "cut")
+
+    def __init__(self, flat, cut):
+        self.flat, self.cut = flat, cut
+
+    def __len__(self):
+        return len(self.cut) - 1
+
+    def __getitem__(self, v):
+        return self.flat[self.cut[v]:self.cut[v + 1]]
 
 
 def area_ratios(P, R, tris):
@@ -732,6 +779,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                                        # map in the browser. Grows with duplicates only.
             self.crack = None          # vertex path of the tear; last entry is the live tip
             self.closed = False        # True once the tear has met its own path
+            self._drive_ref = None     # decaying peak tip drive, for arrest-on-unloading
             self.crack_dir = None      # current heading (unit xy), for the Eq.2 turn limit
             self.vtris = None          # vertex -> [triangle ids], rebuilt on topology change
             self.tear_log_t = -1.0
@@ -798,6 +846,40 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.last_ks = float(new_ks)
             print(f"[Tune] BEND_STIFFNESS = {float(new_ks):.1f}   "
                   f"(K = stiffer / J = softer; too low -> crumples, too high -> stands rigid)")
+
+        def _check_peel_reachable(self, P):
+            """Warn if the peel criterion is geometrically impossible to satisfy.
+
+            The adhesion releases a spot once it has lifted BREAK_FORCE/ADHESION_STIFF, but the
+            strain clamp independently forbids any edge from passing MAX_STRETCH x its rest
+            length -- so a lone glued node cannot rise past sqrt((MAX_STRETCH*e)^2 - e^2). When
+            the required lift exceeds that, NOTHING in the interior can ever debond, at any
+            pull force, and the capsule silently behaves as if welded to the lens. That is
+            exactly what shipped (0.500 required against 0.375 reachable) and it is invisible
+            from the outside: the pull just does nothing. Two independently sensible constants
+            in different parts of the file, jointly impossible -- so check it out loud."""
+            # Read the topology directly rather than self.tris: this runs the first time the
+            # adhesion is set up, which is BEFORE _build_vtris has populated that cache, so
+            # trusting it made the check silently do nothing -- the exact failure mode it
+            # exists to catch.
+            if MAX_STRETCH <= 0.0:
+                return
+            T = np.array(self.topo.triangles.value)
+            if not len(T):
+                return
+            E = np.unique(np.sort(np.concatenate(
+                [T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]]), axis=1), axis=0)
+            e = float(np.median(np.linalg.norm(P[E[:, 1]] - P[E[:, 0]], axis=1)))
+            reach = float(np.sqrt(max((MAX_STRETCH * e) ** 2 - e * e, 0.0)))
+            need = BREAK_FORCE / max(ADHESION_STIFF, 1e-9)
+            if need >= reach:
+                print(f"[Adhesion] WARNING: break_lift={need:.3f} but the strain clamp stops a "
+                      f"lone node at {reach:.3f} (edge {e:.3f} x MAX_STRETCH {MAX_STRETCH}). "
+                      f"The interior can NEVER peel. Lower CAP_BREAK below "
+                      f"{reach * ADHESION_STIFF:.0f} or raise MAX_STRETCH.")
+            else:
+                print(f"[Adhesion] break_lift={need:.3f} vs reachable {reach:.3f} -- OK "
+                      f"(peel can nucleate in the interior)")
 
         def _build_peel_adjacency(self):
             """Node neighbours + mesh-boundary nodes, for front-only peeling.
@@ -1076,26 +1158,54 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
 
         # ---------------- real tearing (CAP_TEAR) ---------------------------------------
         def _build_vtris(self):
-            """vertex -> triangles map, and the neighbour map, for the current topology."""
+            """vertex -> triangles map, plus the neighbour and boundary maps, for the current
+            topology.
+
+            VECTORISED, because this runs after EVERY vertex split and a split is frequent
+            while a tear is running. The original triple Python loop over all ~4166 triangles
+            (list appends, set updates and a Counter of sorted edge tuples) profiled at 8.5
+            ms/step during tearing -- 17% of the whole step and the single largest tearing
+            cost, more than the stress solve and the split itself put together. Same outputs,
+            built with bincount/unique instead, and handed out through _Adjacency so no
+            per-vertex Python object is created at all: verified elementwise against the old
+            loop, on a fresh mesh and again after real splits."""
             T = np.array(self.topo.triangles.value)
             n = len(self.mo.position.value)
-            self.vtris = [[] for _ in range(n)]
-            nbr = [set() for _ in range(n)]
-            from collections import Counter
-            ecount = Counter()
-            for ti, (a, b, c) in enumerate(T.tolist()):
-                for v in (a, b, c):
-                    self.vtris[v].append(ti)
-                nbr[a].update((b, c)); nbr[b].update((a, c)); nbr[c].update((a, b))
-                for u, w in ((a, b), (b, c), (c, a)):
-                    ecount[(u, w) if u < w else (w, u)] += 1
-            self.nbr = [np.fromiter(x, dtype=int) for x in nbr]
+            self.tris = T
+            if not len(T):
+                z = np.zeros(n + 1, dtype=int)
+                self.vtris = _Adjacency(np.empty(0, dtype=int), z)
+                self.nbr = _Adjacency(np.empty(0, dtype=int), z)
+                self.boundary = set()
+                return
+            # vertex -> triangle list: sort the (vertex, triangle) incidence pairs once and
+            # slice, rather than appending per triangle.
+            vv = T.reshape(-1)
+            vt = np.repeat(np.arange(len(T)), 3)
+            order = np.argsort(vv, kind="stable")
+            vv_s, vt_s = vv[order], vt[order]
+            cut = np.concatenate(([0], np.cumsum(np.bincount(vv_s, minlength=n))))
+            self.vtris = _Adjacency(vt_s, cut)
+            # undirected edges, with multiplicity: an edge used by ONE triangle is a boundary
+            E = np.sort(np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]]), axis=1)
+            # Encode each undirected edge as ONE integer rather than calling np.unique with
+            # axis=0. That path lexsorts a structured view of the pairs and measured 6.10 ms
+            # of this function's 7.48 ms; the 1-D equivalent gives the same answer in 0.72 ms.
+            key = E[:, 0].astype(np.int64) * n + E[:, 1]
+            ukey, cnt = np.unique(key, return_counts=True)
+            eu, ev = ukey // n, ukey % n
             # boundary must be rebuilt together with nbr: the peel logic guards only on
             # self.nbr, so leaving boundary stale/None here made it fail with a TypeError
             # on every step after the first split.
-            self.boundary = {u for (u, w), k in ecount.items() if k == 1} | \
-                            {w for (u, w), k in ecount.items() if k == 1}
-            self.tris = T
+            lone = cnt == 1
+            self.boundary = set(np.concatenate([eu[lone], ev[lone]]).tolist())
+            # neighbours: every unique edge, both ways
+            src = np.concatenate([eu, ev])
+            dst = np.concatenate([ev, eu])
+            o = np.argsort(src, kind="stable")
+            src, dst = src[o], dst[o]
+            cut2 = np.concatenate(([0], np.cumsum(np.bincount(src, minlength=n))))
+            self.nbr = _Adjacency(dst, cut2)
 
         def _rest_now(self):
             """rest_position as an array, cached per step: it is read several times per
@@ -1106,90 +1216,88 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             return self._rest_cache[1]
 
         def _field_now(self, P):
-            """Whole-mesh stress field for this step, solved once and reused. _reach_drive
-            needs the FULL field (its kernel has no cutoff), and it runs once per advance with
-            up to TEAR_MAX_ADVANCE advances per opportunity -- so without this the same solve
-            would repeat several times over identical positions. The key includes both array
-            lengths, so a vertex split invalidates it automatically."""
+            """Whole-mesh stress field for this step, solved once and reused. _tip_stress
+            needs the FULL field (its kernel has no cutoff), and the heatmap wants the same
+            arrays, so without this the same solve would repeat over identical positions. The
+            key includes both array lengths, so a vertex split invalidates it automatically."""
             key = (self.step, len(P), len(self.tris))
             if self._field_cache is None or self._field_cache[0] != key:
                 E_obs, nu_obs = self._stress_material()
-                s1, _s2, _sd, ar = principal_stress(P, self._rest_now(), self.tris,
+                s1, s2, sdir, ar = principal_stress(P, self._rest_now(), self.tris,
                                                     E=E_obs, nu=nu_obs)
                 cen = P[self.tris][:, :, :2].mean(axis=1)
-                self._field_cache = (key, s1, ar, cen)
-            return self._field_cache[1], self._field_cache[2], self._field_cache[3]
-
-        def _reach_drive(self, P, x, y):
-            """Load delivered to the crack tip from anywhere on the sheet, attenuated by
-            distance. This kernel is the single biggest lever on how the tear FEELS.
-
-            It used to be a HARD CUTOFF: elements within TEAR_REACH=2.5 counted with a linear
-            falloff to zero, everything beyond counted for nothing. That one line was what made
-            the capsule feel untearable. Measured with a faithful mouse spring (k=600 on ONE
-            node, the way AttachBodyButtonSetting actually pulls) while varying grab-to-tip
-            distance: the FIELD barely changed (p98 325 -> 149, about 2x) but the drive
-            collapsed from 2407 to 25 and the tear from 223 crack vertices to 13. A pull 4
-            units from the tip is a perfectly hard pull that simply never arrived. Widening the
-            reach to 8 on the same pull took the drive 25 -> 2199 and the tear 13 -> 87.
-            Ruled out in the same sweep: the anchored rim, which is innocent (unanchoring
-            moved 13 -> 14).
-
-            So there is no cutoff now. Load in a thin sheet spreads with distance instead of
-            stopping at a radius, so the weight is 1/(1+(d/lambda)^2) and TEAR_REACH is that
-            decay LENGTH. Grabbing near the tip is still much more effective -- it just no
-            longer goes to exactly zero a third of the way across the disc.
-
-            Robust peak rather than the raw max: isolated near-degenerate elements reach ~100x
-            the bulk (the same reason the heatmap's colour ramp uses p98), and with no cutoff
-            the max would let one bad triangle anywhere drive the whole tear. Averaging the
-            TEAR_DRIVE_TOPK largest weighted values keeps it a peak detector that no single
-            element can carry."""
-            if self.tris is None or not len(self.tris):
-                return None
-            s1, ar, cen = self._field_now(P)
-            keep = (ar >= DEGEN_LO) & (ar <= DEGEN_HI)
-            if not keep.any():
-                return None
-            d = np.hypot(cen[keep, 0] - x, cen[keep, 1] - y)
-            v = s1[keep] / (1.0 + (d / max(TEAR_REACH, 1e-9)) ** 2)
-            k = int(min(max(TEAR_DRIVE_TOPK, 1), v.size))
-            return float(np.mean(np.partition(v, -k)[-k:]))
+                self._field_cache = (key, s1, s2, sdir, ar, cen)
+            return self._field_cache[1:]
 
         def _tip_stress(self, P, x, y, radius=None):
-            """Crack-tip neighbourhood average (Dequidt section 4.3), returned as principal
-            values + angle. Averaging the TENSOR COMPONENTS, not the principal values: the
-            neighbours have different principal axes, so averaging s1/s2 would invent
-            anisotropy (two states 90 deg apart average to isotropic, not to the larger)."""
+            """State driving the crack: DIRECTION from the tip's own elements, MAGNITUDE from a
+            wider distance-weighted kernel. Returns (S1, S2, angle_deg, local_s1).
+
+            The split is measured, not stylistic. During a real pull, comparing the angle each
+            candidate source makes with the direction from the tip to the hand:
+
+                tip's own local sigma1 :  0.7 - 14.5 deg   <- tracks the hand closely
+                wide top-K average     : 24.1 - 84.6 deg   <- essentially uncorrelated
+
+            The wide average is dominated by the elements under the hand, so its angle is the
+            stress direction THERE, which carries no geometric meaning at the tip. Using it
+            steered the crack independently of where the user pulled: grabbing at azimuth 0
+            and at 180 -- opposite sides of the capsule -- both left the tip near -100 deg,
+            and identical pulls put it at r=6.42 one run and r=1.45 the next.
+
+            The local MAGNITUDE, though, is useless alone: it reads 0.3-20 against a threshold
+            of 20, because a coarse linear mesh has no stress singularity at the tip (docs 5.3)
+            and most of the load is still out under the hand. So take the tensor's orientation
+            AND its biaxiality from the tip, then scale it to the drive the wider kernel
+            reports. Averaging tensor COMPONENTS throughout, never principal values: two states
+            90 deg apart average to isotropic rather than to the larger.
+
+            local_s1 is returned so the caller can refuse to tear when the tip is genuinely
+            unloaded. With no load the local direction IS numerical noise, and amplifying noise
+            by the remote drive is exactly what let the crack random-walk out to the rim before
+            the user had pulled at all (recorded: tip r 2.01 -> 6.58 within 0.6 s, c up to
+            193)."""
             if self.tris is None or not len(self.tris):
                 return None
-            rad = TEAR_TIP_RADIUS if radius is None else radius
-            cen = P[self.tris][:, :, :2].mean(axis=1)
-            d2 = (cen[:, 0] - x) ** 2 + (cen[:, 1] - y) ** 2
-            m = np.flatnonzero(d2 <= rad ** 2)
-            if not m.size:
-                return None
-            # Select FIRST, then solve. This used to run principal_stress over all ~4166
-            # triangles and throw away everything outside the disc -- twice per advance, in a
-            # loop -- which was the bulk of the tearing cost in the GUI. The neighbourhood is
-            # typically a few dozen elements.
-            E_obs, nu_obs = self._stress_material()
-            s1, s2, sdir, ar = principal_stress(P, self._rest_now(), self.tris[m],
-                                                E=E_obs, nu=nu_obs)
+            s1, s2, sdir, ar, cen = self._field_now(P)
             keep = (ar >= DEGEN_LO) & (ar <= DEGEN_HI)
             if not keep.any():
                 return None
             s1, s2, sdir = s1[keep], s2[keep], sdir[keep]
+            d2 = (cen[keep, 0] - x) ** 2 + (cen[keep, 1] - y) ** 2
             th = np.arctan2(sdir[:, 1], sdir[:, 0])
-            c, s = np.cos(th), np.sin(th)
-            w = 1.0 / (1.0 + np.sqrt(d2[m][keep]) / max(rad, 1e-9))
-            ws = w.sum()
-            sxx = float((w * (s1 * c * c + s2 * s * s)).sum() / ws)
-            syy = float((w * (s1 * s * s + s2 * c * c)).sum() / ws)
-            sxy = float((w * ((s1 - s2) * s * c)).sum() / ws)
-            mid = 0.5 * (sxx + syy)
-            dev = float(np.hypot((sxx - syy) * 0.5, sxy))
-            return mid + dev, mid - dev, np.degrees(0.5 * np.arctan2(2 * sxy, sxx - syy))
+            cs, sn = np.cos(th), np.sin(th)
+
+            def tensor_avg(w):
+                ws = float(w.sum())
+                if ws <= 0.0:
+                    return None
+                sxx = float((w * (s1 * cs * cs + s2 * sn * sn)).sum() / ws)
+                syy = float((w * (s1 * sn * sn + s2 * cs * cs)).sum() / ws)
+                sxy = float((w * ((s1 - s2) * sn * cs)).sum() / ws)
+                mid = 0.5 * (sxx + syy)
+                dev = float(np.hypot((sxx - syy) * 0.5, sxy))
+                return mid + dev, mid - dev, np.degrees(0.5 * np.arctan2(2 * sxy, sxx - syy))
+
+            rad = TEAR_TIP_RADIUS if radius is None else radius
+            near = tensor_avg((d2 <= rad * rad).astype(float))
+            if near is None:
+                return None
+            l1, l2, th1 = near
+
+            # magnitude only: the most heavily loaded material within reach, distance-weighted.
+            # No cutoff -- a hard one at TEAR_REACH=2.5 on a disc of radius 6.89 meant a pull
+            # further than a third of the way across counted for nothing, which is what made
+            # the capsule feel untearable (drive fell 2407 -> 25 with distance while the field
+            # itself moved only 325 -> 149). Top-K rather than the raw max so a single
+            # near-degenerate triangle, which can read ~100x the bulk, cannot drive the tear.
+            w = 1.0 / (1.0 + d2 / max(TEAR_REACH * TEAR_REACH, 1e-9))
+            v = s1 * w
+            k = int(min(max(TEAR_DRIVE_TOPK, 1), v.size))
+            drive = float(np.mean(np.partition(v, -k)[-k:]))
+
+            scale = drive / l1 if l1 > 1e-9 else 0.0
+            return l1 * scale, l2 * scale, th1, l1
 
         def _argmax_c(self, S1, S2, th1_deg, fib_deg, heading):
             """INRIA criterion (Eq.1-4). Returns (c, unit direction) for the crack direction
@@ -1456,14 +1564,16 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 S = self._tip_stress(P, P[tip][0], P[tip][1])
                 if S is None:
                     return
-                S1, S2, th1 = S
-                # Coarse-mesh tip correction, plus a wider "reach": if the hand is pulling
-                # further away than the tip disc, use the strongest loaded patch within
-                # TEAR_REACH to drive the crack. Without this the tear only responds when you
-                # grab exactly on the tip, which is not how the flap is held in surgery.
-                far = self._reach_drive(P, P[tip][0], P[tip][1])
-                if far is not None and far > S1:
-                    S1 = far
+                S1, S2, th1, s1_local = S
+                # The tip must actually be loaded before its direction means anything.
+                if s1_local < TEAR_LOCAL_MIN:
+                    _TEAR_STATE.update(on=True, len=len(self.crack), c=0.0, thr=TEAR_THRESH,
+                                       tipr=round(float(np.hypot(P[tip][0], P[tip][1])), 2),
+                                       why="tip not loaded -- pull toward the crack tip")
+                    return
+                # Coarse-mesh stress-concentration correction: a real crack tip is singular,
+                # a linear triangle averages that away, so the tip state is scaled up rather
+                # than the threshold scaled down (which would also weaken the bulk).
                 S1 *= TEAR_TIP_GAIN
                 S2 *= TEAR_TIP_GAIN
                 fib = np.degrees(np.arctan2(P[tip][1], P[tip][0])) + 90.0   # concentric fibers
@@ -1473,12 +1583,33 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                                    tipr=round(float(np.hypot(P[tip][0], P[tip][1])), 2),
                                    why="tearing" if c >= 1.0 else "c<1: pull harder near the tip")
                 if c < 1.0:
+                    self._drive_ref = (S1 if self._drive_ref is None
+                                       else max(S1, self._drive_ref * TEAR_ARREST_DECAY))
                     return                                   # not tearing right now
+                # Arrest on unloading: keep tearing only while the tip is still being loaded.
+                # Measured without this, releasing the mouse entirely still carried the crack
+                # 98 -> 133 vertices and the tip out to r=6.58 of 6.89, because residual
+                # elastic stress holds c far above 1 long after the hand has gone.
+                ref = self._drive_ref
+                self._drive_ref = S1 if ref is None else max(S1, ref * TEAR_ARREST_DECAY)
+                if ref is not None and S1 < ref * TEAR_ARREST:
+                    _TEAR_STATE.update(on=True, len=len(self.crack), c=round(float(c), 2),
+                                       thr=TEAR_THRESH,
+                                       why="arrested: tip unloading (pull again to continue)")
+                    return
                 # Unstable propagation: the further past the criterion, the further the crack
                 # runs. Scaled gently (c/4) rather than linearly -- the tip gain and reach can
                 # push c into the tens, which at full budget every step shredded the mesh
                 # (430 crack vertices in 200 steps) instead of tearing it.
-                budget = min(budget, max(1, 1 + int(c / 4.0)))
+                # Advance ONE edge per opportunity, then let the solver run. Splitting several
+                # edges here used them all against a SINGLE stress evaluation: no time step
+                # happens inside this loop, so the field cannot relax as the crack consumes it
+                # and the tear keeps going on stress it has already released. Measured with 4
+                # per opportunity, the crack ran 2.01 -> 6.58 in radius in 0.6s and never
+                # stopped while c climbed to 193. One per opportunity means every advance is
+                # re-justified against freshly solved physics, so the tear follows the pull and
+                # STOPS when the pull stops.
+                budget = 1
                 self.crack_dir = d
                 if not self._advance_to_best_neighbour(P):
                     return
@@ -1740,6 +1871,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             rest = self.mo.rest_position.value
             if self.adhered is None:
                 self.adhered = set(range(len(pos)))
+                self._check_peel_reachable(np.asarray(pos))
                 self.adhesion.points.value = sorted(self.adhered)
 
             # --- diagnostics CSV: one numeric row per step, analysed offline after a
@@ -1773,10 +1905,24 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                     if self.nbr is None:
                         self._build_peel_adjacency()
                     adh = self.adhered
-                    # Only spots at the edge of the still-bonded region may let go:
-                    # on the mesh boundary, or with a neighbour already debonded.
+                    # PROPAGATION: a spot at the edge of the still-bonded region (on the mesh
+                    # boundary, or with a neighbour already debonded) lets go at break_lift.
+                    # This front rule exists to stop the whole sheet debonding at once.
+                    #
+                    # NUCLEATION: but the front rule ALONE makes the middle of the capsule
+                    # impossible to lift, and that -- not the tear criterion -- is what makes
+                    # the membrane feel welded to the lens. The bonded region starts as the
+                    # ENTIRE disc, so its only front is the mesh boundary, which the zonules
+                    # anchor in tear mode; a node in the middle is never on the boundary and
+                    # never has a debonded neighbour, so it can never qualify however hard it
+                    # is pulled. Measured: pulling a mid-disc node with 6384 of force and a
+                    # 10.6-long mouse arrow lifted it just 1.36 and released 65 of 2153 spots.
+                    # So let a spot nucleate anywhere, at PEEL_NUCLEATE times the break lift.
+                    # Debonding fresh material being harder than extending an existing debond
+                    # is also the right physics, and the high bar keeps the avalanche away.
+                    nuc = cand_lift > self.break_lift * PEEL_NUCLEATE
                     keep = [k for k, i in enumerate(cand.tolist())
-                            if i in self.boundary
+                            if nuc[k] or i in self.boundary
                             or any(int(j) not in adh for j in self.nbr[int(i)])]
                     cand, cand_lift = cand[keep], cand_lift[keep]
                 if PEEL_RATE > 0 and cand.size > PEEL_RATE:
