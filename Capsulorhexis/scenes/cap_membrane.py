@@ -402,6 +402,11 @@ STRESS_SESSIONS_MAX = int(os.environ.get("CAP_STRESS_SESSIONS", "6"))
 # constraint-based attach (FreeMotionAnimationLoop + LCP) -- a much bigger rework.
 MAX_SPEED = 25.0         # units/s speed cap; normal dragging is ~1-3. 0 = off
 MAX_COORD = 50.0         # |coord| beyond this = runaway -> rewind to last healthy
+# Gross-overstretch panic, as a MULTIPLE of MAX_STRETCH. MAX_COORD alone cannot see a
+# crumple: a session that ran to 20.8x edge stretch peaked at |coord| 13.5, nowhere near 50,
+# so nothing fired and the mesh just got progressively worse until it looked wadded up. Edge
+# stretch is the direct measure of that, and 1.6 -> 20.8 is unambiguous. 0 = off.
+STRAIN_PANIC = float(os.environ.get("CAP_STRAIN_PANIC", "4.0"))
                          # frame (the cap lives within ~15 even fully lifted). 0 = off
 # Strain clamp: no edge may stretch past MAX_STRETCH x its rest length -- the
 # membrane is inextensible-ish, and without this an adhesion avalanche lets
@@ -663,6 +668,125 @@ def _geometry_json():
     return _STRESS_GEOMETRY
 
 
+# Past pulls survive the app. Every take is already written to stress_log_<id>.jsonl line by
+# line, so the recording of a session is complete the moment SOFA exits (or is paused, or
+# crashes) -- but the browser could only ever see takes still held in memory, which vanish
+# with the process. These helpers expose the FILES as takes too, so any earlier pull can be
+# reopened and scrubbed. Indexed lazily by byte offset, cached on (size, mtime), so a 30 MB
+# log costs one pass the first time it is opened and nothing afterwards.
+_DISK_INDEX = {}
+_DISK_COUNT = {}
+
+
+def _disk_take_files():
+    import glob
+    base = os.path.dirname(STRESS_LOG_PATH) or "."
+    stem = os.path.basename(STRESS_LOG_PATH).replace(".jsonl", "")
+    return sorted(glob.glob(os.path.join(base, stem + "*.jsonl")))
+
+
+def _disk_stat(path):
+    try:
+        st = os.stat(path)
+        return (st.st_size, int(st.st_mtime))
+    except OSError:
+        return None
+
+
+def _disk_count(path):
+    """Frame count and first/last timestamp, WITHOUT building a full index.
+
+    Listing the takes must stay cheap: one of these logs is 159 MB, and walking it line by
+    line to offer it in a dropdown blocked the request past the browser's fetch timeout, so
+    no disk take was ever listed at all. Counting newlines in big chunks is ~100x faster, and
+    the last timestamp comes from a short read at the end of the file rather than a scan."""
+    key = _disk_stat(path)
+    if key is None:
+        return None
+    hit = _DISK_COUNT.get(path)
+    if hit and hit[0] == key:
+        return hit[1]
+    n = 0
+    tail = b""
+    try:
+        with open(path, "rb") as f:
+            while True:
+                chunk = f.read(1 << 22)
+                if not chunk:
+                    break
+                n += chunk.count(bytes([10]))
+            if key[0]:
+                # A frame is ~100 KB of JSON, so the window must be comfortably
+                # larger than one line or the tail never contains a complete one
+                # (that is why every take listed t1 = 0.0).
+                f.seek(max(0, key[0] - (1 << 22)))
+                tail = f.read()
+            f.seek(0)
+            head = f.readline()
+    except OSError:
+        return None
+
+    def _t(line):
+        try:
+            return float(_json.loads(line).get("t", 0.0))
+        except Exception:  # noqa: BLE001
+            return 0.0
+    lines = [x for x in tail.split(bytes([10])) if x.strip()]
+    res = (n, _t(head), _t(lines[-1]) if lines else 0.0)
+    _DISK_COUNT[path] = (key, res)
+    return res
+
+
+def _disk_index(path):
+    """[byte offset of each frame] -- built only when a take is actually opened."""
+    key = _disk_stat(path)
+    if key is None:
+        return None
+    hit = _DISK_INDEX.get(path)
+    if hit and hit[0] == key:
+        return hit[1]
+    offs, pos = [], 0
+    try:
+        with open(path, "rb") as f:
+            for line in f:
+                if line.strip():
+                    offs.append(pos)
+                pos += len(line)
+    except OSError:
+        return None
+    _DISK_INDEX[path] = (key, offs)
+    return offs
+
+
+def _disk_frame(path, i):
+    """One frame out of a log file, by index. Builds the offset index on first use."""
+    offs = _disk_index(path)
+    if not offs or not (0 <= i < len(offs)):
+        return b"{}"
+    try:
+        with open(path, "rb") as f:
+            f.seek(offs[i])
+            return f.readline().strip() or b"{}"
+    except OSError:
+        return b"{}"
+
+
+def _disk_takes():
+    out = []
+    live = None
+    if _STRESS_LOG_FH is not None:
+        live = getattr(_STRESS_LOG_FH, "name", None)
+    for path in _disk_take_files():
+        info = _disk_count(path)
+        if not info or not info[0]:
+            continue
+        n, t0, t1 = info
+        out.append({"id": "f:" + os.path.basename(path), "n": n,
+                    "t0": t0, "t1": t1, "live": False, "disk": True,
+                    "writing": (live is not None and os.path.abspath(live) == os.path.abspath(path))})
+    return out
+
+
 def _stress_record(js):
     """Store one serialized frame: newest pointer + capped history + disk log."""
     global _STRESS_LATEST, _STRESS_TOTAL, _STRESS_LOG_FH
@@ -730,6 +854,10 @@ def _start_stress_server(port, open_browser):
                            for s in _STRESS_SESSIONS]
                     out.append({"id": _STRESS_SESSION_ID, "n": len(_STRESS_HISTORY),
                                 "t0": 0.0, "t1": 0.0, "live": True})
+                    try:
+                        out.extend(_disk_takes())      # earlier pulls, straight off disk
+                    except Exception:  # noqa: BLE001
+                        pass
                     self._send(_json.dumps({"sessions": out}).encode(), "application/json")
                 elif self.path.startswith("/meta"):
                     n = len(_STRESS_HISTORY)
@@ -742,6 +870,12 @@ def _start_stress_server(port, open_browser):
                     q = parse_qs(urlparse(self.path).query)
                     i = int(q.get("i", ["-1"])[0])
                     sid = q.get("s", [""])[0]
+                    if sid.startswith("f:"):           # a take read from a log FILE
+                        base = os.path.dirname(STRESS_LOG_PATH) or "."
+                        name = os.path.basename(sid[2:])       # never leave the folder
+                        self._send(_disk_frame(os.path.join(base, name), i),
+                                   "application/json")
+                        return
                     if sid != "" and int(sid) != _STRESS_SESSION_ID:
                         # frame from an ARCHIVED take: index is 0-based within that take
                         arc = next((s for s in _STRESS_SESSIONS if s["id"] == int(sid)), None)
@@ -1488,6 +1622,16 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 self.rest0 = np.vstack([self.rest0, self.rest0[v]])
             self.mo.position.value = np.vstack([P, P[v]]).tolist()
             self.mo.rest_position.value = np.vstack([R, R[v]]).tolist()
+            # Grow the rewind snapshot with the mesh. The runaway guard refuses to rewind
+            # when the snapshot has a different vertex count than the mesh, so without this
+            # every split disarmed it until a healthy frame happened to be re-cached -- and
+            # once the mesh is degraded no frame IS healthy, so the net stayed disarmed for
+            # the rest of the session. That is how a run reached 20.8x edge stretch and
+            # |coord| 13.5 on a capsule of radius 6.9 with rewinds still reading 0.
+            if self.last_good is not None and len(self.last_good) == nv:
+                self.last_good = self.last_good + [list(self.last_good[v])]
+            if self.last_good_rest is not None and len(self.last_good_rest) == nv:
+                self.last_good_rest = list(self.last_good_rest) + [list(self.last_good_rest[v])]
             V = np.array(self.mo.velocity.value)
             if len(V) == nv:
                 self.mo.velocity.value = np.vstack([V, V[v]]).tolist()
@@ -1797,6 +1941,21 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             P0 = np.array(self.mo.position.value)
             runaway = (MAX_COORD > 0.0 and P0.size > 0
                        and np.isfinite(P0).all() and np.abs(P0).max() > MAX_COORD)
+            # ... and a mesh stretched far past the clamp is just as ruined as one that flew
+            # away, even though every coordinate is still small and finite (see STRAIN_PANIC).
+            if (not runaway and STRAIN_PANIC > 0.0 and MAX_STRETCH > 0.0
+                    and np.isfinite(P0).all()):
+                if self.edges is None:
+                    self._build_edges()
+                if len(self.edges):
+                    L = np.linalg.norm(P0[self.edges[:, 1]] - P0[self.edges[:, 0]], axis=1)
+                    worst = float((L / np.maximum(self.edge_rest, 1e-9)).max())
+                    if worst > MAX_STRETCH * STRAIN_PANIC:
+                        runaway = True
+                        if self.step % 15 == 0:
+                            print(f"[Runaway] edge stretched {worst:.1f}x rest "
+                                  f"(limit {MAX_STRETCH:g}, panic at "
+                                  f"{MAX_STRETCH * STRAIN_PANIC:.1f}x) -> rewinding")
             # A rewind restores a snapshot; after a split the snapshot has the OLD vertex
             # count, so restoring it would undo the tear (and mis-size every array). Only
             # rewind when the snapshot still matches the current mesh.
@@ -2044,6 +2203,18 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             if LOG_DIAG:
                 if self.diag is None:
                     # line-buffered, so closing the app mid-session loses no rows
+                    # Keep the previous session's black box. Overwriting it meant the
+                    # evidence for "that run went wrong" was gone the moment anything ran
+                    # again -- including a diagnostic probe, which is exactly when you most
+                    # want it. Same rotation the run log already uses.
+                    try:
+                        if os.path.exists(DIAG_PATH):
+                            prev = DIAG_PATH.replace(".csv", ".prev.csv")
+                            if os.path.exists(prev):
+                                os.remove(prev)
+                            os.replace(DIAG_PATH, prev)
+                    except OSError:
+                        pass
                     self.diag = open(DIAG_PATH, "w", buffering=1)
                     # Black box: one row per STEP for the whole session. The TEAR
                     # columns matter as much as the mechanics ones -- "why" is what

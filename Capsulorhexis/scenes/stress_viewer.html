@@ -19,6 +19,12 @@
   #cap b { color: #cfe0ee; }
   #ctrls { position: fixed; top: 10px; right: 12px; display: flex; gap: 8px; align-items: center; }
   /* criterion readout: every term of the formula, for the frame you are looking at */
+  #layers { position: fixed; right: 12px; bottom: 70px; width: 250px; padding: 8px 10px;
+             z-index: 8; }
+  #layers h4 { margin: 0 0 6px; font-size: 12px; color: #cfe0ee; }
+  #layers .sub { color: #7f93a4; font-weight: 400; }
+  #layers label { display: flex; align-items: center; gap: 6px; padding: 2px 0;
+                  color: #9fb3c4; cursor: pointer; }
   #crit { position: fixed; left: 12px; bottom: 70px; width: 330px; padding: 8px 10px;
           z-index: 7; max-height: calc(100vh - 370px); overflow-y: auto; }
   #crit h4 { margin: 0 0 6px; font-size: 12px; color: #cfe0ee; }
@@ -108,7 +114,7 @@
   <div class="lab"><span>0</span><span id="lgMid"></span><span id="lgMax">σ₁</span></div>
 </div>
 
-<div id="tearctl" class="panel" style="position:fixed;top:56px;right:12px;width:250px">
+<div id="tearctl" class="panel" style="position:fixed;top:56px;right:12px;width:250px;max-height:calc(100vh - 330px);overflow-y:auto">
   <div class="cap2" style="color:#e6b8e0">⚡ tear threshold σ_thr · 撕裂門檻
     <span style="color:#7d8fa0">(0 = off)</span></div>
   <!-- range from measured data (stress_log_1, 460 frames): with degenerates filtered the
@@ -161,6 +167,15 @@
 <div id="insp" class="panel"><h4>🔍 element inspector · 元素檢視</h4>
 <div class="note">hover a triangle · 滑到三角形上;click = 📌 pin 釘選(截圖用)</div></div>
 
+<div id="layers" class="panel">
+  <h4>◧ 圖層 · layers <span class="sub">(獨立勾選,可全選疊看)</span></h4>
+  <label><input type="checkbox" id="LstressOn" checked> <b>應力 σ₁</b> stress heat</label>
+  <label><input type="checkbox" id="LadhOn" checked> <b style="color:#37e6d9">黏著/脫離</b> attach &amp; peel front</label>
+  <label><input type="checkbox" id="LcrackOn" checked> <b style="color:#ff2d95">裂痕</b> the actual cut</label>
+  <label><input type="checkbox" id="LpullOn" checked> <b style="color:#ffd24a">器械接觸</b> instrument &amp; force</label>
+  <label><input type="checkbox" id="LdirOn" checked> <b>方向線</b> σ₁ / crack dir / fibre</label>
+  <label><input type="checkbox" id="LwireOn"> <b>網格線</b> wireframe</label>
+</div>
 <div id="crit" class="panel">
   <h4>⚡ 撕裂判據 · tear criterion <span class="sub">(Dequidt Eq.1–4,這一幀的實際數值)</span></h4>
   <div id="critbody">waiting…</div>
@@ -263,7 +278,10 @@ let meta={count:0,first:0,last:-1,n:0};
 let following=true, playing=false, curIdx=-1, prevCount=0;
 // Takes: each SOFA scene reset archives the finished recording as a session. takeSel = the
 // one being viewed (-1 = the live one); sessions = what /sessions reported.
-let sessions=[], viewTake=-1, liveSession=0, sessSig="";
+// viewTake: null = the live recording, otherwise a take id. Ids are NUMBERS for
+// takes still held in memory and STRINGS ("f:<file>") for ones read back off disk,
+// so this can no longer be a number with -1 meaning live.
+let sessions=[], viewTake=null, liveSession=0, sessSig="";
 const cache=new Map();           // idx -> frame
 let scaleMode="auto", showWire=false, hover=-1, mouse=null, miss=0;
 let tearThr=0;      // tear threshold sigma_bar_T (0 = off)
@@ -544,6 +562,14 @@ function renderCrit(){
     `</table><div class="verdict ${go?'go':'no'}">${te.why||""}</div>`;
 }
 
+// Layer switches. Each overlay answers a different question, and with all of them on at
+// once a busy frame is unreadable -- so they are independent, and all-on is still valid.
+const LAYER = id => { const e = document.getElementById(id); return !e || e.checked; };
+["LstressOn","LadhOn","LcrackOn","LpullOn","LdirOn","LwireOn"].forEach(id => {
+  const e = document.getElementById(id);
+  if (e) e.addEventListener("change", draw);
+});
+
 function draw(){
   if(!bounds||!verts) return;
   T=fit(); ctx.clearRect(0,0,T.W,T.H);
@@ -562,10 +588,11 @@ function draw(){
   for(let k=0;k<tris.length;k++){ const [a,b,c]=tris[k];
     const A=toScreen(verts[a][0],verts[a][1]),B=toScreen(verts[b][0],verts[b][1]),C=toScreen(verts[c][0],verts[c][1]);
     ctx.beginPath(); ctx.moveTo(A[0],A[1]); ctx.lineTo(B[0],B[1]); ctx.lineTo(C[0],C[1]); ctx.closePath();
-    ctx.fillStyle = !have ? "#22303c" : (degenerate(ar[k]) ? "#38424c" : ramp(s1[k]/scaleTop)); ctx.fill();
-    if(showWire||!have){ ctx.strokeStyle=have?"rgba(0,0,0,.28)":"rgba(150,170,190,.35)"; ctx.lineWidth=1; ctx.stroke(); } }
+    ctx.fillStyle = (!have || !LAYER("LstressOn")) ? "#22303c"
+                  : (degenerate(ar[k]) ? "#38424c" : ramp(s1[k]/scaleTop)); ctx.fill();
+    if(showWire||LAYER("LwireOn")||!have){ ctx.strokeStyle=have?"rgba(0,0,0,.28)":"rgba(150,170,190,.35)"; ctx.lineWidth=1; ctx.stroke(); } }
   if(!have){ renderCrit(); return; }
-  const sh=shownTri();                          // pinned triangle wins over hover
+  const sh=LAYER("LdirOn") ? shownTri() : -1;   // pinned triangle wins over hover
   if(sh>=0 && sh<tris.length){ const [a,b,c]=tris[sh];
     const A=toScreen(verts[a][0],verts[a][1]),B=toScreen(verts[b][0],verts[b][1]),C=toScreen(verts[c][0],verts[c][1]);
     ctx.beginPath(); ctx.moveTo(A[0],A[1]); ctx.lineTo(B[0],B[1]); ctx.lineTo(C[0],C[1]); ctx.closePath();
@@ -655,7 +682,7 @@ function draw(){
   // wrong. Detached triangles get a translucent wash (the stress colour still reads through),
   // and the PEEL FRONT, the boundary between the two, is drawn as a cyan line: that front is
   // where the next spot will let go, so it is the part worth watching.
-  if(cur.adh && cur.adh.length>=verts.length && cur.gver===geomVer){
+  if(LAYER("LadhOn") && cur.adh && cur.adh.length>=verts.length && cur.gver===geomVer){
     const A=cur.adh;
     ctx.save();
     for(let k=0;k<tris.length;k++){
@@ -692,7 +719,7 @@ function draw(){
   // a prediction. Every frame carries it, so scrubbing the timeline replays the tear edge by
   // edge, and switching take replays a different pull. Indices belong to the frame's own
   // topology version, so skip while the page is still catching up to a newer mesh.
-  if(cur.crack && cur.crack.length>1 && cur.gver===geomVer){
+  if(LAYER("LcrackOn") && cur.crack && cur.crack.length>1 && cur.gver===geomVer){
     const pts=[];
     for(const v of cur.crack) if(v<verts.length) pts.push(toScreen(verts[v][0],verts[v][1]));
     if(pts.length>1){
@@ -728,7 +755,7 @@ function draw(){
   // --- the instrument: WHERE you are pulling, and which way ------------------------------
   // Read from SOFA's own force vector (argmax|f| is the grabbed node), recorded per frame,
   // so scrubbing shows where the hand was at that instant -- not just its consequences.
-  if(cur.pull && cur.pull.on){
+  if(LAYER("LpullOn") && cur.pull && cur.pull.on){
     const g=toScreen(cur.pull.x, cur.pull.y);
     const fx=cur.pull.fx||0, fy=cur.pull.fy||0;
     const n=Math.hypot(fx,fy);
@@ -864,8 +891,8 @@ function updateHud(){
     `t        <b>${(cur.t).toFixed(2)}</b> s   step <b>${cur.step}</b>\n`+
     `peak σ₁  <b>${cur.smax.toFixed(1)}</b>  (p98 <b>${(cur.sp98!=null?cur.sp98:cur.smax).toFixed(0)}</b>)\n`+
     `scale    0 … <b>${scaleTop.toFixed(0)}</b>  (${scaleMode==="fixed"?"fixed":"auto=p98"})\n`+
-    `frame    <b>${viewTake>=0?curIdx:cur.i}</b> / ${takeRange().last}`+
-    (viewTake>=0?`   <b>take ${viewTake}</b>`:``)+
+    `frame    <b>${viewTake!==null?curIdx:cur.i}</b> / ${takeRange().last}`+
+    (viewTake!==null?`   <b>take ${viewTake}</b>`:``)+
     // real-tearing status, straight from the scene: makes "-Tear was not passed" obvious
     // instead of looking like broken tearing.
     (cur.tear ? (cur.tear.on
@@ -879,8 +906,8 @@ function updateTimeline(){
   seek.min=rng.first; seek.max=Math.max(rng.first,rng.last);
   const isLive = viewTake<0 && following;
   if(isLive) seek.value=rng.last;
-  const shown = cur? (viewTake>=0 ? curIdx : cur.i) : rng.last;
-  const tk = viewTake>=0 ? ` · take <b>${viewTake}</b>` : "";
+  const shown = cur? (viewTake!==null ? curIdx : cur.i) : rng.last;
+  const tk = viewTake!==null ? ` · take <b>${viewTake}</b>` : "";
   if(isLive){ tllab.innerHTML=`<span id="liveDot">◉ LIVE</span>  ·  frame <b>${shown}</b>  t <b>${cur?cur.t.toFixed(2):"--"}</b>s`; }
   else { tllab.innerHTML=`<span id="reviewTag">❚❚ REVIEW</span>${tk}  ·  frame <b>${shown}</b> / ${rng.last}  t <b>${cur?cur.t.toFixed(2):"--"}</b>s`; }
   document.getElementById("liveBtn").classList.toggle("on",following);
@@ -890,7 +917,8 @@ function updateTimeline(){
 async function fetchFrame(i){
   const key=viewTake+":"+i;                     // cache per take, not just per index
   if(cache.has(key)) return cache.get(key);
-  const q = viewTake>=0 ? `/frame?s=${viewTake}&i=${i}` : `/frame?i=${i}`;
+  const q = viewTake!==null
+            ? `/frame?s=${encodeURIComponent(viewTake)}&i=${i}` : `/frame?i=${i}`;
   try{ const f=await jfetch(q);
     if(f&&f.s1){ cache.set(key,f); if(cache.size>400){ const first=cache.keys().next().value; cache.delete(first); } return f; } }
   catch(e){}
@@ -899,7 +927,7 @@ async function fetchFrame(i){
 function takeRange(){
   // frame index range of whatever is being viewed: archived takes are 0..n-1, the live
   // recording uses the global counter window from /meta.
-  if(viewTake>=0){ const s=sessions.find(x=>x.id===viewTake);
+  if(viewTake!==null){ const s=sessions.find(x=>x.id===viewTake);
     return {first:0, last:s? s.n-1 : 0}; }
   return {first:meta.first, last:meta.last};
 }
@@ -914,10 +942,10 @@ function rebuildTakeSel(){
     const o=document.createElement("option");
     o.value = s.live ? "-1" : String(s.id);
     o.textContent = s.live ? `● take ${s.id} (live 進行中)`
-                           : `take ${s.id} · ${s.n}f · ${s.t0.toFixed(1)}–${s.t1.toFixed(1)}s`;
+      : `${s.disk ? "🗀 " : ""}${String(s.id).replace(/^f:stress_log_?/, "take ")          .replace(/\.jsonl$/, "")} · ${s.n}f · ${s.t0.toFixed(1)}–${s.t1.toFixed(1)}s`        + (s.writing ? " (本次)" : "");
     sel.appendChild(o);
   }
-  sel.value=String(viewTake);
+  sel.value = viewTake===null ? "-1" : String(viewTake);
 }
 async function tick(){
   // (1) Ensure geometry FIRST, retrying every tick -- the page no longer blocks on a
@@ -973,7 +1001,7 @@ cv.addEventListener("mouseleave",()=>{ mouse=null; hover=-1; });   // pinned sur
 cv.addEventListener("click",()=>{        // click a triangle = pin it (click it again to unpin)
   if(hover>=0){ pinned = (pinned===hover ? -1 : hover); lastHover=hover; }
 });                                       // clicking empty space leaves the panel as it is
-function goLive(){ viewTake=-1; following=true; playing=false;
+function goLive(){ viewTake=null; following=true; playing=false;
   const s=document.getElementById("takeSel"); if(s) s.value="-1"; }
 function goReview(i){ const r=takeRange();
   following=false; curIdx=Math.max(r.first,Math.min(r.last,i)); }
@@ -983,9 +1011,13 @@ document.getElementById("playBtn").onclick=()=>{
   if(viewTake<0 && following) goReview(takeRange().first); playing=!playing; };
 seek.addEventListener("input",()=>{ goReview(parseInt(seek.value)); });
 document.getElementById("takeSel").addEventListener("change",e=>{
-  const v=parseInt(e.target.value);
-  if(v<0){ goLive(); }
-  else { viewTake=v; following=false; playing=false; curIdx=0; pinned=-1; }
+  const raw=e.target.value;
+  if(raw==="-1"){ goLive(); return; }
+  // Numeric ids belong to takes still in memory, "f:<file>" ones to takes read off disk.
+  // parseInt on the latter yields NaN, which silently selected nothing.
+  const n=Number(raw);
+  viewTake = (raw!=="" && !Number.isNaN(n) && !raw.startsWith("f:")) ? n : raw;
+  following=false; playing=false; curIdx=0; pinned=-1;
 });
 document.getElementById("scaleBtn").onclick=e=>{ scaleMode=scaleMode==="auto"?"fixed":"auto"; e.target.textContent="Scale: "+scaleMode; };
 document.getElementById("wireBtn").onclick=e=>{ showWire=!showWire; e.target.classList.toggle("on",showWire); };
