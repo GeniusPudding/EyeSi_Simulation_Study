@@ -234,6 +234,16 @@ PEEL_NUCLEATE = float(os.environ.get("CAP_PEEL_NUCLEATE", "1.2"))
 # is always a small crack, never a sheet coming away". A front node is already half free, so
 # it lets go far more easily than fresh bonded material.
 PEEL_FRONT_EASE = float(os.environ.get("CAP_PEEL_EASE", "0.15"))
+# How far ahead of the CRACK the debond front may run, in world units. In a real
+# capsulorhexis the flap comes away BECAUSE the tear advances -- they are one event. Modelled
+# as two independent mechanisms they compete for the same pull, and peeling wins: measured, a
+# session went glued 2153 -> 1885 while the crack sat at 4 vertices, the crack then froze at
+# 16, and peeling carried on for another 3.9 s releasing 424 more spots after the tear was
+# already dead. Unglued membrane goes slack, so the tip stops feeling any load at all and the
+# tear can never restart -- the tip's local sigma1 sat at 0.46 through pulls of |F| = 6449.
+# Tying the debond front to the crack makes the flap follow the tear instead of outrunning it.
+# 0 = off (peel anywhere, the old behaviour, still what the no-tear demo wants).
+PEEL_NEAR_CRACK = float(os.environ.get("CAP_PEEL_NEAR", "3.0"))
 # ...and cap how fast that front advances. The front rule alone is not enough: each
 # freed spot makes its neighbours eligible, so a violent pull still swept the whole cap
 # (2263 -> 0). A real crack has a finite propagation speed. Only this many spots debond
@@ -584,6 +594,7 @@ def _stress_build_frame(i, step, t, s1, s2, sdir, aratio):
         "crack": list(_TEAR_PATH["path"]),   # ordered vertex chain = the cut edges
         "lips": list(_TEAR_PATH["lips"]),    # [duplicate, original] split pairs
         "pull": dict(_PULL_STATE),           # where the instrument is pulling, and how hard
+        "adh": _ADH_STATE["glued"],          # per-vertex "1"=still on the lens, "0"=peeled off
         "s1": np.round(s1, 1).tolist(),
         "s2": np.round(s2, 1).tolist(),
         "ang": np.round(ang, 1).tolist(),
@@ -613,6 +624,11 @@ _TEAR_PATH = {"path": [], "lips": []}
 # nodes above 10% of the peak). Without this the viewer showed the consequences of a pull
 # with no way to see the pull itself.
 _PULL_STATE = {"on": False, "x": 0.0, "y": 0.0, "fx": 0.0, "fy": 0.0, "mag": 0.0}
+# Which vertices are STILL GLUED to the lens, as a compact "1"/"0" string (one character per
+# vertex, ~2 KB against the ~100 KB of stress arrays already in a frame). The map started out
+# uniformly attached and there was no way to see what had come away -- so "the capsule is
+# being stripped wherever I drag" could be felt but not checked.
+_ADH_STATE = {"glued": "", "n": 0}
 PULL_MIN_FORCE = float(os.environ.get("CAP_PULL_MINF", "5.0"))
 
 
@@ -1680,8 +1696,19 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 S1, S2, th1, s1_local = S
                 # The tip must actually be loaded before its direction means anything.
                 if s1_local < TEAR_LOCAL_MIN:
+                    # Report the values THIS evaluation measured. Leaving the previous ones in
+                    # place made the panel contradict itself -- it showed a local sigma1 above
+                    # the gate next to the message saying the gate had refused, because that
+                    # number was several frames old.
+                    R0 = self._rest_now()
+                    rt = R0[tip] if tip < len(R0) else P[tip]
                     _TEAR_STATE.update(on=True, len=len(self.crack), c=0.0, thr=TEAR_THRESH,
-                                       tipr=round(float(np.hypot(P[tip][0], P[tip][1])), 2),
+                                       tipr=round(float(np.hypot(rt[0], rt[1])), 2),
+                                       tipx=round(float(rt[0]), 3),
+                                       tipy=round(float(rt[1]), 3),
+                                       s1=round(float(S1), 1), s2=round(float(S2), 1),
+                                       th1=round(float(th1), 1),
+                                       su=0.0, sbu=0.0, loc=round(float(s1_local), 2),
                                        why="tip not loaded -- pull toward the crack tip")
                     return
                 # Coarse-mesh stress-concentration correction: a real crack tip is singular,
@@ -1689,15 +1716,25 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 # than the threshold scaled down (which would also weaken the bulk).
                 S1 *= TEAR_TIP_GAIN
                 S2 *= TEAR_TIP_GAIN
-                fib = np.degrees(np.arctan2(P[tip][1], P[tip][0])) + 90.0   # concentric fibers
+                # Concentric fibres, from the REST shape. They are a property of the
+                # MATERIAL, so the azimuth must be the one the tip has on the undeformed
+                # capsule; taking it from the deformed position let the fibre field rotate
+                # with the pull, which is not something real collagen does.
+                R0 = self._rest_now()
+                rt = R0[tip] if tip < len(R0) else P[tip]
+                fib = np.degrees(np.arctan2(rt[1], rt[0])) + 90.0
                 c, d, dang, su, sbu = self._argmax_c(S1, S2, th1, fib, self.crack_dir)
                 # Everything the criterion used, mirrored to the viewer: with all of Eq.3/Eq.4
                 # on screen per frame, "why did it not tear" is readable instead of guessed.
                 _TEAR_STATE.update(on=True, len=len(self.crack), c=round(float(c), 2),
                                    thr=TEAR_THRESH,
-                                   tipr=round(float(np.hypot(P[tip][0], P[tip][1])), 2),
-                                   tipx=round(float(P[tip][0]), 3),
-                                   tipy=round(float(P[tip][1]), 3),
+                                   tipr=round(float(np.hypot(rt[0], rt[1])), 2),
+                                   # REST space, like the pull marker and the disc the
+                                   # viewer draws. Publishing the deformed position mixed two
+                                   # frames of reference, so tip-to-instrument distances came
+                                   # out larger than the capsule itself (9.68 on r=6.89).
+                                   tipx=round(float(rt[0]), 3),
+                                   tipy=round(float(rt[1]), 3),
                                    s1=round(float(S1), 1), s2=round(float(S2), 1),
                                    th1=round(float(th1), 1), fib=round(float(fib), 1),
                                    dang=round(float(dang), 1), su=round(float(su), 1),
@@ -2063,6 +2100,16 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                                  or any(int(j) not in adh for j in self.nbr[int(i)]))
                                 and cand_lift[k] > front_lift)]
                     cand, cand_lift = cand[keep], cand_lift[keep]
+                # Keep the debond front with the tear (see PEEL_NEAR_CRACK).
+                if (PEEL_NEAR_CRACK > 0.0 and CAP_TEAR and cand.size
+                        and getattr(self, "crack", None)):
+                    ck = [v for v in self.crack if v < len(pos)]
+                    if ck:
+                        C = np.asarray(pos)[ck][:, :2]
+                        Q = np.asarray(pos)[cand][:, :2]
+                        d2 = ((Q[:, None, :] - C[None, :, :]) ** 2).sum(axis=2).min(axis=1)
+                        near = d2 <= PEEL_NEAR_CRACK ** 2
+                        cand, cand_lift = cand[near], cand_lift[near]
                 if PEEL_RATE > 0 and cand.size > PEEL_RATE:
                     # crack tip first: the most-lifted spots are the ones at the front
                     order = np.argsort(-cand_lift)[:PEEL_RATE]
@@ -2101,6 +2148,17 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                     if self.peel_fade[nd] < PEEL_FADE_MIN:
                         del self.peel_fade[nd]
                 self._push_adhesion()
+
+            # Publish what is still stuck to the lens (see _ADH_STATE).
+            if self.adhered is not None:
+                n = len(pos)
+                if _ADH_STATE["n"] != n or self.step % 3 == 0:
+                    a = np.full(n, ord("0"), dtype=np.uint8)
+                    idx = np.fromiter(self.adhered, dtype=int, count=len(self.adhered))
+                    if idx.size:
+                        a[idx[idx < n]] = ord("1")
+                    _ADH_STATE["glued"] = a.tobytes().decode("ascii")
+                    _ADH_STATE["n"] = n
 
             # Where is the instrument pulling right now? (see _PULL_STATE)
             try:
