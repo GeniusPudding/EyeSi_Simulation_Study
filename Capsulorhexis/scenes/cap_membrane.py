@@ -119,6 +119,15 @@ TEAR_DRIVE_TOPK = int(os.environ.get("CAP_TEAR_TOPK", "8"))
 # How many of the most recent crack vertices are off-limits to the advancing tip.
 # Only the tail: the tear must be able to reach its own START to close the circle.
 TEAR_NOBACK = int(os.environ.get("CAP_TEAR_NOBACK", "8"))
+# How strongly the next edge is chosen to STAY ON ITS RING rather than drift in radius.
+# OFF (0), because it could not be shown to help and measurably hurt everything that could be
+# measured: on a scripted pull, 0/0.3/0.6 gave cut 72/65/52 and crack span 13.0/11.9/1.6. The
+# failure it was written for -- the crack boxing itself in, 73.7% of steps blocked by the turn
+# limit in a real 71 s session -- could NOT be reproduced by any probe here, scripted or with
+# the grab moved around every 120 steps (turn-blocking stayed at 0.0% throughout). Kept as a
+# knob because the idea is sound and the failure is real; not enabled on evidence that does
+# not exist.
+TEAR_RING_KEEP = float(os.environ.get("CAP_TEAR_RINGKEEP", "0.0"))
 # Minimum crack length before reaching the seed counts as the rhexis closing,
 # so the tear cannot "complete" a few edges after it starts.
 TEAR_CLOSE_MIN = int(os.environ.get("CAP_TEAR_CLOSEMIN", "40"))
@@ -2074,19 +2083,39 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 self.block = "blocked: the crack ran into its own path (no free edge left)"
                 return False
             pv = P[tip][:2]
-            best, bj = -2.0, -1
+            # Penalise RADIAL DRIFT when choosing the next edge. The criterion already asks
+            # for a circumferential tear and the tip mostly gets one -- measured, 65.7% of the
+            # edges it takes are within 15 deg of the fibre, against only 34.0% of the edges
+            # available, and the direction it asks for sits a median 12.6 deg from the fibre.
+            # The trouble is the other ~22%: with 51.9% of this mesh's edges running diagonally
+            # (it is a ring mesh whose quads are split, so the diagonals outnumber both the ring
+            # and the radial edges), the tip is regularly forced onto one, and each diagonal
+            # step moves it to a different ring. That accumulated drift is what eventually walks
+            # the crack into its own path, where every remaining neighbour lies backwards and
+            # the turn limit stops it for good -- 73.7% of all steps in a recorded session.
+            # Rings here are continuous, so a tear that stays on one can close; this is a
+            # discretisation correction, not a change to the criterion.
+            R0 = self._rest_now()
+            r_tip = float(np.hypot(R0[tip][0], R0[tip][1])) if tip < len(R0) else 0.0
+            best, bj = -1e9, -1
             for j in cand:
                 e = P[j][:2] - pv
                 n = np.linalg.norm(e)
                 if n < 1e-9:
                     continue
-                dot = float(e @ self.crack_dir / n)
-                if dot > best:
-                    best, bj = dot, j
+                score = float(e @ self.crack_dir / n)
+                if TEAR_RING_KEEP > 0.0 and j < len(R0) and r_tip > 0.5:
+                    drift = abs(float(np.hypot(R0[j][0], R0[j][1])) - r_tip)
+                    score -= TEAR_RING_KEEP * drift / max(n, 1e-9)
+                if score > best:
+                    best, bj = score, j
             if bj < 0:
                 self.block = "blocked: no usable edge at the tip"
                 return False
-            turn = float(np.degrees(np.arccos(np.clip(best, -1, 1))))
+            e_sel = P[bj][:2] - pv
+            n_sel = max(float(np.linalg.norm(e_sel)), 1e-9)
+            cos_sel = float(e_sel @ self.crack_dir / n_sel)
+            turn = float(np.degrees(np.arccos(np.clip(cos_sel, -1, 1))))
             if not forced and turn > TEAR_TURN_MAX:
                 self.block = (f"blocked: needs a {turn:.0f}deg turn, limit is "
                               f"{TEAR_TURN_MAX:.0f}deg")
