@@ -1432,6 +1432,31 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             if cur_alt < target_alt:
                 P[pts[apex]] = A + (target_alt - cur_alt) * w
 
+        def _strain_panic_check(self):
+            """Rewind or contain ONLY if an edge is still wildly over-stretched AFTER the
+            clamps have had their turn. Anything the clamp can fix is not a blow-up."""
+            if STRAIN_PANIC <= 0.0 or MAX_STRETCH <= 0.0:
+                return
+            P = np.array(self.mo.position.value)
+            if not np.isfinite(P).all():
+                return                      # the NaN path at stage (0) owns this
+            if self.edges is None:
+                self._build_edges()
+            if not len(self.edges):
+                return
+            L = np.linalg.norm(P[self.edges[:, 1]] - P[self.edges[:, 0]], axis=1)
+            worst = float((L / np.maximum(self.edge_rest, 1e-9)).max())
+            if worst <= MAX_STRETCH * STRAIN_PANIC:
+                return
+            if self.step % 15 == 0:
+                print(f"[Runaway] edge still {worst:.1f}x rest after clamping "
+                      f"(limit {MAX_STRETCH:g}, panic at {MAX_STRETCH * STRAIN_PANIC:.1f}x)")
+            if self.last_good is not None and len(self.last_good) == len(P):
+                self._rewind()
+            else:
+                self.mo.velocity.value = [[0.0, 0.0, 0.0]] * len(P)
+                self.contained += 1
+
         def _rewind(self):
             # Restore the last healthy frame: positions, rest shape, zero velocity.
             # Restoring the REST too un-bakes a plasticity-frozen blow-up.
@@ -1967,6 +1992,10 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 self.last_good = self.last_good + [list(self.last_good[v])]
             if self.last_good_rest is not None and len(self.last_good_rest) == nv:
                 self.last_good_rest = list(self.last_good_rest) + [list(self.last_good_rest[v])]
+                # The displacement clamp's baseline has to grow too, or it is disarmed for the
+                # step after every split (see _tear_reinit).
+                if self.prev_pos is not None and len(self.prev_pos) == nv:
+                    self.prev_pos = np.vstack([self.prev_pos, self.prev_pos[v]])
             if not used_api:
                 V = np.array(self.mo.velocity.value)
                 if len(V) == nv:
@@ -2051,8 +2080,19 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self._build_vtris()
             self.edges = self.edge_rest = None      # strain clamp rebuilds
             self.tri_idx = self.tri_rest_area = None
-            self.last_good = self.last_good_rest = None
-            self.prev_pos = None
+            # Keep the safety nets ARMED across a split. These used to be thrown away here on
+            # every split, which quietly undid the snapshot growth done in _split_vertex and
+            # left both guards dead for the step after every advance -- and splits are frequent
+            # while a tear runs. Consequences, both measured: the rewind never had a usable
+            # snapshot (a session reached 4948x edge stretch with only 6 rewinds), and the
+            # per-step displacement clamp was disarmed so often that nodes jumped 1.05 against
+            # a DISP_CLAMP of 0.5, which is the whole sheet twitching. Only drop them if they
+            # genuinely no longer fit the mesh.
+            n_now = len(self.mo.position.value)
+            if self.last_good is not None and len(self.last_good) != n_now:
+                self.last_good = self.last_good_rest = None
+            if self.prev_pos is not None and len(self.prev_pos) != n_now:
+                self.prev_pos = None
             # Hand the browser the crack itself, not just its length, so the tear can be seen
             # and replayed edge by edge on the timeline.
             _TEAR_PATH["path"] = [int(v) for v in self.crack] if self.crack else []
@@ -2350,24 +2390,12 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             coord_runaway = (MAX_COORD > 0.0 and P0.size > 0
                              and np.isfinite(P0).all() and np.abs(P0).max() > MAX_COORD)
             runaway = coord_runaway
-            # ... and a mesh stretched far past the clamp is just as ruined as one that flew
-            # away, even though every coordinate is still small and finite (see STRAIN_PANIC).
-            if (not coord_runaway and STRAIN_PANIC > 0.0 and MAX_STRETCH > 0.0
-                    and np.isfinite(P0).all()):
-                if self.edges is None:
-                    self._build_edges()
-                if len(self.edges):
-                    L = np.linalg.norm(P0[self.edges[:, 1]] - P0[self.edges[:, 0]], axis=1)
-                    worst = float((L / np.maximum(self.edge_rest, 1e-9)).max())
-                    if worst > MAX_STRETCH * STRAIN_PANIC:
-                        runaway = True
-                        if self.step % 15 == 0:
-                            print(f"[Runaway] edge stretched {worst:.1f}x rest "
-                                  f"(limit {MAX_STRETCH:g}, panic at "
-                                  f"{MAX_STRETCH * STRAIN_PANIC:.1f}x) -> rewinding")
-            # A rewind restores a snapshot; after a split the snapshot has the OLD vertex
-            # count, so restoring it would undo the tear (and mis-size every array). Only
-            # rewind when the snapshot still matches the current mesh.
+            # NOTE: the strain panic is NOT evaluated here. It used to be, at stage (0),
+            # which is before the strain clamp at stage (2) that exists precisely to pull an
+            # over-stretched edge back. A transient over-stretch -- normal right after a split,
+            # before the clamp has run -- therefore triggered a full rewind instead of being
+            # fixed, and once the snapshot was available again that meant rolling back on 47%
+            # of all steps. It is checked after the clamp instead; see _strain_panic_check().
             broken = (not np.isfinite(P0).all()) or runaway
             can_rewind = (self.last_good is not None
                           and len(self.last_good) == len(P0))
@@ -2554,6 +2582,9 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                             return
                     else:
                         degenerate_after = False
+
+            # (2b2) Only now, with the clamps done, decide whether this is a real blow-up.
+            self._strain_panic_check()
 
             # (2c) Final render guard: the nets above edit positions after (0b), so
             # re-apply the displacement cap as the LAST write of the step -- whatever
