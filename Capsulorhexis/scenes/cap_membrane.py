@@ -516,6 +516,9 @@ MAX_STRETCH = float(os.environ.get('CAP_MAX_STRETCH', '1.6'))        # 0 = off
 # rim plus a running tear leaves long, nearly-detached strips that a few Gauss-Seidel
 # passes cannot pull back (measured: edges reaching 24x rest against a 1.6 limit).
 STRAIN_ITERS = int(os.environ.get('CAP_STRAIN_ITERS', '3'))
+# Iterations used by the emergency containment path, which runs only when a runaway
+# cannot be rewound. Far more than the per-step count: this is a one-off recovery.
+STRAIN_PANIC_ITERS = int(os.environ.get('CAP_STRAIN_PANIC_ITERS', '60'))
 # Anti-collapse (FEM-only): a triangle can go collinear with all edges at normal
 # length -> zero area -> the FEM divides by it. Repair below MIN_AREA_FRAC of rest
 # area by lifting the flattest vertex; if more than SEVERE_COLLAPSE collapse in one
@@ -1234,6 +1237,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self.collapsed = 0         # count of near-flat triangles repaired
             self.last_good_rest = None # rest shape paired with last_good, for full rewind
             self.rewinds = 0           # count of severe-blow-up rewinds
+            self.contained = 0         # blow-ups contained in place (no snapshot to use)
             self.rest_objs = None      # self-calibrating idle object count (grab detection)
             self._probe_prev = None    # previous object-name list, for the CAM_PROBE diag
             self.cam_home = None       # (position, lookAt) captured at t0, for R = re-centre
@@ -2364,14 +2368,57 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             # A rewind restores a snapshot; after a split the snapshot has the OLD vertex
             # count, so restoring it would undo the tear (and mis-size every array). Only
             # rewind when the snapshot still matches the current mesh.
-            if (not np.isfinite(P0).all() or runaway) and (
-                    self.last_good is None or len(self.last_good) == len(P0)):
+            broken = (not np.isfinite(P0).all()) or runaway
+            can_rewind = (self.last_good is not None
+                          and len(self.last_good) == len(P0))
+            if broken and can_rewind:
                 if (runaway and coord_runaway and self.step % 15 == 0):
                     print(f"[Runaway] a node passed |coord|>{MAX_COORD:g} "
                           f"(max {float(np.abs(P0).max()):.1f}) -> rewound before it "
                           f"flew off-screen")
                 self._rewind()
                 return
+            if broken:
+                # A runaway we CANNOT rewind out of. This used to be a silent no-op -- worse
+                # than that, with last_good still None the old code called the rewind anyway,
+                # which did nothing, and then returned, skipping every clamp below. And once
+                # the mesh has degraded no frame is healthy enough to be cached, so after the
+                # next split the snapshot length stops matching and the guard is disabled for
+                # good. Measured consequence in a real session: edges reaching 4948x rest and
+                # speeds of 7195 against a limit of 25, with only 6 rewinds in the whole run.
+                # So contain it in place instead: kill the kinetic energy and pull the
+                # over-stretched edges back hard, then fall through to the normal clamps.
+                self.mo.velocity.value = [[0.0, 0.0, 0.0]] * len(P0)
+                if MAX_STRETCH > 0.0:
+                    if self.edges is None:
+                        self._build_edges()
+                    if len(self.edges):
+                        P = np.array(self.mo.position.value)
+                        e0, e1 = self.edges[:, 0], self.edges[:, 1]
+                        limit = self.edge_rest * MAX_STRETCH
+                        for _ in range(STRAIN_PANIC_ITERS):
+                            d = P[e1] - P[e0]
+                            L = np.linalg.norm(d, axis=1)
+                            over = L > limit
+                            if not over.any():
+                                break
+                            n = d[over] / np.maximum(L[over], 1e-9)[:, None]
+                            excess = (L[over] - limit[over])[:, None]
+                            corr = np.zeros_like(P); cnt = np.zeros(len(P))
+                            np.add.at(corr, e0[over], 0.5 * excess * n)
+                            np.add.at(corr, e1[over], -0.5 * excess * n)
+                            np.add.at(cnt, e0[over], 1.0)
+                            np.add.at(cnt, e1[over], 1.0)
+                            t = cnt > 0
+                            P[t] += corr[t] / cnt[t][:, None]
+                        self.mo.position.value = P.tolist()
+                        self.prev_pos = None      # this frame is not a clamp baseline
+                self.contained += 1
+                if self.step % 15 == 0:
+                    print(f"[Contain] runaway with no usable snapshot "
+                          f"(mesh has {len(P0)} verts, snapshot "
+                          f"{0 if self.last_good is None else len(self.last_good)}) "
+                          f"-> velocities zeroed and edges pulled back in place")
 
             # (0b) Displacement clamp: cap a solver-produced jump in the very step it
             # is born (see DISP_CLAMP).
