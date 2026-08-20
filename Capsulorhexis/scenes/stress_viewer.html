@@ -18,6 +18,19 @@
          color: #9fb3c4; pointer-events: none; text-align: center; }
   #cap b { color: #cfe0ee; }
   #ctrls { position: fixed; top: 10px; right: 12px; display: flex; gap: 8px; align-items: center; }
+  /* criterion readout: every term of the formula, for the frame you are looking at */
+  #crit { position: fixed; left: 12px; bottom: 70px; width: 330px; padding: 8px 10px;
+          z-index: 7; max-height: calc(100vh - 370px); overflow-y: auto; }
+  #crit h4 { margin: 0 0 6px; font-size: 12px; color: #cfe0ee; }
+  #crit .sub { color: #7f93a4; font-weight: 400; }
+  #crit table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  #crit td { padding: 1px 0; vertical-align: top; }
+  #crit td.k { color: #9fb3c4; white-space: nowrap; padding-right: 8px; }
+  #crit td.v { text-align: right; color: #e8f1f8; font-weight: 600; white-space: nowrap; }
+  #crit .eq { color: #7f93a4; margin: 5px 0 3px; }
+  #crit .verdict { margin-top: 5px; padding: 3px 6px; border-radius: 3px; font-weight: 600; }
+  #crit .go { background: #1f4a2a; color: #8ef58e; }
+  #crit .no { background: #4a2a1f; color: #ffb59d; }
   #ctrls button { background: #16212c; color: #dfe6ee; border: 1px solid #2b3a49;
                   border-radius: 7px; padding: 6px 11px; cursor: pointer; font-size: 12px; }
   #ctrls button:hover { border-color: #4a6076; }
@@ -35,7 +48,7 @@
   #liveDot { color: #6ee69a; }
   #reviewTag { color: #f2c14e; }
   /* legend */
-  #legend { position: fixed; bottom: 66px; left: 12px; padding: 8px 10px; }
+  #legend { position: fixed; bottom: 70px; left: 356px; padding: 6px 10px; z-index: 8; }
   #legend canvas { width: 190px; height: 12px; border-radius: 3px; display: block; }
   #legend .lab { display: flex; justify-content: space-between; margin-top: 3px;
                  color: #8aa0b4; font-variant-numeric: tabular-nums; }
@@ -43,7 +56,10 @@
   /* tooltip */
   /* docked inspector: fixed panel (screenshot-friendly), updated on hover, pin on click */
   #insp { position: fixed; top: 118px; left: 12px; width: 288px; z-index: 6; padding: 9px 12px;
-          font-variant-numeric: tabular-nums; }
+          font-variant-numeric: tabular-nums;
+          /* Bounded so it cannot grow down into #crit, which is anchored to the bottom:
+             the two used to overlap and the criterion panel's header was hidden behind it. */
+          max-height: calc(100vh - 560px); overflow-y: auto; }
   #insp .row { display: flex; justify-content: space-between; gap: 8px; padding: 1.5px 0; }
   #insp .k { color: #8aa0b4; white-space: nowrap; }
   #insp .v { color: #eef4fa; font-weight: 600; text-align: right; }
@@ -145,6 +161,10 @@
 <div id="insp" class="panel"><h4>🔍 element inspector · 元素檢視</h4>
 <div class="note">hover a triangle · 滑到三角形上;click = 📌 pin 釘選(截圖用)</div></div>
 
+<div id="crit" class="panel">
+  <h4>⚡ 撕裂判據 · tear criterion <span class="sub">(Dequidt Eq.1–4,這一幀的實際數值)</span></h4>
+  <div id="critbody">waiting…</div>
+</div>
 <div id="tl" class="panel">
   <button id="liveBtn" class="on" title="follow the latest frame (Space)">◉</button>
   <button id="playBtn" title="replay">▶</button>
@@ -485,6 +505,37 @@ function growth(){
   return d>0 ? ` <b style="color:#8ef58e">+${d}</b>` : ` <b style="color:#ff9d8a">±0</b>`;
 }
 
+// Every term the criterion actually used, for the frame currently on screen. Scrubbing the
+// timeline re-renders this from that frame's own record, so any past instant can be audited.
+function renderCrit(){
+  const el=document.getElementById("critbody"); if(!el) return;
+  const te=cur&&cur.tear, pu=cur&&cur.pull;
+  if(!te || !te.on){ el.innerHTML='<span style="color:#ff7d72">撕裂關閉 — 用 run_cap.ps1 <b>-Tear</b></span>'; return; }
+  const row=(k,v,note)=>`<tr><td class="k">${k}</td><td class="v">${v}</td></tr>`+
+    (note?`<tr><td colspan="2" style="color:#6f8496;padding-bottom:3px">${note}</td></tr>`:"");
+  const f=(x,d)=>x==null?"—":(+x).toFixed(d==null?1:d);
+  const go = (te.c||0) >= 1;
+  el.innerHTML =
+    `<div class="eq">σ_u = σ₁cos²ψ + σ₂sin²ψ　(Eq.3)</div>`+
+    `<table>`+
+    row("σ₁ 裂尖最大主應力", f(te.s1))+
+    row("σ₂ 裂尖最小主應力", f(te.s2))+
+    row("θ₁ 主應力方向", f(te.th1)+"°")+
+    row("d 裂向 (argmax c)", f(te.dang)+"°", "掃 0–180° 取 c 最大者,限制轉角")+
+    row("<b>σ_u 開裂張力</b>", "<b>"+f(te.su)+"</b>")+
+    `</table><div class="eq">σ̄_u = σ̄_T + (σ̄_L−σ̄_T)(1−fold/90)^α　(Eq.4)</div><table>`+
+    row("σ̄_T 門檻 (拉桿)", f(te.thr))+
+    row("f 纖維方向", f(te.fib)+"°", "同心纖維 = 方位角+90°")+
+    row("<b>σ̄_u 該方向的強度</b>", "<b>"+f(te.sbu)+"</b>")+
+    `</table><div class="eq">c = σ_u / σ̄_u　(Eq.1;c ≥ 1 才裂)</div><table>`+
+    row("<b>c</b>", `<b style="color:${go?'#8ef58e':'#ffb59d'}">${f(te.c,2)}</b>`)+
+    row("裂尖局部 σ₁ (閘門)", f(te.loc,2), "低於門檻表示裂尖沒受力,方向不可信")+
+    row("裂縫長度 / 裂尖 r", (te.len|0)+" 格 / r="+f(te.tipr,2))+
+    (pu&&pu.on ? row("器械拉力 |F|", f(pu.mag)+" @ ("+f(pu.x,2)+", "+f(pu.y,2)+")")
+               : row("器械拉力", "沒有在拉"))+
+    `</table><div class="verdict ${go?'go':'no'}">${te.why||""}</div>`;
+}
+
 function draw(){
   if(!bounds||!verts) return;
   T=fit(); ctx.clearRect(0,0,T.W,T.H);
@@ -505,7 +556,7 @@ function draw(){
     ctx.beginPath(); ctx.moveTo(A[0],A[1]); ctx.lineTo(B[0],B[1]); ctx.lineTo(C[0],C[1]); ctx.closePath();
     ctx.fillStyle = !have ? "#22303c" : (degenerate(ar[k]) ? "#38424c" : ramp(s1[k]/scaleTop)); ctx.fill();
     if(showWire||!have){ ctx.strokeStyle=have?"rgba(0,0,0,.28)":"rgba(150,170,190,.35)"; ctx.lineWidth=1; ctx.stroke(); } }
-  if(!have) return;
+  if(!have){ renderCrit(); return; }
   const sh=shownTri();                          // pinned triangle wins over hover
   if(sh>=0 && sh<tris.length){ const [a,b,c]=tris[sh];
     const A=toScreen(verts[a][0],verts[a][1]),B=toScreen(verts[b][0],verts[b][1]),C=toScreen(verts[c][0],verts[c][1]);
@@ -604,17 +655,60 @@ function draw(){
     if(pts.length>1){
       ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
       for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);
-      ctx.strokeStyle="#000";    ctx.lineWidth=7*dpr/2;   ctx.stroke();   // halo
-      ctx.strokeStyle="#ff2d95"; ctx.lineWidth=3.5*dpr/2; ctx.stroke();   // the cut
-      ctx.beginPath(); ctx.arc(pts[0][0],pts[0][1],4.5*dpr/2,0,6.284);
-      ctx.fillStyle="#ff2d95"; ctx.fill();                                // seed nick
+      // Thick, high-contrast and round-jointed: the cut has to read at a glance against a
+      // full-colour stress map, at any zoom, on a jagged path with many short segments.
+      ctx.lineJoin="round"; ctx.lineCap="round";
+      ctx.strokeStyle="rgba(0,0,0,.85)"; ctx.lineWidth=10*dpr/2; ctx.stroke();  // halo
+      ctx.strokeStyle="#fff";            ctx.lineWidth=6.5*dpr/2; ctx.stroke(); // casing
+      ctx.strokeStyle="#ff2d95";         ctx.lineWidth=4*dpr/2;   ctx.stroke(); // the cut
+      ctx.beginPath(); ctx.arc(pts[0][0],pts[0][1],5*dpr/2,0,6.284);
+      ctx.fillStyle="#ff2d95"; ctx.strokeStyle="#fff"; ctx.lineWidth=1.5*dpr/2;
+      ctx.fill(); ctx.stroke();                                               // seed nick
+      // live tip: ringed and pulsing, so the eye finds it immediately
       const tp=pts[pts.length-1];
-      ctx.beginPath(); ctx.arc(tp[0],tp[1],7*dpr/2,0,6.284);
+      ctx.beginPath(); ctx.arc(tp[0],tp[1],10*dpr/2,0,6.284);
+      ctx.strokeStyle="rgba(255,45,149,.45)"; ctx.lineWidth=3*dpr/2; ctx.stroke();
+      ctx.beginPath(); ctx.arc(tp[0],tp[1],6*dpr/2,0,6.284);
       ctx.fillStyle="#fff"; ctx.fill();
-      ctx.strokeStyle="#ff2d95"; ctx.lineWidth=2.5*dpr/2; ctx.stroke();   // live tip
+      ctx.strokeStyle="#ff2d95"; ctx.lineWidth=3*dpr/2; ctx.stroke();         // live tip
+      // the direction the criterion picked for the NEXT step, from this frame's own record
+      if(cur.tear && cur.tear.on && cur.tear.dang!=null && cur.tear.c>=1){
+        const a=cur.tear.dang*Math.PI/180, L=34*dpr/2;
+        ctx.beginPath();
+        ctx.moveTo(tp[0]-Math.cos(a)*L, tp[1]+Math.sin(a)*L);
+        ctx.lineTo(tp[0]+Math.cos(a)*L, tp[1]-Math.sin(a)*L);
+        ctx.setLineDash([6,4]); ctx.strokeStyle="#7fffd4"; ctx.lineWidth=2.5*dpr/2;
+        ctx.stroke(); ctx.setLineDash([]);
+      }
     }
   }
+  // --- the instrument: WHERE you are pulling, and which way ------------------------------
+  // Read from SOFA's own force vector (argmax|f| is the grabbed node), recorded per frame,
+  // so scrubbing shows where the hand was at that instant -- not just its consequences.
+  if(cur.pull && cur.pull.on){
+    const g=toScreen(cur.pull.x, cur.pull.y);
+    const fx=cur.pull.fx||0, fy=cur.pull.fy||0;
+    const n=Math.hypot(fx,fy);
+    if(n>1e-6){
+      const L=Math.min(70, 18+Math.log10(1+(cur.pull.mag||0))*22)*dpr/2;
+      const ux=fx/n, uy=fy/n, ex=g[0]+ux*L, ey=g[1]-uy*L;
+      ctx.beginPath(); ctx.moveTo(g[0],g[1]); ctx.lineTo(ex,ey);
+      ctx.strokeStyle="rgba(0,0,0,.8)"; ctx.lineWidth=7*dpr/2; ctx.stroke();
+      ctx.strokeStyle="#ffd24a"; ctx.lineWidth=3.5*dpr/2; ctx.stroke();
+      const ah=9*dpr/2, aa=Math.atan2(-uy,ux);
+      ctx.beginPath(); ctx.moveTo(ex,ey);
+      ctx.lineTo(ex-ah*Math.cos(aa-0.4), ey-ah*Math.sin(aa-0.4));
+      ctx.lineTo(ex-ah*Math.cos(aa+0.4), ey-ah*Math.sin(aa+0.4));
+      ctx.closePath(); ctx.fillStyle="#ffd24a"; ctx.fill();
+    }
+    ctx.beginPath(); ctx.arc(g[0],g[1],7*dpr/2,0,6.284);
+    ctx.fillStyle="#ffd24a"; ctx.strokeStyle="#000"; ctx.lineWidth=2*dpr/2;
+    ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(g[0],g[1],13*dpr/2,0,6.284);
+    ctx.strokeStyle="rgba(255,210,74,.5)"; ctx.lineWidth=2*dpr/2; ctx.stroke();
+  }
   drawLegend();
+  renderCrit();
 }
 function drawLegend(){ const lg=document.getElementById("lg"),g=lg.getContext("2d");
   for(let x=0;x<lg.width;x++){ g.fillStyle=ramp(x/(lg.width-1)); g.fillRect(x,0,1,lg.height); }
@@ -703,6 +797,9 @@ function updateInsp(){
      <span style="color:#7fffd4">青虛=INRIA argmax 裂向</span></div>`+
     `<div class="note"><span style="color:#ff2d95">洋紅粗線 = 已經撕開的裂痕</span>(mesh 邊的串接,
      ●=起始缺口 ○=目前裂尖)· <span style="color:#ffe14a">黃線=預測路徑</span>(還沒撕)。
+     <span style="color:#ffd24a">黃點+箭頭 = 你的器械</span>(位置與施力方向,長度隨力大小),
+     <span style="color:#7fffd4">青虛線 = 下一步要裂的方向 d</span>(argmax c)。
+     左下角面板列出這一幀撕裂公式的每一項。
      HUD 的 crack 後面 <span style="color:#8ef58e">+N</span> = 最近 25 幀長出幾格,
      <span style="color:#ff9d8a">±0</span> = 停滯。拖時間軸可逐格回放裂痕怎麼長的。</div>`+
     row("σ₁ max principal 最大主應力", v.toFixed(1), "這格被拉最緊方向上的張力 = 熱圖顏色")+

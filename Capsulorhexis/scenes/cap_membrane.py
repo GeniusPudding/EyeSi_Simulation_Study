@@ -209,6 +209,14 @@ PEEL_FRONT_ONLY = os.environ.get("CAP_PEEL_FRONT", "1") == "1"
 # trigger. Higher = the sheet only opens from an existing front; lower = easier to start
 # lifting anywhere, at the risk of the sheet letting go in several places at once.
 PEEL_NUCLEATE = float(os.environ.get("CAP_PEEL_NUCLEATE", "1.2"))
+# Lift needed AT THE PEEL FRONT, as a fraction of break_lift. Peeling is not the same
+# mechanics as pulling straight off: the work concentrates on the front LINE, which is why a
+# sticker peels with almost no force but will not come off if you lift the whole face at once.
+# Every glued node needing the SAME break_lift modelled the second case, so the capsule could
+# only ever come off in the small patch the hand lifted directly -- "no matter how I pull it
+# is always a small crack, never a sheet coming away". A front node is already half free, so
+# it lets go far more easily than fresh bonded material.
+PEEL_FRONT_EASE = float(os.environ.get("CAP_PEEL_EASE", "0.15"))
 # ...and cap how fast that front advances. The front rule alone is not enough: each
 # freed spot makes its neighbours eligible, so a violent pull still swept the whole cap
 # (2263 -> 0). A real crack has a finite propagation speed. Only this many spots debond
@@ -558,6 +566,7 @@ def _stress_build_frame(i, step, t, s1, s2, sdir, aratio):
         "tear": dict(_TEAR_STATE),       # live tearing status for the viewer
         "crack": list(_TEAR_PATH["path"]),   # ordered vertex chain = the cut edges
         "lips": list(_TEAR_PATH["lips"]),    # [duplicate, original] split pairs
+        "pull": dict(_PULL_STATE),           # where the instrument is pulling, and how hard
         "s1": np.round(s1, 1).tolist(),
         "s2": np.round(s2, 1).tolist(),
         "ang": np.round(ang, 1).tolist(),
@@ -570,7 +579,9 @@ _STRESS_GEOM_VER = 0
 # Live tearing telemetry, mirrored into every frame so the browser can SHOW whether tearing
 # is even enabled and how close the tip is to the criterion. Without this the only way to
 # tell "-Tear was not passed" from "the threshold is too high" was reading the console.
-_TEAR_STATE = {"on": False, "len": 0, "c": 0.0, "thr": 0.0, "tipr": 0.0, "why": "off"}
+_TEAR_STATE = {"on": False, "len": 0, "c": 0.0, "thr": 0.0, "tipr": 0.0, "why": "off",
+               "tipx": 0.0, "tipy": 0.0, "s1": 0.0, "s2": 0.0, "th1": 0.0,
+               "fib": 0.0, "dang": 0.0, "su": 0.0, "sbu": 0.0, "loc": 0.0}
 # The crack itself, for the browser to DRAW rather than just count. A tear is a CHAIN OF
 # MESH EDGES: "path" is the ordered vertex list, so consecutive entries are the edges the
 # tear has cut, and the last entry is the live tip. "lips" pairs each duplicated vertex with
@@ -578,6 +589,13 @@ _TEAR_STATE = {"on": False, "len": 0, "c": 0.0, "thr": 0.0, "tipr": 0.0, "why": 
 # opening. Both index the CURRENT reference disc, so they are only meaningful together with
 # the frame's "gver".
 _TEAR_PATH = {"path": [], "lips": []}
+# WHERE THE INSTRUMENT IS PULLING, and how hard. Read from the MechanicalObject's own force
+# vector: the mouse spring loads essentially one node, so argmax|f| identifies the grab
+# exactly (verified against a known pulled node -- argmax matched it, with only 5 of 2171
+# nodes above 10% of the peak). Without this the viewer showed the consequences of a pull
+# with no way to see the pull itself.
+_PULL_STATE = {"on": False, "x": 0.0, "y": 0.0, "fx": 0.0, "fy": 0.0, "mag": 0.0}
+PULL_MIN_FORCE = float(os.environ.get("CAP_PULL_MINF", "5.0"))
 
 
 _GEOM_PENDING = None      # (rest, tris) waiting to be serialised on demand
@@ -1319,7 +1337,12 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
         def _argmax_c(self, S1, S2, th1_deg, fib_deg, heading):
             """INRIA criterion (Eq.1-4). Returns (c, unit direction) for the crack direction
             that maximises c, restricted to turns within TEAR_TURN_MAX of the heading
-            (Eq.2's H term -- this is what stops the tear doubling back on itself)."""
+            (Eq.2's H term -- this is what stops the tear doubling back on itself).
+
+            Also returns the Eq.3/Eq.4 terms AT the winning direction (angle, sigma_u,
+            sigma_bar_u) so the viewer can display the criterion itself and not just its
+            verdict: c = sigma_u / sigma_bar_u, and seeing which of the two moved explains
+            why the tear did or did not go."""
             sT, sL = TEAR_THRESH, TEAR_THRESH * TEAR_FIB_RATIO
 
             def c_of(a):
@@ -1342,6 +1365,15 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                     return True
                 return np.degrees(np.arccos(np.clip(vec(a) @ heading, -1, 1))) <= TEAR_TURN_MAX
 
+            def terms(a):
+                thu = a + 90.0
+                cp = np.cos(np.radians(thu - th1_deg))
+                su = S1 * cp * cp + S2 * (1.0 - cp * cp)
+                df = abs(thu - fib_deg) % 180.0
+                if df > 90.0:
+                    df = 180.0 - df
+                return su, sT + (sL - sT) * (1.0 - df / 90.0) ** TEAR_FIB_ALPHA
+
             best, ba = -1.0, 0.0
             for a in np.arange(0.0, 180.0, 3.0):
                 if allowed(a):
@@ -1356,7 +1388,8 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                         cc = c_of(a)
                         if cc > best:
                             best, ba = cc, a
-            return best, vec(ba)
+            su_b, sbu_b = terms(ba)
+            return best, vec(ba), float(ba), float(su_b), float(sbu_b)
 
         def _split_vertex(self, v, P, R):
             """Open the mesh at vertex v: duplicate it and move the triangles on ONE side of
@@ -1594,10 +1627,18 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                 S1 *= TEAR_TIP_GAIN
                 S2 *= TEAR_TIP_GAIN
                 fib = np.degrees(np.arctan2(P[tip][1], P[tip][0])) + 90.0   # concentric fibers
-                c, d = self._argmax_c(S1, S2, th1, fib, self.crack_dir)
+                c, d, dang, su, sbu = self._argmax_c(S1, S2, th1, fib, self.crack_dir)
+                # Everything the criterion used, mirrored to the viewer: with all of Eq.3/Eq.4
+                # on screen per frame, "why did it not tear" is readable instead of guessed.
                 _TEAR_STATE.update(on=True, len=len(self.crack), c=round(float(c), 2),
                                    thr=TEAR_THRESH,
                                    tipr=round(float(np.hypot(P[tip][0], P[tip][1])), 2),
+                                   tipx=round(float(P[tip][0]), 3),
+                                   tipy=round(float(P[tip][1]), 3),
+                                   s1=round(float(S1), 1), s2=round(float(S2), 1),
+                                   th1=round(float(th1), 1), fib=round(float(fib), 1),
+                                   dang=round(float(dang), 1), su=round(float(su), 1),
+                                   sbu=round(float(sbu), 1), loc=round(float(s1_local), 2),
                                    why="tearing" if c >= 1.0 else "c<1: pull harder near the tip")
                 if c < 1.0:
                     self._drive_ref = (S1 if self._drive_ref is None
@@ -1923,7 +1964,8 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             if self.adhered and not self.frozen:
                 idx = np.fromiter(self.adhered, dtype=int)
                 lift = np.linalg.norm(pos[idx] - rest[idx], axis=1)
-                sel = np.flatnonzero(lift > self.break_lift)
+                front_lift = self.break_lift * PEEL_FRONT_EASE
+                sel = np.flatnonzero(lift > min(front_lift, self.break_lift))
                 cand, cand_lift = idx[sel], lift[sel]
                 if PEEL_FRONT_ONLY and cand.size:
                     if self.nbr is None:
@@ -1946,8 +1988,10 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                     # is also the right physics, and the high bar keeps the avalanche away.
                     nuc = cand_lift > self.break_lift * PEEL_NUCLEATE
                     keep = [k for k, i in enumerate(cand.tolist())
-                            if nuc[k] or i in self.boundary
-                            or any(int(j) not in adh for j in self.nbr[int(i)])]
+                            if nuc[k]
+                            or ((i in self.boundary
+                                 or any(int(j) not in adh for j in self.nbr[int(i)]))
+                                and cand_lift[k] > front_lift)]
                     cand, cand_lift = cand[keep], cand_lift[keep]
                 if PEEL_RATE > 0 and cand.size > PEEL_RATE:
                     # crack tip first: the most-lifted spots are the ones at the front
@@ -1987,6 +2031,24 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                     if self.peel_fade[nd] < PEEL_FADE_MIN:
                         del self.peel_fade[nd]
                 self._push_adhesion()
+
+            # Where is the instrument pulling right now? (see _PULL_STATE)
+            try:
+                F = np.asarray(self.mo.force.value, dtype=float)
+                if F.ndim == 2 and len(F):
+                    mag = np.linalg.norm(F, axis=1)
+                    k = int(np.argmax(mag))
+                    if float(mag[k]) >= PULL_MIN_FORCE and k < len(pos):
+                        r0 = self._rest_now()
+                        rx, ry = (float(r0[k][0]), float(r0[k][1])) if k < len(r0) else (0.0, 0.0)
+                        _PULL_STATE.update(on=True, x=round(rx, 3), y=round(ry, 3),
+                                           fx=round(float(F[k][0]), 1),
+                                           fy=round(float(F[k][1]), 1),
+                                           mag=round(float(mag[k]), 1))
+                    else:
+                        _PULL_STATE["on"] = False
+            except Exception:  # noqa: BLE001
+                _PULL_STATE["on"] = False
 
             self.step += 1
 
