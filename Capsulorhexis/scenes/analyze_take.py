@@ -18,6 +18,7 @@ which the why-histogram answers directly: it is how the two safety gates that we
 91.6% of all tearing opportunities were found, after the viewport showed nothing at all.
 """
 import csv
+import sys as _sys
 import glob
 import json
 import os
@@ -25,6 +26,9 @@ import sys
 from collections import Counter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# A single row can carry a very long 'why' string; the default 128 KB field cap
+# aborts the whole read with _csv.Error rather than skipping that row.
+csv.field_size_limit(min(2**31 - 1, _sys.maxsize))
 
 
 def _bar(frac, width=28):

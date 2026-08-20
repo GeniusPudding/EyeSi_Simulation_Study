@@ -1173,6 +1173,7 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             self._rest_cache = None    # (step, rest array) so a step re-reads it once
             self._field_cache = None   # (key, s1, area_ratio, centroids) per step
             self._spring_debt = 0      # splits since the edge springs were rebuilt
+            self._spring_dirty = False # a split changed the topology; rebuild after the step
             self.rest0 = None          # PRISTINE rest shape for the reference disc. NOT
                                        # rest_position: plasticity creeps that toward the
                                        # deformed shape, which was warping the "undeformed"
@@ -1943,26 +1944,13 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                     self.topo.edges.value = E.tolist()
             except Exception:  # noqa: BLE001
                 pass
-            # RECREATE the edge springs rather than reinit() them. Measured: with topo.edges
-            # corrected above, reinit() still left the spring set at its old 6321 entries,
-            # while removing the component and adding a fresh one rebuilt it to match the mesh
-            # (stale 125 -> 0). MeshSpringForceField only reads the topology when it is
-            # initialised. Throttled by TEAR_SPRING_REBUILD because it costs ~27 ms.
-            self._spring_debt += 1
-            if self._spring_debt >= TEAR_SPRING_REBUILD:
-                self._spring_debt = 0
-                try:
-                    node = self.springs.getContext()
-                    node.removeObject(self.springs)
-                    self.springs = node.addObject("MeshSpringForceField", name="EdgeSprings",
-                                                  linesStiffness=EDGE_STIFFNESS,
-                                                  linesDamping=1.0)
-                    self.springs.init()
-                except Exception:  # noqa: BLE001
-                    try:
-                        self.springs.reinit()
-                    except Exception:  # noqa: BLE001
-                        pass
+            # Mark the springs for rebuild; the rebuild itself happens AFTER the step, in
+            # _rebuild_springs_if_dirty(). Tearing runs in onAnimateBeginEvent, i.e. directly
+            # before the solve, and swapping a ForceField in and out at that moment leaves the
+            # implicit solver assembling from a component constructed mid-event -- measured as
+            # edge stretch 11.7x and 5 blow-ups, against 1.6x and none when the rebuild is
+            # deferred by one step.
+            self._spring_dirty = True
             try:
                 self.bending.reinit()
             except Exception:  # noqa: BLE001
@@ -2451,6 +2439,24 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                             v2[idx] *= (vcap / sp[fast])[:, None]
                             self.mo.velocity.value = v2
                         self.disp_clamped += int(hot.sum())
+
+            # Rebuild the edge springs now that the step is over (see _tear_reinit).
+            # MeshSpringForceField reads the topology only at init, so a split needs the whole
+            # component replaced -- reinit() leaves the old spring set in place.
+            if self._spring_dirty:
+                self._spring_debt += 1
+                if self._spring_debt >= TEAR_SPRING_REBUILD:
+                    self._spring_debt = 0
+                    self._spring_dirty = False
+                    try:
+                        node = self.springs.getContext()
+                        node.removeObject(self.springs)
+                        self.springs = node.addObject(
+                            "MeshSpringForceField", name="EdgeSprings",
+                            linesStiffness=EDGE_STIFFNESS, linesDamping=1.0)
+                        self.springs.init()
+                    except Exception:  # noqa: BLE001
+                        pass
 
             # (3) Snapshot as rewind target only when genuinely healthy (see
             # _is_healthy) -- caching a degenerate or inflating frame would make every
