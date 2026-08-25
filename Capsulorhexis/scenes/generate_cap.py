@@ -117,6 +117,110 @@ def _build_raw():
     return verts, faces, ring_base, ring_of
 
 
+# --- irregular triangulation ------------------------------------------------
+# WHY THIS EXISTS. The concentric-ring mesh above numbers its vertices ring by ring, and
+# every vertex of a ring sits at EXACTLY one radius. That hands a crack restricted to mesh
+# edges a closed circular path at every radius, and it takes it: read out of a real session,
+# 65% of the crack's steps were +-1 in vertex index (= the next vertex around the same ring)
+# and one run of 37 vertices held radius 3.85 +- 0.000 while sweeping 356 degrees. A tear
+# that traces a circle to three decimal places is not modelling anything -- it is reading the
+# mesh's own symmetry back to us. Dequidt 2013 s4.3 names exactly this failure mode: the
+# simple restrict-to-edges strategy makes propagation "highly dependent on the original mesh".
+#
+# The fix is to take the preferred direction away. Blue-noise (Poisson-disc) sample points in
+# the planar disc, Delaunay them, then lift onto the ellipsoid: same target edge length, same
+# roughly-equilateral elements, but no vertex numbering that follows a circle and no ring of
+# co-radial edges to fall into. The rim stays an exact circle so the zonular anchoring is
+# unchanged.
+MESH_KIND = _os.environ.get("CAP_MESH", "irregular")
+# Measured: Delaunay edges average 1/0.695 x the Poisson spacing (0.30 -> 0.432).
+POISSON_CALIB = float(_os.environ.get("CAP_POISSON_CALIB", "0.695"))
+
+
+def _poisson_disc(radius, spacing, rng):
+    """Bridson blue-noise sampling of a disc of the given radius."""
+    cell = spacing / math.sqrt(2.0)
+    n = int(math.ceil(2.0 * radius / cell))
+    grid = {}
+    pts, active = [], []
+
+    def add(p):
+        pts.append(p); active.append(len(pts) - 1)
+        grid[(int((p[0] + radius) / cell), int((p[1] + radius) / cell))] = len(pts) - 1
+
+    def ok(p):
+        if p[0] * p[0] + p[1] * p[1] > radius * radius:
+            return False
+        gx, gy = int((p[0] + radius) / cell), int((p[1] + radius) / cell)
+        for dx in range(-2, 3):
+            for dy in range(-2, 3):
+                q = grid.get((gx + dx, gy + dy))
+                if q is not None:
+                    o = pts[q]
+                    if (o[0] - p[0]) ** 2 + (o[1] - p[1]) ** 2 < spacing * spacing:
+                        return False
+        return True
+
+    add((0.0, 0.0))
+    while active:
+        k = active[rng.randrange(len(active))]
+        base, placed = pts[k], False
+        for _ in range(30):
+            a = rng.random() * 2.0 * math.pi
+            d = spacing * (1.0 + rng.random())
+            p = (base[0] + d * math.cos(a), base[1] + d * math.sin(a))
+            if ok(p):
+                add(p); placed = True; break
+        if not placed:
+            active.remove(k)
+    return pts
+
+
+def _build_irregular():
+    """Blue-noise points + Delaunay, lifted onto the ellipsoid. Same signature as
+    _build_raw(); ring_of is filled with the radial band index so callers that only use it
+    to pick 'inner' vertices keep working."""
+    from scipy.spatial import Delaunay          # noqa: F401  (setup.ps1 installs scipy)
+    import random
+    import numpy as np
+
+    R_planar = A * math.sin(CAP_ANGLE)
+    rng = random.Random(int(_os.environ.get("CAP_MESH_SEED", "20250825")))
+    # The rim first, as an exact circle: the zonular anchoring and the peel rules both key on
+    # r >= R_planar, and a blue-noise boundary would be ragged.
+    nrim = max(24, int(round(2.0 * math.pi * R_planar / TARGET_EDGE)))
+    rim = [(R_planar * math.cos(2.0 * math.pi * j / nrim),
+            R_planar * math.sin(2.0 * math.pi * j / nrim)) for j in range(nrim)]
+    # Interior points, kept clear of the rim ring so no sliver elements form against it.
+    # Poisson-disc spacing is a MINIMUM separation, so the Delaunay edges it produces come
+    # out longer than the parameter -- measured, spacing 0.30 gave a mean edge of 0.432.
+    # Calibrate so the mesh actually lands on TARGET_EDGE and stays comparable, element for
+    # element, with the ring mesh it replaces.
+    spacing = TARGET_EDGE * POISSON_CALIB
+    inner = [p for p in _poisson_disc(R_planar, spacing, rng)
+             if math.hypot(p[0], p[1]) < R_planar - 0.75 * spacing]
+    XY = np.array(rim + inner)
+    tri = Delaunay(XY)
+    faces = [tuple(int(i) for i in t) for t in tri.simplices]
+    # Delaunay of a disc is convex, so every simplex is inside; only drop true slivers.
+    keep = []
+    for t in faces:
+        a, b, c = XY[t[0]], XY[t[1]], XY[t[2]]
+        if abs(np.cross(b - a, c - a)) > 1e-9:
+            keep.append(t)
+    faces = keep
+    # Lift: planar radius -> polar angle v on the ellipsoid, azimuth preserved.
+    verts, ring_of = [], []
+    for x, y in XY:
+        r = math.hypot(x, y)
+        v = math.asin(min(1.0, r / A))
+        u = math.atan2(y, x)
+        verts.append(surface(v, u))
+        ring_of.append(int(min(N, round(N * r / max(R_planar, 1e-9)))))
+    ring_base = [0] * (N + 1)                  # meaningless here; kept for the signature
+    return verts, faces, ring_base, ring_of
+
+
 def _build_slit():
     """Raw cap, then duplicate the TEAR_RING vertices and route outer faces to the copies.
 
@@ -124,7 +228,10 @@ def _build_slit():
       stitch  : list of (inner_vid, outer_vid) coincident pairs -> stitch springs
       central : sorted vertex ids of the central disc (rings 0..TEAR_RING inner side)
     """
-    verts, faces, ring_base, ring_of = _build_raw()
+    if MESH_KIND == "irregular":
+        verts, faces, ring_base, ring_of = _build_irregular()
+    else:
+        verts, faces, ring_base, ring_of = _build_raw()
     if not TEAR_ENABLE:
         return verts, faces, [], sorted(i for i, r in enumerate(ring_of) if r <= N)
 
@@ -193,9 +300,9 @@ def main():
     here = os.path.dirname(os.path.abspath(__file__))
     cv, cf, stitch, central = _build_slit()
     _write_obj(os.path.join(here, "cap.obj"), cv, cf,
-               "cap on oblate lens A=%g C=%g R=%.3f targetEdge=%g tearRing=%d r=%.2f "
+               "cap on oblate lens A=%g C=%g R=%.3f targetEdge=%g mesh=%s tearRing=%d r=%.2f "
                "stitches=%d central=%d"
-               % (A, C, R, TARGET_EDGE, TEAR_RING, TEAR_RING_RADIUS, len(stitch), len(central)))
+               % (A, C, R, TARGET_EDGE, MESH_KIND, TEAR_RING, TEAR_RING_RADIUS, len(stitch), len(central)))
     lv, lf = build_lens()
     _write_obj(os.path.join(here, "lens.obj"), lv, lf,
                "oblate lens: A=%g C=%g (flatness %.2f)" % (A, C, C / A))
