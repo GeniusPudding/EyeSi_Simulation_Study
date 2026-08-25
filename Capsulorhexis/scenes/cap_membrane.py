@@ -365,6 +365,21 @@ PEEL_FRONT_EASE = float(os.environ.get("CAP_PEEL_EASE", "1.0"))
 # Tying the debond front to the crack makes the flap follow the tear instead of outrunning it.
 # 0 = off (peel anywhere, the old behaviour, still what the no-tear demo wants).
 PEEL_NEAR_CRACK = float(os.environ.get("CAP_PEEL_NEAR", "3.0"))
+# ...and keep it with the INSTRUMENT too. Tying the front to the crack alone stops working
+# the moment the crack gets long: measured on the irregular mesh, the tear swept 573 deg of
+# azimuth, so a 3.0 corridor around it covers essentially the whole disc and every bonded
+# spot qualifies. The recorded consequence is an avalanche -- 1685 glued spots down to 884 in
+# two seconds, running at the PEEL_RATE ceiling the whole way, until the cap is off the lens.
+# PEEL_RATE caps the SPEED of that sweep but nothing stops it, because each freed spot makes
+# its neighbours eligible.
+# Physically the flap comes away where the hand is lifting it, not everywhere the tear has
+# ever been. So require BOTH: within PEEL_NEAR_CRACK of the tear AND within this of the
+# instrument. With no instrument engaged, nothing new debonds -- letting go stops the peel,
+# which is the behaviour the crack's own arrest gate already has. 0 = off.
+PEEL_NEAR_TOOL = float(os.environ.get("CAP_PEEL_TOOL", "3.5"))
+# How far above the bulk a node's force must be to count as "the instrument is here".
+# Compared against the 99th percentile of all nodal force magnitudes, so it is scale-free.
+TOOL_FORCE_RATIO = float(os.environ.get("CAP_TOOL_RATIO", "3.0"))
 # ...and cap how fast that front advances. The front rule alone is not enough: each
 # freed spot makes its neighbours eligible, so a violent pull still swept the whole cap
 # (2263 -> 0). A real crack has a finite propagation speed. Only this many spots debond
@@ -1344,6 +1359,34 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
             else:
                 print(f"[Adhesion] break_lift={need:.3f} vs reachable {reach:.3f} -- OK "
                       f"(peel can nucleate in the interior)")
+
+        def _tool_xy(self):
+            """Deformed xy of the node the instrument is currently pulling, or None if the
+            user is not grabbing. Read straight off the mechanical object's force field --
+            the grab spring is by far the largest external force on any node -- rather than
+            from _PULL_STATE, which is only refreshed later in the same handler (and in REST
+            coordinates, which do not match the deformed positions the peel test uses)."""
+            try:
+                F = np.asarray(self.mo.force.value, dtype=float)
+                if F.ndim != 2 or len(F) < 8:
+                    return None
+                mag = np.linalg.norm(F, axis=1)
+                k = int(np.argmax(mag))
+                # Do NOT gate this on _is_grabbing(): that detects SOFA's mouse interactor by
+                # name, so a scripted pull or a headless probe -- which drive the same physics
+                # through their own spring -- would report "no instrument" and silently freeze
+                # peeling altogether. Detect the instrument by what it DOES instead: one node
+                # carrying a force far above the bulk. TOOL_FORCE_RATIO against the 99th
+                # percentile, so ordinary elastic forces never look like a grab.
+                bulk = float(np.percentile(mag, 99))
+                if mag[k] < max(TOOL_FORCE_RATIO * bulk, 1e-6):
+                    return None
+                P = np.asarray(self.mo.position.value, dtype=float)
+                if k >= len(P):
+                    return None
+                return np.array([float(P[k][0]), float(P[k][1])])
+            except Exception:  # noqa: BLE001
+                return None
 
         def _build_peel_adjacency(self):
             """Node neighbours + mesh-boundary nodes, for front-only peeling.
@@ -2827,6 +2870,17 @@ def _make_controller(fem, springs, bending, mo, adhesion, pull, mouse, damper,
                         Q = np.asarray(pos)[cand][:, :2]
                         d2 = ((Q[:, None, :] - C[None, :, :]) ** 2).sum(axis=2).min(axis=1)
                         near = d2 <= PEEL_NEAR_CRACK ** 2
+                        cand, cand_lift = cand[near], cand_lift[near]
+                # ...and with the INSTRUMENT (see PEEL_NEAR_TOOL). This is the half that
+                # makes peeling follow the hand instead of the tear's whole history.
+                if PEEL_NEAR_TOOL > 0.0 and cand.size:
+                    tool = self._tool_xy()
+                    if tool is None:
+                        cand, cand_lift = cand[:0], cand_lift[:0]
+                    else:
+                        Q = np.asarray(pos)[cand][:, :2]
+                        d2 = ((Q - np.asarray(tool)[None, :]) ** 2).sum(axis=1)
+                        near = d2 <= PEEL_NEAR_TOOL ** 2
                         cand, cand_lift = cand[near], cand_lift[near]
                 if PEEL_RATE > 0 and cand.size > PEEL_RATE:
                     # crack tip first: the most-lifted spots are the ones at the front
