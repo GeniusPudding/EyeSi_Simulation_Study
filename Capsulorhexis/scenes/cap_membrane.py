@@ -256,7 +256,7 @@ DAMPING_IMPLICIT = True
 # "saturates and follows" instead of a one-frame explosion.
 # 0.5 = 25 units/s: above legitimate flap-folding speeds (10-15), far below
 # explosion speeds. 0.25 was too tight (bit normal folding -> stutter). 0 = off.
-DISP_CLAMP = 0.5
+DISP_CLAMP = float(os.environ.get("CAP_DISP_CLAMP", "0.5"))
 
 # Diagnostics: one CSV row per step (peaks + safety-net counters), overwritten each
 # run; pair with run_last.log (console tee in run_cap.sh) to analyse a session.
@@ -3219,12 +3219,26 @@ def createScene(root):
     # matrix, so any k is stable at any dt; explicit would need w*dt < 2 and this
     # mesh runs at w*dt ~ 9-16. Rayleigh terms = uniform numerical damping (rK*K
     # kills high-frequency mesh modes, rM*M calms drift).
-    # rayleighStiffness damps HIGH-FREQUENCY modes specifically (the ones this mesh cannot
-    # resolve: omega = sqrt(k/m) ~ 172 rad/s = 1.8 steps per period at dt=0.02), so it is the
-    # lever aimed straight at the pull-snap, without the sluggishness of raising global
-    # damping. Env-tunable for measured sweeps: CAP_RAYLEIGH_K / CAP_RAYLEIGH_M / CAP_DT.
+    # rayleighStiffness damps HIGH-FREQUENCY modes specifically -- the ones this mesh cannot
+    # resolve. With EDGE_STIFFNESS 2500 and massDensity 1, omega = sqrt(k/m) = 50 rad/s, a
+    # period of 0.126 s, which at dt=0.02 is only 6.3 STEPS PER PERIOD. Implicit Euler is
+    # unconditionally STABLE there but not SMOOTH: anything that disturbs the sheet -- a tear
+    # split, an adhesion release, a jerk of the hand -- rings at close to the step rate and
+    # reads as buzz. That is the "everything shakes" report, and it is not something SOFA does
+    # to us; it is this k/m/dt combination.
+    # RAISED 0.2 -> 1.0. Measured on an identical jerky 900-step pull, twice, bit-identical
+    # both times: displacement clamps 14401 -> 8011, speed clamps 3525 -> 1755, and runaway
+    # REWINDS 29 -> 1. Those clamps ARE the visible jitter -- 14401 over 900 steps is sixteen
+    # nodes teleported every single step, which is a safety net that has stopped being a net
+    # and become part of the dynamics. And it costs nothing elsewhere: the tear got LONGER
+    # (111 -> 144 vertices) and the flap lifted higher (3.62 -> 6.57), because the solver
+    # spends its budget on the pull instead of on modes it cannot represent.
+    # Do NOT go to 2.0: measured there, the run collapses into 500 rewinds and freezes
+    # (speed p99 0.0, lift 1.15). 1.5 tears more still (234, lift 10.63) but sits next to that
+    # cliff at 5.1% degenerate elements, so 1.0 is the shipped value.
+    # Env-tunable for measured sweeps: CAP_RAYLEIGH_K / CAP_RAYLEIGH_M / CAP_DT.
     cap.addObject("EulerImplicitSolver",
-                  rayleighStiffness=float(os.environ.get("CAP_RAYLEIGH_K", "0.2")),
+                  rayleighStiffness=float(os.environ.get("CAP_RAYLEIGH_K", "1.0")),
                   rayleighMass=float(os.environ.get("CAP_RAYLEIGH_M", "0.2")))
     # CG solves that system MATRIX-FREE: each iteration asks for one product
     # (M - h*B - h^2*K)*p, computed by a scene traversal (addMdx + addDForce) --
