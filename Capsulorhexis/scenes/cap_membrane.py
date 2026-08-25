@@ -3368,6 +3368,19 @@ def createScene(root):
                           showObject=False)
             print(f"[Zonules] rim anchored: {len(_outer)} nodes beyond r="
                   f"{RIM_ANCHOR_FRAC * G.R:.2f} of {G.R:.2f}")
+        else:
+            print("[Zonules] WARNING: rim anchor requested but NO node lies beyond "
+                  f"r={RIM_ANCHOR_FRAC * G.R:.2f} -- the capsule is held only by the "
+                  "adhesion and a pull will drag the whole sheet off the lens.")
+    elif CAP_TEAR or PAPER_MODE:
+        # Say so LOUDLY. This was silent, and a stale CAP_FIX_RIM=0 left over in a shell by an
+        # earlier -FreeRim run therefore disabled the zonules for every later run in that
+        # window with nothing in the log to show for it. The symptom -- the whole rim tearing
+        # away under a light drag while the interior stays welded -- looks like a physics bug
+        # and is not one.
+        print("[Zonules] rim NOT anchored (CAP_FIX_RIM=0 / -FreeRim). The capsule has no "
+              "zonular boundary: expect the sheet to be dragged off the lens rather than "
+              "torn. This is NOT the default -- unset CAP_FIX_RIM to restore it.")
 
     # Scripted lift of the freed central disc; must start only AFTER the circle is
     # fully torn (intact stitches at k=2500 would drag the rim up with it).

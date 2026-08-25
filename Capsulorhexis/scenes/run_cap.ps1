@@ -74,7 +74,11 @@ param(
     # running tear over-stretches the mesh (edges to 24x rest), so expect spikes. Via CAP_FIX_RIM.
     [switch]$FreeRim
 )
-if ($FreeRim) { $env:CAP_FIX_RIM = "0" }
+# The ONLY switch here that used to set its variable without an else. $env: persists for the
+# whole PowerShell session, so one -FreeRim run left CAP_FIX_RIM=0 set in that terminal and
+# EVERY later run in the same window had its zonular anchor silently disabled -- which reads
+# exactly like "a light drag rips the whole rim off". Clear it explicitly.
+if ($FreeRim) { $env:CAP_FIX_RIM = "0" } else { Remove-Item Env:CAP_FIX_RIM -ErrorAction SilentlyContinue }
 if ($Paper) { $env:CAP_PAPER = "1" } else { $env:CAP_PAPER = "0" }
 # Every session writes a BLACK BOX you can read afterwards:
 #   scenes/diag_last.csv          one row per step, always on. Mechanics + the tear, including
